@@ -12,7 +12,7 @@ use kona_derive::{
     types::Signal,
 };
 use kona_driver::{DriverError, DriverPipeline, DriverResult, TipCursor};
-use kona_genesis::RollupConfig;
+use celo_genesis::CeloRollupConfig;
 use kona_preimage::{CommsClient, PreimageKey};
 use kona_proof::{errors::OracleProviderError, HintType};
 use kona_protocol::{L2BlockInfo, OpAttributesWithParent};
@@ -57,7 +57,7 @@ where
 /// - `Err(e)` - An error if the block could not be produced.
 pub async fn advance_to_target<E, DP, P>(
     driver: &mut CeloDriver<E, DP, P>,
-    cfg: &RollupConfig,
+    cfg: &CeloRollupConfig,
     mut target: Option<u64>,
 ) -> DriverResult<(L2BlockInfo, B256), E::Error>
 where
