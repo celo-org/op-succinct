@@ -27,52 +27,85 @@ import {SP1MockVerifier} from "@sp1-contracts/src/SP1MockVerifier.sol";
 // Utils
 import {MockOptimismPortal2} from "../../utils/MockOptimismPortal2.sol";
 
-contract DeployOPSuccinctFDG is Script {
-    function run() public {
-        vm.startBroadcast();
+struct OPContractAddresses {
+    address anchorStateRegistryAddress;
+    address disputeGameFactoryAddress;
+    address portalAddress;
+}
 
-        // Deploy factory proxy.
-        ERC1967Proxy factoryProxy = new ERC1967Proxy(
-            address(new DisputeGameFactory()),
-            abi.encodeWithSelector(DisputeGameFactory.initialize.selector, msg.sender)
-        );
-        DisputeGameFactory factory = DisputeGameFactory(address(factoryProxy));
+contract DeployOPSuccinctFDG is Script {
+    function getAddrFromEnv(string memory _envKey) internal view returns (address addr_) {
+        if (vm.envOr(_envKey, address(0)) != address(0)) {
+            addr_ = vm.envAddress(_envKey);
+        } else {
+            addr_ = address(0);
+        }
+    }
+
+    function getOrDeployOPContracts() internal returns (OPContractAddresses memory) {
+        address factoryAddr = getAddrFromEnv("DISPUTE_GAME_FACTORY_PROXY_ADDRESS");
+        if (factoryAddr == address(0)) {
+            // Deploy factory proxy.
+            ERC1967Proxy factoryProxy = new ERC1967Proxy(
+                address(new DisputeGameFactory()),
+                abi.encodeWithSelector(DisputeGameFactory.initialize.selector, msg.sender)
+            );
+            factoryAddr = address(factoryProxy);
+        }
+        address disputeGameFactoryAddress = factoryAddr;
 
         GameType gameType = GameType.wrap(uint32(vm.envUint("GAME_TYPE")));
 
+        address registryProxyAddr = getAddrFromEnv("ANCHOR_STATE_REGISTRY_ADDRESS");
+
         // Use provided OptimismPortal2 address if given, otherwise deploy MockOptimismPortal2.
-        address payable portalAddress;
-        if (vm.envOr("OPTIMISM_PORTAL2_ADDRESS", address(0)) != address(0)) {
-            portalAddress = payable(vm.envAddress("OPTIMISM_PORTAL2_ADDRESS"));
-            console.log("Using existing OptimismPortal2:", portalAddress);
-        } else {
+        address portalAddress = getAddrFromEnv("OPTIMISM_PORTAL2_ADDRESS");
+        if (portalAddress == address(0)) {
             MockOptimismPortal2 portal =
                 new MockOptimismPortal2(gameType, vm.envUint("DISPUTE_GAME_FINALITY_DELAY_SECONDS"));
-            portalAddress = payable(address(portal));
+            portalAddress = address(portal);
             console.log("Deployed MockOptimismPortal2:", portalAddress);
         }
+        if (registryProxyAddr == address(0)) {
+            OutputRoot memory startingAnchorRoot = OutputRoot({
+                root: Hash.wrap(vm.envBytes32("STARTING_ROOT")),
+                l2BlockNumber: vm.envUint("STARTING_L2_BLOCK_NUMBER")
+            });
 
-        OutputRoot memory startingAnchorRoot = OutputRoot({
-            root: Hash.wrap(vm.envBytes32("STARTING_ROOT")),
-            l2BlockNumber: vm.envUint("STARTING_L2_BLOCK_NUMBER")
-        });
+            address superchainConfigAddress = getAddrFromEnv("SUPERCHAIN_CONFIG_ADDRESS");
+            if (superchainConfigAddress == address(0)) {
+                superchainConfigAddress = address(new SuperchainConfig());
+            }
 
-        // Deploy the anchor state registry proxy.
-        ERC1967Proxy registryProxy = new ERC1967Proxy(
-            address(new AnchorStateRegistry()),
-            abi.encodeCall(
-                AnchorStateRegistry.initialize,
-                (
-                    ISuperchainConfig(address(new SuperchainConfig())),
-                    IDisputeGameFactory(address(factory)),
-                    IOptimismPortal2(portalAddress),
-                    startingAnchorRoot
+            // Deploy the anchor state registry proxy.
+            ERC1967Proxy registryProxy = new ERC1967Proxy(
+                address(new AnchorStateRegistry()),
+                abi.encodeCall(
+                    AnchorStateRegistry.initialize,
+                    (
+                        ISuperchainConfig(superchainConfigAddress),
+                        IDisputeGameFactory(disputeGameFactoryAddress),
+                        IOptimismPortal2(payable(portalAddress)),
+                        startingAnchorRoot
+                    )
                 )
-            )
-        );
+            );
+            registryProxyAddr = address(registryProxy);
+        }
 
-        AnchorStateRegistry registry = AnchorStateRegistry(address(registryProxy));
-        console.log("Anchor state registry:", address(registry));
+        address anchorStateRegistryAddress = registryProxyAddr;
+        return OPContractAddresses({
+            disputeGameFactoryAddress: disputeGameFactoryAddress,
+            anchorStateRegistryAddress: anchorStateRegistryAddress,
+            portalAddress: portalAddress
+        });
+    }
+
+    function run() public {
+        vm.startBroadcast();
+
+        OPContractAddresses memory contracts = getOrDeployOPContracts();
+
         // Deploy the access manager contract.
         AccessManager accessManager = new AccessManager();
         console.log("Access manager:", address(accessManager));
@@ -137,22 +170,31 @@ contract DeployOPSuccinctFDG is Script {
             rangeVkeyCommitment = vm.envBytes32("RANGE_VKEY_COMMITMENT");
         }
 
+        // This instantiates the implementation contract
+        // that later will get cloned and initialized for each dispute-game
+        // create() on the factory
         OPSuccinctFaultDisputeGame gameImpl = new OPSuccinctFaultDisputeGame(
             Duration.wrap(uint64(vm.envUint("MAX_CHALLENGE_DURATION"))),
             Duration.wrap(uint64(vm.envUint("MAX_PROVE_DURATION"))),
-            IDisputeGameFactory(address(factory)),
+            IDisputeGameFactory(contracts.disputeGameFactoryAddress),
             ISP1Verifier(sp1VerifierAddress),
             rollupConfigHash,
             aggregationVkey,
             rangeVkeyCommitment,
             vm.envOr("CHALLENGER_BOND_WEI", uint256(0.001 ether)),
-            IAnchorStateRegistry(address(registry)),
+            IAnchorStateRegistry(contracts.anchorStateRegistryAddress),
             accessManager
         );
 
+        GameType gameType = GameType.wrap(uint32(vm.envUintOr("GAME_TYPE")));
+
         // Set initial bond and implementation in factory.
-        factory.setInitBond(gameType, vm.envOr("INITIAL_BOND_WEI", uint256(0.001 ether)));
+        DisputeGameFactory factory = DisputeGameFactory(contracts.disputeGameFactoryAddress);
+
         factory.setImplementation(gameType, IDisputeGame(address(gameImpl)));
+        factory.setInitBond(gameType, vm.envOr("INITIAL_BOND_WEI", uint256(0.001 ether)));
+        IOptimismPortal2 portal = IOptimismPortal2(payable(contracts.portalAddress));
+        portal.setRespectedGameType(gameType);
 
         vm.stopBroadcast();
 
