@@ -10,10 +10,15 @@ use op_succinct_scripts::HostExecutorArgs;
 use sp1_sdk::{utils, ProverClient};
 use std::{fs, sync::Arc, time::Instant};
 use tracing::debug;
+use rustls;
 
 /// Execute the OP Succinct program for multiple blocks.
 #[tokio::main]
 async fn main() -> Result<()> {
+    rustls::crypto::ring::default_provider()
+      .install_default()
+      .unwrap();
+
     let args = HostExecutorArgs::parse();
 
     dotenv::from_path(&args.env_file)
