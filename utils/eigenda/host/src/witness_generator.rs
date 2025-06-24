@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use async_trait::async_trait;
+use celo_genesis::CeloRollupConfig;
 use hokulea_proof::{
     eigenda_blob_witness::EigenDABlobWitnessData, eigenda_provider::OracleEigenDAProvider,
 };
@@ -81,10 +82,12 @@ impl WitnessGenerator for EigenDAWitnessGenerator {
 
         let (boot_info, input) = get_inputs_for_pipeline(oracle.clone()).await.unwrap();
         if let Some((cursor, l1_provider, l2_provider)) = input {
-            let rollup_config = Arc::new(boot_info.rollup_config.clone());
+            // Wrap RollupConfig with CeloRollupConfig
+            let celo_rollup_config =
+                CeloRollupConfig { op_rollup_config: boot_info.rollup_config.clone() };
             let pipeline = WitnessExecutorTrait::create_pipeline(
                 &executor,
-                rollup_config,
+                Arc::new(celo_rollup_config),
                 cursor.clone(),
                 oracle.clone(),
                 beacon,
