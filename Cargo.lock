@@ -7770,6 +7770,7 @@ dependencies = [
  "alloy-primitives",
  "anyhow",
  "async-trait",
+ "celo-genesis",
  "celo-host",
  "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=62abcc0)",
  "hokulea-host-bin",

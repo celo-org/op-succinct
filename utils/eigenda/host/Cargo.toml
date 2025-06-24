@@ -17,6 +17,10 @@ op-succinct-host-utils.workspace = true
 kona-preimage.workspace = true
 kona-proof.workspace = true
 
+# celo-kona
+celo-host.workspace = true
+celo-genesis.workspace = true
+
 # hokulea
 hokulea-eigenda.workspace = true
 hokulea-host-bin.workspace = true

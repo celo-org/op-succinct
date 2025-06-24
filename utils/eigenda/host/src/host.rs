@@ -4,7 +4,7 @@ use alloy_eips::BlockId;
 use alloy_primitives::B256;
 use anyhow::Result;
 use async_trait::async_trait;
-use hokulea_host_bin::cfg::SingleChainHostWithEigenDA;
+use celo_host::single::CeloSingleChainHost;
 use op_succinct_host_utils::{fetcher::OPSuccinctDataFetcher, host::OPSuccinctHost};
 
 use crate::witness_generator::EigenDAWitnessGenerator;
@@ -17,7 +17,7 @@ pub struct EigenDAOPSuccinctHost {
 
 #[async_trait]
 impl OPSuccinctHost for EigenDAOPSuccinctHost {
-    type Args = SingleChainHostWithEigenDA;
+    type Args = CeloSingleChainHost;
     type WitnessGenerator = EigenDAWitnessGenerator;
 
     fn witness_generator(&self) -> &Self::WitnessGenerator {
@@ -30,7 +30,7 @@ impl OPSuccinctHost for EigenDAOPSuccinctHost {
         l2_end_block: u64,
         l1_head_hash: Option<B256>,
         safe_db_fallback: bool,
-    ) -> Result<SingleChainHostWithEigenDA> {
+    ) -> Result<CeloSingleChainHost> {
         // If l1_head_hash is not provided, calculate a safe L1 head
         let l1_head = match l1_head_hash {
             Some(hash) => hash,
@@ -42,7 +42,7 @@ impl OPSuccinctHost for EigenDAOPSuccinctHost {
         let host = self.fetcher.get_host_args(l2_start_block, l2_end_block, l1_head).await?;
 
         let eigenda_proxy_address = std::env::var("EIGENDA_PROXY_ADDRESS").ok();
-        Ok(SingleChainHostWithEigenDA { kona_cfg: host, eigenda_proxy_address, verbose: 1 })
+        Ok(CeloSingleChainHost { kona_cfg: host, eigenda_proxy_address })
     }
 
     fn get_l1_head_hash(&self, args: &Self::Args) -> Option<B256> {

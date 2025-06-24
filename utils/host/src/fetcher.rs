@@ -17,7 +17,6 @@ use anyhow::{bail, Result};
 use celo_alloy_consensus::CeloBlock;
 use celo_alloy_network::Celo;
 use celo_genesis::CeloRollupConfig;
-use celo_host::single::CeloSingleChainHost;
 use celo_protocol::CeloL2BlockInfo;
 use futures::{stream, StreamExt};
 use kona_host::single::SingleChainHost;
@@ -690,7 +689,7 @@ impl OPSuccinctDataFetcher {
         l2_start_block: u64,
         l2_end_block: u64,
         l1_head_hash: B256,
-    ) -> Result<CeloSingleChainHost> {
+    ) -> Result<SingleChainHost> {
         // If the rollup config is not already loaded, fetch and save it.
         if self.rollup_config.is_none() {
             return Err(anyhow::anyhow!("Rollup config not loaded."));
@@ -745,30 +744,28 @@ impl OPSuccinctDataFetcher {
         };
         let claimed_l2_output_root = keccak256(l2_claim_encoded.abi_encode());
 
-        Ok(CeloSingleChainHost {
-            kona_cfg: SingleChainHost {
-                l1_head: l1_head_hash,
-                agreed_l2_output_root,
-                agreed_l2_head_hash,
-                claimed_l2_output_root,
-                claimed_l2_block_number: l2_end_block,
-                l2_chain_id: None,
-                // Trim the trailing slash to avoid double slashes in the URL.
-                l2_node_address: Some(
-                    self.rpc_config.l2_rpc.as_str().trim_end_matches('/').to_string(),
-                ),
-                l1_node_address: Some(
-                    self.rpc_config.l1_rpc.as_str().trim_end_matches('/').to_string(),
-                ),
-                l1_beacon_address: Some(
-                    self.rpc_config.l1_beacon_rpc.as_str().trim_end_matches('/').to_string(),
-                ),
-                data_dir: None, // Use in-memory key-value store.
-                native: false,
-                server: true,
-                rollup_config_path: self.rollup_config_path.clone(),
-                enable_experimental_witness_endpoint: false,
-            },
+        Ok(SingleChainHost {
+            l1_head: l1_head_hash,
+            agreed_l2_output_root,
+            agreed_l2_head_hash,
+            claimed_l2_output_root,
+            claimed_l2_block_number: l2_end_block,
+            l2_chain_id: None,
+            // Trim the trailing slash to avoid double slashes in the URL.
+            l2_node_address: Some(
+                self.rpc_config.l2_rpc.as_str().trim_end_matches('/').to_string(),
+            ),
+            l1_node_address: Some(
+                self.rpc_config.l1_rpc.as_str().trim_end_matches('/').to_string(),
+            ),
+            l1_beacon_address: Some(
+                self.rpc_config.l1_beacon_rpc.as_str().trim_end_matches('/').to_string(),
+            ),
+            data_dir: None, // Use in-memory key-value store.
+            native: false,
+            server: true,
+            rollup_config_path: self.rollup_config_path.clone(),
+            enable_experimental_witness_endpoint: false,
         })
     }
 }
