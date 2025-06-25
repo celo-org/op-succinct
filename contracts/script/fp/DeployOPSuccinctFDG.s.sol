@@ -23,6 +23,7 @@ import {DisputeGameFactory} from "src/dispute/DisputeGameFactory.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {OPSuccinctFaultDisputeGame} from "../../src/fp/OPSuccinctFaultDisputeGame.sol";
 import {SP1MockVerifier} from "@sp1-contracts/src/SP1MockVerifier.sol";
+import {SP1Verifier} from "@sp1-contracts/src/v3.0.0/SP1VerifierGroth16.sol";
 
 // Utils
 import {MockOptimismPortal2} from "../../utils/MockOptimismPortal2.sol";
@@ -43,8 +44,9 @@ contract DeployOPSuccinctFDG is Script {
     }
 
     function getOrDeployOPContracts() internal returns (OPContractAddresses memory) {
-        address factoryAddr = getAddrFromEnv("DISPUTE_GAME_FACTORY_PROXY_ADDRESS");
+        address factoryAddr = getAddrFromEnv("FACTORY_ADDRESS");
         if (factoryAddr == address(0)) {
+            console.log("Deploying new DisputeGameFactory");
             // Deploy factory proxy.
             ERC1967Proxy factoryProxy = new ERC1967Proxy(
                 address(new DisputeGameFactory()),
@@ -92,8 +94,10 @@ contract DeployOPSuccinctFDG is Script {
             );
             registryProxyAddr = address(registryProxy);
         }
-
         address anchorStateRegistryAddress = registryProxyAddr;
+        console.log("Using AnchorStateRegistry:", anchorStateRegistryAddress);
+        console.log("Using DisputeGameFactory:", disputeGameFactoryAddress);
+        console.log("Using Portal:", portalAddress);
         return OPContractAddresses({
             disputeGameFactoryAddress: disputeGameFactoryAddress,
             anchorStateRegistryAddress: anchorStateRegistryAddress,
@@ -144,6 +148,8 @@ contract DeployOPSuccinctFDG is Script {
             }
         }
 
+        DisputeGameFactory factory = DisputeGameFactory(contracts.disputeGameFactoryAddress);
+
         // Config values dependent on the `USE_SP1_MOCK_VERIFIER` flag.
         address sp1VerifierAddress;
         bytes32 rollupConfigHash;
@@ -161,9 +167,16 @@ contract DeployOPSuccinctFDG is Script {
             aggregationVkey = bytes32(0);
             rangeVkeyCommitment = bytes32(0);
         } else {
-            // Use provided verifier address for production.
-            sp1VerifierAddress = vm.envAddress("VERIFIER_ADDRESS");
-            console.log("Using SP1 Verifier Gateway:", sp1VerifierAddress);
+            if (vm.envOr("VERIFIER_ADDRESS", false)) {
+                // Use provided verifier address for production.
+                sp1VerifierAddress = vm.envAddress("VERIFIER_ADDRESS");
+            } else {
+                // Deploy contract Groth16 directly without the gateway,
+                // since this requires working around library inconsistencies and
+                // additional setup on non-standard networks
+                sp1VerifierAddress = address(new SP1Verifier());
+            }
+            console.log("Using SP1 Verifier:", sp1VerifierAddress);
 
             rollupConfigHash = vm.envBytes32("ROLLUP_CONFIG_HASH");
             aggregationVkey = vm.envBytes32("AGGREGATION_VKEY");
@@ -186,11 +199,9 @@ contract DeployOPSuccinctFDG is Script {
             accessManager
         );
 
-        GameType gameType = GameType.wrap(uint32(vm.envUintOr("GAME_TYPE")));
+        GameType gameType = GameType.wrap(uint32(vm.envUint("GAME_TYPE")));
 
         // Set initial bond and implementation in factory.
-        DisputeGameFactory factory = DisputeGameFactory(contracts.disputeGameFactoryAddress);
-
         factory.setImplementation(gameType, IDisputeGame(address(gameImpl)));
         factory.setInitBond(gameType, vm.envOr("INITIAL_BOND_WEI", uint256(0.001 ether)));
         IOptimismPortal2 portal = IOptimismPortal2(payable(contracts.portalAddress));
