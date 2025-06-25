@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.15;
+pragma solidity 0.8.20;
 
 // Libraries
 import {Clone} from "@solady/utils/Clone.sol";
@@ -219,7 +219,9 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         if (initialized) revert AlreadyInitialized();
 
         // INVARIANT: The game can only be initialized by the dispute game factory.
-        if (address(DISPUTE_GAME_FACTORY) != msg.sender) revert IncorrectDisputeGameFactory();
+        if (address(DISPUTE_GAME_FACTORY) != msg.sender) {
+            revert IncorrectDisputeGameFactory();
+        }
 
         // INVARIANT: The proposer must be whitelisted.
         if (!ACCESS_MANAGER.isAllowedProposer(gameCreator())) revert BadAuth();
@@ -270,7 +272,9 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
             });
 
             // INVARIANT: The parent game must be a valid game.
-            if (proxy.status() == GameStatus.CHALLENGER_WINS) revert InvalidParentGame();
+            if (proxy.status() == GameStatus.CHALLENGER_WINS) {
+                revert InvalidParentGame();
+            }
         } else {
             // When there is no parent game, the starting output root is the anchor state for the game type.
             (startingOutputRoot.root, startingOutputRoot.l2BlockNumber) =
@@ -334,7 +338,9 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     /// @notice Challenges the game.
     function challenge() external payable returns (ProposalStatus) {
         // INVARIANT: Can only challenge a game that has not been challenged yet.
-        if (claimData.status != ProposalStatus.Unchallenged) revert ClaimAlreadyChallenged();
+        if (claimData.status != ProposalStatus.Unchallenged) {
+            revert ClaimAlreadyChallenged();
+        }
 
         // INVARIANT: The challenger must be whitelisted.
         if (!ACCESS_MANAGER.isAllowedChallenger(msg.sender)) revert BadAuth();
@@ -421,7 +427,9 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
         // INVARIANT: Cannot resolve a game if the parent game has not been resolved.
         GameStatus parentGameStatus = getParentGameStatus();
-        if (parentGameStatus == GameStatus.IN_PROGRESS) revert ParentGameNotResolved();
+        if (parentGameStatus == GameStatus.IN_PROGRESS) {
+            revert ParentGameNotResolved();
+        }
 
         // INVARIANT: If the parent game's claim is invalid, then the current game's claim is invalid.
         if (parentGameStatus == GameStatus.CHALLENGER_WINS) {

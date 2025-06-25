@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.15;
+pragma solidity 0.8.20;
 
 /// @notice The public values committed to for an OP Succinct aggregation program.
 struct AggregationOutputs {

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.15;
+pragma solidity ^0.8.20;
 
 // Libraries
 import {Script} from "forge-std/Script.sol";
@@ -16,17 +16,13 @@ import {ISuperchainConfig} from "interfaces/L1/ISuperchainConfig.sol";
 import {IOptimismPortal2} from "interfaces/L1/IOptimismPortal2.sol";
 
 // Contracts
-import {AnchorStateRegistry} from "src/dispute/AnchorStateRegistry.sol";
 import {AccessManager} from "../../src/fp/AccessManager.sol";
-import {SuperchainConfig} from "src/L1/SuperchainConfig.sol";
-import {DisputeGameFactory} from "src/dispute/DisputeGameFactory.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {OPSuccinctFaultDisputeGame} from "../../src/fp/OPSuccinctFaultDisputeGame.sol";
 import {SP1MockVerifier} from "@sp1-contracts/src/SP1MockVerifier.sol";
 import {SP1Verifier} from "@sp1-contracts/src/v5.0.0/SP1VerifierGroth16.sol";
 
 // Utils
-import {MockOptimismPortal2} from "../../utils/MockOptimismPortal2.sol";
 
 struct OPContractAddresses {
     address anchorStateRegistryAddress;
@@ -45,55 +41,12 @@ contract DeployOPSuccinctFDG is Script {
 
     function getOrDeployOPContracts() internal returns (OPContractAddresses memory) {
         address factoryAddr = getAddrFromEnv("FACTORY_ADDRESS");
-        if (factoryAddr == address(0)) {
-            console.log("Deploying new DisputeGameFactory");
-            // Deploy factory proxy.
-            ERC1967Proxy factoryProxy = new ERC1967Proxy(
-                address(new DisputeGameFactory()),
-                abi.encodeWithSelector(DisputeGameFactory.initialize.selector, msg.sender)
-            );
-            factoryAddr = address(factoryProxy);
-        }
         address disputeGameFactoryAddress = factoryAddr;
-
-        GameType gameType = GameType.wrap(uint32(vm.envUint("GAME_TYPE")));
 
         address registryProxyAddr = getAddrFromEnv("ANCHOR_STATE_REGISTRY_ADDRESS");
 
         // Use provided OptimismPortal2 address if given, otherwise deploy MockOptimismPortal2.
         address portalAddress = getAddrFromEnv("OPTIMISM_PORTAL2_ADDRESS");
-        if (portalAddress == address(0)) {
-            MockOptimismPortal2 portal =
-                new MockOptimismPortal2(gameType, vm.envUint("DISPUTE_GAME_FINALITY_DELAY_SECONDS"));
-            portalAddress = address(portal);
-            console.log("Deployed MockOptimismPortal2:", portalAddress);
-        }
-        if (registryProxyAddr == address(0)) {
-            OutputRoot memory startingAnchorRoot = OutputRoot({
-                root: Hash.wrap(vm.envBytes32("STARTING_ROOT")),
-                l2BlockNumber: vm.envUint("STARTING_L2_BLOCK_NUMBER")
-            });
-
-            address superchainConfigAddress = getAddrFromEnv("SUPERCHAIN_CONFIG_ADDRESS");
-            if (superchainConfigAddress == address(0)) {
-                superchainConfigAddress = address(new SuperchainConfig());
-            }
-
-            // Deploy the anchor state registry proxy.
-            ERC1967Proxy registryProxy = new ERC1967Proxy(
-                address(new AnchorStateRegistry()),
-                abi.encodeCall(
-                    AnchorStateRegistry.initialize,
-                    (
-                        ISuperchainConfig(superchainConfigAddress),
-                        IDisputeGameFactory(disputeGameFactoryAddress),
-                        IOptimismPortal2(payable(portalAddress)),
-                        startingAnchorRoot
-                    )
-                )
-            );
-            registryProxyAddr = address(registryProxy);
-        }
         address anchorStateRegistryAddress = registryProxyAddr;
         console.log("Using AnchorStateRegistry:", anchorStateRegistryAddress);
         console.log("Using DisputeGameFactory:", disputeGameFactoryAddress);
@@ -148,7 +101,7 @@ contract DeployOPSuccinctFDG is Script {
             }
         }
 
-        DisputeGameFactory factory = DisputeGameFactory(contracts.disputeGameFactoryAddress);
+        IDisputeGameFactory factory = IDisputeGameFactory(contracts.disputeGameFactoryAddress);
 
         // Config values dependent on the `USE_SP1_MOCK_VERIFIER` flag.
         address sp1VerifierAddress;
