@@ -23,7 +23,7 @@ import {DisputeGameFactory} from "src/dispute/DisputeGameFactory.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {OPSuccinctFaultDisputeGame} from "../../src/fp/OPSuccinctFaultDisputeGame.sol";
 import {SP1MockVerifier} from "@sp1-contracts/src/SP1MockVerifier.sol";
-import {SP1Verifier} from "@sp1-contracts/src/v3.0.0/SP1VerifierGroth16.sol";
+import {SP1Verifier} from "@sp1-contracts/src/v5.0.0/SP1VerifierGroth16.sol";
 
 // Utils
 import {MockOptimismPortal2} from "../../utils/MockOptimismPortal2.sol";
