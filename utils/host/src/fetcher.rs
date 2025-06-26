@@ -16,10 +16,10 @@ use alloy_sol_types::SolValue;
 use anyhow::{bail, Result};
 use celo_alloy_consensus::CeloBlock;
 use celo_alloy_network::Celo;
+use celo_genesis::CeloRollupConfig;
 use celo_host::single::CeloSingleChainHost;
 use celo_protocol::CeloL2BlockInfo;
 use futures::{stream, StreamExt};
-use kona_genesis::RollupConfig;
 use kona_host::single::SingleChainHost;
 use kona_rpc::{OutputResponse, SafeHeadResponse};
 use op_alloy_network::{primitives::HeaderResponse, BlockResponse, Network};
@@ -38,7 +38,7 @@ pub struct OPSuccinctDataFetcher {
     pub rpc_config: RPCConfig,
     pub l1_provider: Arc<RootProvider>,
     pub l2_provider: Arc<RootProvider<Celo>>,
-    pub rollup_config: Option<RollupConfig>,
+    pub rollup_config: Option<CeloRollupConfig>,
     pub rollup_config_path: Option<PathBuf>,
 }
 
@@ -326,8 +326,8 @@ impl OPSuccinctDataFetcher {
     /// Fetch and save the rollup config to a temporary file.
     async fn fetch_and_save_rollup_config(
         rpc_config: &RPCConfig,
-    ) -> Result<(RollupConfig, PathBuf)> {
-        let rollup_config: RollupConfig =
+    ) -> Result<(CeloRollupConfig, PathBuf)> {
+        let rollup_config: CeloRollupConfig =
             Self::fetch_rpc_data(&rpc_config.l2_node_rpc, "optimism_rollupConfig", vec![]).await?;
 
         // Create configs directory if it doesn't exist
@@ -336,10 +336,75 @@ impl OPSuccinctDataFetcher {
 
         // Save rollup config to a file named by chain ID
         let rollup_config_path =
-            rollup_config_dir.join(format!("{}.json", rollup_config.l2_chain_id));
+            rollup_config_dir.join(format!("{}.json", rollup_config.op_rollup_config.l2_chain_id));
 
+        // TODO: find cleaner way
         // Write the rollup config to the file
-        let rollup_config_str = serde_json::to_string_pretty(&rollup_config)?;
+        let rollup_config_str = {
+            // Manually construct the JSON to match the RPC response format
+            let full_config = serde_json::json!({
+                "genesis": {
+                    "l1": {
+                        "hash": format!("0x{:x}", rollup_config.op_rollup_config.genesis.l1.hash),
+                        "number": rollup_config.op_rollup_config.genesis.l1.number,
+                    },
+                    "l2": {
+                        "hash": format!("0x{:x}", rollup_config.op_rollup_config.genesis.l2.hash),
+                        "number": rollup_config.op_rollup_config.genesis.l2.number,
+                    },
+                    "l2_time": rollup_config.op_rollup_config.genesis.l2_time,
+                    "system_config": rollup_config.op_rollup_config.genesis.system_config.as_ref().map(|sc| {
+                        serde_json::json!({
+                            "batcherAddr": format!("0x{:x}", sc.batcher_address),
+                            "overhead": format!("0x{:064x}", sc.overhead),
+                            "scalar": format!("0x{:064x}", sc.scalar),
+                            "gasLimit": sc.gas_limit,
+                            "eip1559Params": format!("0x{:016x}",
+                                (sc.eip1559_denominator.unwrap_or(0) as u64) |
+                                ((sc.eip1559_elasticity.unwrap_or(0) as u64) << 8)
+                            ),
+                            "operatorFeeParams": format!("0x{:064x}",
+                                (sc.operator_fee_scalar.unwrap_or(0) as u128) |
+                                ((sc.operator_fee_constant.unwrap_or(0) as u128) << 64)
+                            ),
+                        })
+                    }),
+                },
+                "block_time": rollup_config.op_rollup_config.block_time,
+                "max_sequencer_drift": rollup_config.op_rollup_config.max_sequencer_drift,
+                "seq_window_size": rollup_config.op_rollup_config.seq_window_size,
+                "channel_timeout": rollup_config.op_rollup_config.channel_timeout,
+                "l1_chain_id": rollup_config.op_rollup_config.l1_chain_id,
+                "l2_chain_id": rollup_config.op_rollup_config.l2_chain_id,
+                "regolith_time": rollup_config.op_rollup_config.hardforks.regolith_time.unwrap_or(0),
+                // "cel2_time": rollup_config.hardforks.cel2_time.unwrap_or(0),
+                "canyon_time": rollup_config.op_rollup_config.hardforks.canyon_time.unwrap_or(0),
+                "delta_time": rollup_config.op_rollup_config.hardforks.delta_time.unwrap_or(0),
+                "ecotone_time": rollup_config.op_rollup_config.hardforks.ecotone_time.unwrap_or(0),
+                "fjord_time": rollup_config.op_rollup_config.hardforks.fjord_time.unwrap_or(0),
+                "granite_time": rollup_config.op_rollup_config.hardforks.granite_time.unwrap_or(0),
+                "holocene_time": rollup_config.op_rollup_config.hardforks.holocene_time.unwrap_or(0),
+                "isthmus_time": rollup_config.op_rollup_config.hardforks.isthmus_time.unwrap_or(0),
+                "batch_inbox_address": format!("0x{:x}", rollup_config.op_rollup_config.batch_inbox_address),
+                "deposit_contract_address": format!("0x{:x}", rollup_config.op_rollup_config.deposit_contract_address),
+                "l1_system_config_address": format!("0x{:x}", rollup_config.op_rollup_config.l1_system_config_address),
+                "protocol_versions_address": format!("0x{:x}", rollup_config.op_rollup_config.protocol_versions_address),
+                "chain_op_config": {
+                    "eip1559Elasticity": rollup_config.op_rollup_config.chain_op_config.eip1559_elasticity,
+                    "eip1559Denominator": rollup_config.op_rollup_config.chain_op_config.eip1559_denominator,
+                    "eip1559DenominatorCanyon": rollup_config.op_rollup_config.chain_op_config.eip1559_denominator_canyon,
+                },
+                "alt_da": rollup_config.op_rollup_config.alt_da_config.as_ref().map(|alt_da| {
+                    serde_json::json!({
+                        "da_challenge_contract_address": alt_da.da_challenge_address.map(|addr| format!("0x{addr:x}")),
+                        "da_commitment_type": alt_da.da_commitment_type.as_deref(),
+                        "da_challenge_window": alt_da.da_challenge_window,
+                        "da_resolve_window": alt_da.da_resolve_window,
+                    })
+                }),
+            });
+            serde_json::to_string_pretty(&full_config)?
+        };
         fs::write(&rollup_config_path, rollup_config_str)?;
 
         // Return both the rollup config and the path to the temporary file
@@ -585,7 +650,7 @@ impl OPSuccinctDataFetcher {
         if self.rollup_config.is_none() {
             return Err(anyhow::anyhow!("Rollup config not loaded."));
         }
-        let genesis = self.rollup_config.as_ref().unwrap().genesis;
+        let genesis = self.rollup_config.as_ref().unwrap().op_rollup_config.genesis;
         let block = self.get_l2_block_by_number(block_number).await?;
         Ok(CeloL2BlockInfo::from_block_and_genesis(&block, &genesis)?)
     }

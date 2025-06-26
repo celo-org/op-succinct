@@ -123,7 +123,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 [[package]]
 name = "alloy-celo-evm"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0200f39991ecbf83157e1186b7c214c9b77af4c0#0200f39991ecbf83157e1186b7c214c9b77af4c0"
+source = "git+https://github.com/celo-org/celo-kona?rev=86da8c48ee196cec4892c6f4ff360813b143e7c9#86da8c48ee196cec4892c6f4ff360813b143e7c9"
 dependencies = [
  "alloy-consensus 0.15.11",
  "alloy-evm",
@@ -2305,7 +2305,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-consensus"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0200f39991ecbf83157e1186b7c214c9b77af4c0#0200f39991ecbf83157e1186b7c214c9b77af4c0"
+source = "git+https://github.com/celo-org/celo-kona?rev=86da8c48ee196cec4892c6f4ff360813b143e7c9#86da8c48ee196cec4892c6f4ff360813b143e7c9"
 dependencies = [
  "alloy-consensus 0.15.11",
  "alloy-eips 0.15.11",
@@ -2321,7 +2321,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-network"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0200f39991ecbf83157e1186b7c214c9b77af4c0#0200f39991ecbf83157e1186b7c214c9b77af4c0"
+source = "git+https://github.com/celo-org/celo-kona?rev=86da8c48ee196cec4892c6f4ff360813b143e7c9#86da8c48ee196cec4892c6f4ff360813b143e7c9"
 dependencies = [
  "alloy-consensus 0.15.11",
  "alloy-network 0.15.11",
@@ -2335,7 +2335,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-rpc-types"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0200f39991ecbf83157e1186b7c214c9b77af4c0#0200f39991ecbf83157e1186b7c214c9b77af4c0"
+source = "git+https://github.com/celo-org/celo-kona?rev=86da8c48ee196cec4892c6f4ff360813b143e7c9#86da8c48ee196cec4892c6f4ff360813b143e7c9"
 dependencies = [
  "alloy-consensus 0.15.11",
  "alloy-eips 0.15.11",
@@ -2354,7 +2354,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-rpc-types-engine"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0200f39991ecbf83157e1186b7c214c9b77af4c0#0200f39991ecbf83157e1186b7c214c9b77af4c0"
+source = "git+https://github.com/celo-org/celo-kona?rev=86da8c48ee196cec4892c6f4ff360813b143e7c9#86da8c48ee196cec4892c6f4ff360813b143e7c9"
 dependencies = [
  "alloy-consensus 0.15.11",
  "alloy-eips 0.15.11",
@@ -2370,7 +2370,7 @@ dependencies = [
 [[package]]
 name = "celo-client"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0200f39991ecbf83157e1186b7c214c9b77af4c0#0200f39991ecbf83157e1186b7c214c9b77af4c0"
+source = "git+https://github.com/celo-org/celo-kona?rev=86da8c48ee196cec4892c6f4ff360813b143e7c9#86da8c48ee196cec4892c6f4ff360813b143e7c9"
 dependencies = [
  "alloy-celo-evm",
  "alloy-consensus 0.15.11",
@@ -2383,6 +2383,7 @@ dependencies = [
  "async-trait",
  "celo-alloy-consensus",
  "celo-driver",
+ "celo-genesis",
  "celo-proof",
  "cfg-if",
  "kona-client",
@@ -2414,7 +2415,7 @@ dependencies = [
 [[package]]
 name = "celo-driver"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0200f39991ecbf83157e1186b7c214c9b77af4c0#0200f39991ecbf83157e1186b7c214c9b77af4c0"
+source = "git+https://github.com/celo-org/celo-kona?rev=86da8c48ee196cec4892c6f4ff360813b143e7c9#86da8c48ee196cec4892c6f4ff360813b143e7c9"
 dependencies = [
  "alloy-consensus 0.15.11",
  "alloy-evm",
@@ -2424,6 +2425,7 @@ dependencies = [
  "celo-alloy-consensus",
  "celo-alloy-rpc-types-engine",
  "celo-executor",
+ "celo-genesis",
  "celo-protocol",
  "kona-derive",
  "kona-driver",
@@ -2440,7 +2442,7 @@ dependencies = [
 [[package]]
 name = "celo-executor"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0200f39991ecbf83157e1186b7c214c9b77af4c0#0200f39991ecbf83157e1186b7c214c9b77af4c0"
+source = "git+https://github.com/celo-org/celo-kona?rev=86da8c48ee196cec4892c6f4ff360813b143e7c9#86da8c48ee196cec4892c6f4ff360813b143e7c9"
 dependencies = [
  "alloy-celo-evm",
  "alloy-consensus 0.15.11",
@@ -2453,6 +2455,7 @@ dependencies = [
  "alloy-trie",
  "celo-alloy-consensus",
  "celo-alloy-rpc-types-engine",
+ "celo-genesis",
  "celo-registry",
  "kona-executor",
  "kona-genesis",
@@ -2467,9 +2470,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "celo-genesis"
+version = "0.1.0"
+source = "git+https://github.com/celo-org/celo-kona?rev=86da8c48ee196cec4892c6f4ff360813b143e7c9#86da8c48ee196cec4892c6f4ff360813b143e7c9"
+dependencies = [
+ "alloy-consensus 0.15.11",
+ "alloy-eips 0.15.11",
+ "alloy-hardforks",
+ "alloy-op-hardforks",
+ "alloy-primitives",
+ "alloy-sol-types",
+ "derive_more 2.0.1",
+ "kona-genesis",
+ "kona-serde",
+ "op-revm",
+ "serde",
+ "serde_repr",
+ "thiserror 2.0.12",
+]
+
+[[package]]
 name = "celo-host"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0200f39991ecbf83157e1186b7c214c9b77af4c0#0200f39991ecbf83157e1186b7c214c9b77af4c0"
+source = "git+https://github.com/celo-org/celo-kona?rev=86da8c48ee196cec4892c6f4ff360813b143e7c9#86da8c48ee196cec4892c6f4ff360813b143e7c9"
 dependencies = [
  "alloy-celo-evm",
  "alloy-consensus 0.15.11",
@@ -2490,6 +2513,7 @@ dependencies = [
  "celo-alloy-network",
  "celo-alloy-rpc-types-engine",
  "celo-client",
+ "celo-genesis",
  "clap",
  "kona-cli",
  "kona-client",
@@ -2522,7 +2546,7 @@ dependencies = [
 [[package]]
 name = "celo-proof"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0200f39991ecbf83157e1186b7c214c9b77af4c0#0200f39991ecbf83157e1186b7c214c9b77af4c0"
+source = "git+https://github.com/celo-org/celo-kona?rev=86da8c48ee196cec4892c6f4ff360813b143e7c9#86da8c48ee196cec4892c6f4ff360813b143e7c9"
 dependencies = [
  "alloy-consensus 0.15.11",
  "alloy-eips 0.15.11",
@@ -2536,6 +2560,7 @@ dependencies = [
  "celo-alloy-rpc-types-engine",
  "celo-driver",
  "celo-executor",
+ "celo-genesis",
  "kona-derive",
  "kona-driver",
  "kona-executor",
@@ -2559,7 +2584,7 @@ dependencies = [
 [[package]]
 name = "celo-protocol"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0200f39991ecbf83157e1186b7c214c9b77af4c0#0200f39991ecbf83157e1186b7c214c9b77af4c0"
+source = "git+https://github.com/celo-org/celo-kona?rev=86da8c48ee196cec4892c6f4ff360813b143e7c9#86da8c48ee196cec4892c6f4ff360813b143e7c9"
 dependencies = [
  "alloc-no-stdlib",
  "alloy-consensus 0.15.11",
@@ -2587,10 +2612,11 @@ dependencies = [
 [[package]]
 name = "celo-registry"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0200f39991ecbf83157e1186b7c214c9b77af4c0#0200f39991ecbf83157e1186b7c214c9b77af4c0"
+source = "git+https://github.com/celo-org/celo-kona?rev=86da8c48ee196cec4892c6f4ff360813b143e7c9#86da8c48ee196cec4892c6f4ff360813b143e7c9"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
+ "celo-genesis",
  "kona-genesis",
  "kona-registry",
  "lazy_static",
@@ -2602,7 +2628,7 @@ dependencies = [
 [[package]]
 name = "celo-revm"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0200f39991ecbf83157e1186b7c214c9b77af4c0#0200f39991ecbf83157e1186b7c214c9b77af4c0"
+source = "git+https://github.com/celo-org/celo-kona?rev=86da8c48ee196cec4892c6f4ff360813b143e7c9#86da8c48ee196cec4892c6f4ff360813b143e7c9"
 dependencies = [
  "alloy-eips 0.15.11",
  "alloy-evm",
@@ -7400,6 +7426,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "celo-genesis",
  "hana-celestia",
  "hana-oracle",
  "kona-derive",
@@ -7453,6 +7480,7 @@ dependencies = [
  "celo-alloy-consensus",
  "celo-alloy-rpc-types-engine",
  "celo-driver",
+ "celo-genesis",
  "celo-proof",
  "celo-protocol",
  "cfg-if",
@@ -7485,6 +7513,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "celo-genesis",
  "kona-derive",
  "kona-driver",
  "kona-executor",
@@ -7568,6 +7597,7 @@ dependencies = [
  "c-kzg",
  "celo-alloy-consensus",
  "celo-alloy-network",
+ "celo-genesis",
  "celo-host",
  "celo-protocol",
  "cfg-if",
@@ -7629,6 +7659,7 @@ dependencies = [
  "op-succinct-proof-utils",
  "op-succinct-scripts",
  "reqwest",
+ "rustls",
  "serde_json",
  "sp1-sdk",
  "tokio",
@@ -7640,6 +7671,7 @@ name = "op-succinct-range-utils"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "celo-genesis",
  "kona-proof",
  "op-succinct-client-utils",
  "rkyv",

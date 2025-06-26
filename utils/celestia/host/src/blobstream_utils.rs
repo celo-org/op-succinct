@@ -81,7 +81,7 @@ pub fn extract_celestia_height(tx: &EthTransaction) -> Result<Option<u64>> {
 /// Get the latest Celestia block height that has been committed to Ethereum via Blobstream.
 pub async fn get_latest_blobstream_celestia_block(fetcher: &OPSuccinctDataFetcher) -> Result<u64> {
     let blobstream_contract = SP1Blobstream::new(
-        blobstream_address(fetcher.rollup_config.as_ref().unwrap().l1_chain_id)
+        blobstream_address(fetcher.rollup_config.as_ref().unwrap().op_rollup_config.l1_chain_id)
             .expect("Failed to fetch blobstream contract address"),
         fetcher.l1_provider.clone(),
     );
@@ -122,8 +122,9 @@ pub async fn get_celestia_safe_head_info(
     let rollup_config =
         fetcher.rollup_config.as_ref().ok_or_else(|| anyhow!("Rollup config not found"))?;
 
-    let batch_inbox_address = rollup_config.batch_inbox_address;
+    let batch_inbox_address = rollup_config.op_rollup_config.batch_inbox_address;
     let batcher_address = rollup_config
+        .op_rollup_config
         .genesis
         .system_config
         .as_ref()
