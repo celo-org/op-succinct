@@ -5,6 +5,8 @@ members = [
     "utils/build",
     "utils/celestia/client",
     "utils/celestia/host",
+    "utils/eigenda/client",
+    "utils/eigenda/host",
     "utils/proof",
     "utils/signer",
     "utils/ethereum/client",
@@ -103,10 +105,18 @@ celo-genesis = { git = "https://github.com/celo-org/celo-kona", rev = "518ecf750
 
 # hana
 # TODO(fakedev9999): Bump to 1.0.0 once the release is out.
-hana-blobstream = { git = "https://github.com/celestiaorg/hana", rev = "ebb7cf711c3f2eba951f3fb3211c1cb1f87475dc" }
-hana-celestia = { git = "https://github.com/celestiaorg/hana", rev = "ebb7cf711c3f2eba951f3fb3211c1cb1f87475dc" }
-hana-host = { git = "https://github.com/celestiaorg/hana", rev = "ebb7cf711c3f2eba951f3fb3211c1cb1f87475dc" }
-hana-oracle = { git = "https://github.com/celestiaorg/hana", rev = "ebb7cf711c3f2eba951f3fb3211c1cb1f87475dc" }
+hana-blobstream = { git = "https://github.com/celestiaorg/hana", rev = "61e4e26" }
+hana-celestia = { git = "https://github.com/celestiaorg/hana", rev = "61e4e26" }
+hana-host = { git = "https://github.com/celestiaorg/hana", rev = "61e4e26" }
+hana-oracle = { git = "https://github.com/celestiaorg/hana", rev = "61e4e26" }
+
+# hokulea
+hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", rev = "d635b67da5f2377524d6dd4f1396fe8e7e7d761d" }
+hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", rev = "d635b67da5f2377524d6dd4f1396fe8e7e7d761d" }
+hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", rev = "d635b67da5f2377524d6dd4f1396fe8e7e7d761d" }
+hokulea-witgen = { git = "https://github.com/Layr-Labs/hokulea", rev = "d635b67da5f2377524d6dd4f1396fe8e7e7d761d" }
+hokulea-zkvm-verification = { git = "https://github.com/Layr-Labs/hokulea", rev = "d635b67da5f2377524d6dd4f1396fe8e7e7d761d" }
+canoe-sp1-cc-host = { git = "https://github.com/Layr-Labs/hokulea", rev = "d635b67da5f2377524d6dd4f1396fe8e7e7d761d" }
 
 # op-succinct
 op-succinct-prove = { path = "scripts/prove" }
@@ -120,6 +130,8 @@ op-succinct-ethereum-client-utils = { path = "utils/ethereum/client" }
 op-succinct-ethereum-host-utils = { path = "utils/ethereum/host" }
 op-succinct-celestia-client-utils = { path = "utils/celestia/client" }
 op-succinct-celestia-host-utils = { path = "utils/celestia/host" }
+op-succinct-eigenda-client-utils = { path = "utils/eigenda/client" }
+op-succinct-eigenda-host-utils = { path = "utils/eigenda/host" }
 op-succinct-proof-utils = { path = "utils/proof" }
 op-succinct-signer-utils = { path = "utils/signer" }
 op-succinct-range-utils = { path = "programs/range/utils" }
@@ -129,7 +141,7 @@ op-succinct-bindings = { path = "bindings" }
 alloy-signer-local = { version = "1.0.9" }
 alloy-provider = { version = "1.0.9" }
 alloy-transport = { version = "1.0.9" }
-alloy-transport-http = { version = "1.0.9" }
+alloy-transport-http = { version = "=1.0.9" }
 alloy-contract = { version = "1.0.9" }
 alloy-network = { version = "1.0.9" }
 
@@ -189,10 +201,10 @@ op-revm = { version = "5.0.1", default-features = false }
 alloy-celo-evm = { git = "https://github.com/celo-org/celo-kona", rev = "518ecf750ee188b0c8e2250cad530429aaf26b32", default-features = false }
 
 # SP1
-sp1-sdk = { version = "=5.1.0" }
-sp1-lib = { version = "=5.1.0", features = ["verify"] }
-sp1-zkvm = { version = "=5.1.0", features = ["verify"] }
-sp1-build = { version = "=5.1.0" }
+sp1-sdk = { version = "5.0.8" }
+sp1-lib = { version = "5.0.8", features = ["verify"] }
+sp1-zkvm = { version = "5.0.8", features = ["verify"] }
+sp1-build = { version = "5.0.8" }
 
 # kzg
 kzg-rs = { version = "0.2.6", features = ["rkyv", "serde"] }
@@ -206,7 +218,7 @@ lto = "fat"
 
 [patch.crates-io]
 tiny-keccak = { git = "https://github.com/sp1-patches/tiny-keccak", tag = "patch-2.0.2-sp1-4.0.0" }
-sha2 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", package = "sha2", tag = "patch-sha2-0.10.8-sp1-4.0.0" }
+sha2 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", package = "sha2", tag = "patch-sha2-0.10.9-sp1-4.0.0" }
 substrate-bn = { git = "https://github.com/sp1-patches/bn", tag = "patch-0.6.0-sp1-5.0.0" }
 sha3 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", package = "sha3", tag = "patch-sha3-0.10.8-sp1-4.0.0" }
 p256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-p256-13.2-sp1-5.0.0" }

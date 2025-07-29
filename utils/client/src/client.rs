@@ -165,8 +165,9 @@ where
             body: BlockBody {
                 transactions: attributes
                     .transactions
-                    .unwrap_or_default()
-                    .into_iter()
+                    .as_ref()
+                    .unwrap_or(&Vec::new())
+                    .iter()
                     .map(|tx| CeloTxEnvelope::decode(&mut tx.as_ref()).map_err(DriverError::Rlp))
                     .collect::<DriverResult<Vec<CeloTxEnvelope>, E::Error>>()?,
                 ommers: Vec::new(),
