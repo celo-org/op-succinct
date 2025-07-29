@@ -9,7 +9,7 @@ use op_revm::{
 use revm::{
     context::{Cfg, ContextTr},
     handler::{EthPrecompiles, PrecompileProvider},
-    interpreter::{Gas, InputsImpl, InstructionResult, InterpreterResult},
+    interpreter::{CallInput, Gas, InputsImpl, InstructionResult, InterpreterResult},
     precompile::{bn128, PrecompileError, PrecompileResult, PrecompileWithAddress, Precompiles},
     primitives::hardfork::SpecId,
 };
@@ -119,32 +119,25 @@ where
         };
 
         use revm::context::LocalContextTr;
+        // NOTE: this snippet is refactored from the revm source code.
+        // See https://github.com/bluealloy/revm/blob/9bc0c04fda0891e0e8d2e2a6dfd0af81c2af18c4/crates/handler/src/precompile_provider.rs#L111-L122.
+        let shared_buffer;
+        let input_bytes = match &inputs.input {
+            CallInput::SharedBuffer(range) => {
+                shared_buffer = context.local().shared_memory_buffer_slice(range.clone());
+                shared_buffer.as_deref().unwrap_or(&[])
+            }
+            CallInput::Bytes(bytes) => bytes.0.iter().as_slice(),
+        };
 
         // Priority:
         // 1. If the precompile has an accelerated version, use that.
         // 2. If the precompile is not accelerated, use the default version.
         // 3. If the precompile is not found, return None.
-        let output = match &inputs.input {
-            revm::interpreter::CallInput::Bytes(bytes) => {
-                if let Some(precompile) = self.inner.precompiles.get(address) {
-                    (*precompile)(bytes, gas_limit)
-                } else {
-                    return Ok(None);
-                }
-            }
-            revm::interpreter::CallInput::SharedBuffer(range) => {
-                if let Some(precompile) = self.inner.precompiles.get(address) {
-                    if let Some(buffer_slice) =
-                        context.local().shared_memory_buffer_slice(range.clone())
-                    {
-                        (*precompile)(&buffer_slice, gas_limit)
-                    } else {
-                        (*precompile)(&[], gas_limit)
-                    }
-                } else {
-                    return Ok(None);
-                }
-            }
+        let output = if let Some(precompile) = self.inner.precompiles.get(address) {
+            (*precompile)(input_bytes, gas_limit)
+        } else {
+            return Ok(None);
         };
 
         match output {

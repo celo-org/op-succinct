@@ -132,7 +132,7 @@ where
                     // Strip out all transactions that are not deposits.
                     attributes.transactions = attributes.transactions.map(|txs| {
                         txs.into_iter()
-                            .filter(|tx| (!tx.is_empty() && tx[0] == CeloTxType::Deposit as u8))
+                            .filter(|tx| !tx.is_empty() && tx[0] == CeloTxType::Deposit as u8)
                             .collect::<Vec<_>>()
                     });
 
@@ -165,9 +165,8 @@ where
             body: BlockBody {
                 transactions: attributes
                     .transactions
-                    .as_ref()
-                    .unwrap_or(&Vec::new())
-                    .iter()
+                    .unwrap_or_default()
+                    .into_iter()
                     .map(|tx| CeloTxEnvelope::decode(&mut tx.as_ref()).map_err(DriverError::Rlp))
                     .collect::<DriverResult<Vec<CeloTxEnvelope>, E::Error>>()?,
                 ommers: Vec::new(),
