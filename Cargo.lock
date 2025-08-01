@@ -8893,6 +8893,7 @@ dependencies = [
  "op-succinct-host-utils",
  "op-succinct-proof-utils",
  "rayon",
+ "rustls",
  "serde",
  "serde_json",
  "sp1-sdk",

@@ -186,6 +186,8 @@ fn aggregate_execution_stats(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider()).unwrap();
+
     let args = HostExecutorArgs::parse();
 
     dotenv::from_path(&args.env_file).ok();
