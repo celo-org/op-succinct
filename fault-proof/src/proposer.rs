@@ -188,7 +188,7 @@ where
                 .network_prover
                 .prove(&self.prover.range_pk, &sp1_stdin)
                 .compressed()
-                .strategy(FulfillmentStrategy::Hosted)
+                .strategy(FulfillmentStrategy::Reserved)
                 .skip_simulation(true)
                 .cycle_limit(self.config.cycle_limit)
                 .run_async()
@@ -247,6 +247,7 @@ where
             self.prover
                 .network_prover
                 .prove(&self.prover.agg_pk, &sp1_stdin)
+                .strategy(FulfillmentStrategy::Reserved)
                 .groth16()
                 .run_async()
                 .await?
