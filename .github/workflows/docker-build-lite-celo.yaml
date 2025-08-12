@@ -68,9 +68,7 @@ jobs:
           push: true
           tags: ${{ steps.meta-proposer.outputs.tags }}
           labels: ${{ steps.meta-proposer.outputs.labels }}
-          platforms: |
-            linux/amd64
-            linux/arm64
+          platforms: linux/amd64
           cache-from: type=registry,ref=${{ env.REGISTRY_URL }}/proposer-buildcache:buildcache
           cache-to: type=registry,mode=max,ref=${{ env.REGISTRY_URL }}/proposer-buildcache:buildcache
 
@@ -82,8 +80,6 @@ jobs:
           push: true
           tags: ${{ steps.meta-challenger.outputs.tags }}
           labels: ${{ steps.meta-challenger.outputs.labels }}
-          platforms: |
-            linux/amd64
-            linux/arm64
+          platforms: linux/amd64
           cache-from: type=registry,ref=${{ env.REGISTRY_URL }}/challenger-buildcache:buildcache
           cache-to: type=registry,mode=max,ref=${{ env.REGISTRY_URL }}/challenger-buildcache:buildcache
