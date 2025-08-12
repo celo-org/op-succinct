@@ -42,6 +42,7 @@ jobs:
             type=semver,pattern={{version}}
             type=edge
             type=sha
+            type=raw,value=latest
 
       - name: Docker meta for challenger
         id: meta-challenger
@@ -52,6 +53,7 @@ jobs:
             type=semver,pattern={{version}}
             type=edge
             type=sha
+            type=raw,value=latest
 
       - name: Login at GCP Artifact Registry
         uses: celo-org/reusable-workflows/.github/actions/auth-gcp-artifact-registry@v2.0
