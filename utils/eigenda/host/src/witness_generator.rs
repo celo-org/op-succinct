@@ -59,14 +59,11 @@ impl WitnessGenerator for EigenDAWitnessGenerator {
             let (_pk, canoe_vk) = client.setup(CANOE_ELF);
 
             // Deserialize and write canoe proofs, skipping None values
-            for (_, cert_validity) in eigenda_blob_witness_data.validity.iter() {
-                if let Some(proof_bytes) = &cert_validity.canoe_proof {
-                    let reduced_proof: SP1ReduceProof<InnerSC> =
-                        serde_cbor::from_slice(proof_bytes)
-                            .expect("Failed to deserialize canoe proof");
-                    stdin.write_proof(reduced_proof, canoe_vk.vk.clone());
-                }
-            }
+            let proof_bytes = &eigenda_blob_witness_data.canoe_proof_bytes.unwrap();
+            let reduced_proof: SP1ReduceProof<InnerSC> =
+                serde_cbor::from_slice(proof_bytes)
+                    .expect("Failed to deserialize canoe proof");
+            stdin.write_proof(reduced_proof, canoe_vk.vk.clone());
         }
 
         // Write the witness data after the proofs
@@ -136,7 +133,7 @@ impl WitnessGenerator for EigenDAWitnessGenerator {
         let canoe_provider = CanoeSp1CCReducedProofProvider {
             eth_rpc_url: std::env::var("L1_RPC").ok().unwrap_or_default(),
         };
-        let canoe_proofs = hokulea_witgen::from_boot_info_to_canoe_proof(
+        let canoe_proof = hokulea_witgen::from_boot_info_to_canoe_proof(
             &boot_info,
             &eigenda_witness_data,
             oracle.clone(),
@@ -145,13 +142,8 @@ impl WitnessGenerator for EigenDAWitnessGenerator {
         .await?;
 
         // Populate canoe proof for witness data
-        for ((_, cert_validity), canoe_proof) in
-            eigenda_witness_data.validity.iter_mut().zip(canoe_proofs.iter())
-        {
-            let canoe_proof_bytes =
-                serde_cbor::to_vec(&canoe_proof).expect("Failed to serialize canoe proof");
-            cert_validity.canoe_proof = Some(canoe_proof_bytes);
-        }
+        let canoe_proof_bytes = serde_cbor::to_vec(&canoe_proof).expect("Failed to serialize canoe proof");
+        eigenda_witness_data.canoe_proof_bytes = Some(canoe_proof_bytes);
 
         let eigenda_witness_bytes = serde_cbor::to_vec(&eigenda_witness_data)
             .expect("Failed to serialize EigenDA witness data");
