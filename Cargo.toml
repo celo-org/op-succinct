@@ -26,7 +26,7 @@ edition = "2021"
 authors = ["ratankaliani", "zachobront", "fakedev9999", "yuwen01"]
 homepage = "https://succinctlabs.github.io/op-succinct/"
 repository = "https://github.com/succinctlabs/op-succinct"
-version = "3.0.0-rc.1"
+version = "3.0.0"
 
 [workspace.dependencies]
 # general
@@ -105,10 +105,10 @@ celo-genesis = { git = "https://github.com/celo-org/celo-kona", rev = "cf02eb09f
 
 # hana
 # TODO(fakedev9999): Bump to 1.0.0 once the release is out.
-hana-blobstream = { git = "https://github.com/celestiaorg/hana", rev = "61e4e26" }
-hana-celestia = { git = "https://github.com/celestiaorg/hana", rev = "61e4e26" }
-hana-host = { git = "https://github.com/celestiaorg/hana", rev = "61e4e26" }
-hana-oracle = { git = "https://github.com/celestiaorg/hana", rev = "61e4e26" }
+hana-blobstream = { git = "https://github.com/celestiaorg/hana", tag = "v0.1.0-beta.17" }
+hana-celestia = { git = "https://github.com/celestiaorg/hana", tag = "v0.1.0-beta.17" }
+hana-host = { git = "https://github.com/celestiaorg/hana", tag = "v0.1.0-beta.17" }
+hana-oracle = { git = "https://github.com/celestiaorg/hana", tag = "v0.1.0-beta.17" }
 
 # hokulea
 hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", rev = "d635b67da5f2377524d6dd4f1396fe8e7e7d761d" }
@@ -141,13 +141,15 @@ op-succinct-bindings = { path = "bindings" }
 alloy-signer-local = { version = "1.0.9" }
 alloy-provider = { version = "1.0.9" }
 alloy-transport = { version = "1.0.9" }
-alloy-transport-http = { version = "=1.0.9" }
+alloy-transport-http = { version = "1.0.9" }
 alloy-contract = { version = "1.0.9" }
 alloy-network = { version = "1.0.9" }
 
 # Alloy
 alloy-rlp = { version = "0.3.12", default-features = false }
-alloy-trie = { version = "0.8.1", default-features = false, features = ["ethereum"] }
+alloy-trie = { version = "0.8.1", default-features = false, features = [
+    "ethereum",
+] }
 alloy-eips = { version = "1.0.9", default-features = false }
 alloy-serde = { version = "1.0.9", default-features = false }
 alloy-consensus = { version = "1.0.9", default-features = false }
@@ -201,10 +203,10 @@ op-revm = { version = "5.0.1", default-features = false }
 alloy-celo-evm = { git = "https://github.com/celo-org/celo-kona", rev = "cf02eb09f97137969218e5175280eaa45d1c0547", default-features = false }
 
 # SP1
-sp1-sdk = { version = "5.0.8" }
-sp1-lib = { version = "5.0.8", features = ["verify"] }
-sp1-zkvm = { version = "5.0.8", features = ["verify"] }
-sp1-build = { version = "5.0.8" }
+sp1-sdk = { version = "=5.1.0" }
+sp1-lib = { version = "=5.1.0", features = ["verify"] }
+sp1-zkvm = { version = "=5.1.0", features = ["verify"] }
+sp1-build = { version = "=5.1.0" }
 
 # kzg
 kzg-rs = { version = "0.2.6", features = ["rkyv", "serde"] }
