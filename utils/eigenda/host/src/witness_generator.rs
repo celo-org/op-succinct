@@ -46,24 +46,25 @@ impl WitnessGenerator for EigenDAWitnessGenerator {
     fn get_sp1_stdin(&self, witness: Self::WitnessData) -> Result<SP1Stdin> {
         let mut stdin = SP1Stdin::new();
 
-        // If eigenda blob witness data is present, write the canoe proofs to stdin
+        // If eigenda blob witness data is present, write the canoe proof to stdin
         if let Some(eigenda_data) = &witness.eigenda_data {
             let eigenda_blob_witness_data: EigenDABlobWitnessData =
                 serde_cbor::from_slice(eigenda_data)
                     .expect("Failed to deserialize EigenDA blob witness data");
 
-            // Get the canoe SP1 CC client ELF and setup verification key
-            // The ELF is included in the canoe-sp1-cc-host crate
-            const CANOE_ELF: &[u8] = canoe_sp1_cc_host::ELF;
-            let client = ProverClient::from_env();
-            let (_pk, canoe_vk) = client.setup(CANOE_ELF);
+            // If there's a canoe proof, deserialize and write it
+            if let Some(proof_bytes) = &eigenda_blob_witness_data.canoe_proof_bytes {
+                // Get the canoe SP1 CC client ELF and setup verification key
+                // The ELF is included in the canoe-sp1-cc-host crate
+                const CANOE_ELF: &[u8] = canoe_sp1_cc_host::ELF;
+                let client = ProverClient::from_env();
+                let (_pk, canoe_vk) = client.setup(CANOE_ELF);
 
-            // Deserialize and write canoe proofs, skipping None values
-            let proof_bytes = &eigenda_blob_witness_data.canoe_proof_bytes.unwrap();
-            let reduced_proof: SP1ReduceProof<InnerSC> =
-                serde_cbor::from_slice(proof_bytes)
-                    .expect("Failed to deserialize canoe proof");
-            stdin.write_proof(reduced_proof, canoe_vk.vk.clone());
+                let reduced_proof: SP1ReduceProof<InnerSC> =
+                    serde_cbor::from_slice(proof_bytes)
+                        .expect("Failed to deserialize canoe proof");
+                stdin.write_proof(reduced_proof, canoe_vk.vk.clone());
+            }
         }
 
         // Write the witness data after the proofs
@@ -133,7 +134,7 @@ impl WitnessGenerator for EigenDAWitnessGenerator {
         let canoe_provider = CanoeSp1CCReducedProofProvider {
             eth_rpc_url: std::env::var("L1_RPC").ok().unwrap_or_default(),
         };
-        let canoe_proof = hokulea_witgen::from_boot_info_to_canoe_proof(
+        let canoe_proofs = hokulea_witgen::from_boot_info_to_canoe_proof(
             &boot_info,
             &eigenda_witness_data,
             oracle.clone(),
@@ -141,8 +142,9 @@ impl WitnessGenerator for EigenDAWitnessGenerator {
         )
         .await?;
 
-        // Populate canoe proof for witness data
-        let canoe_proof_bytes = serde_cbor::to_vec(&canoe_proof).expect("Failed to serialize canoe proof");
+        // Store the canoe proof in the witness data
+        let canoe_proof_bytes =
+            serde_cbor::to_vec(&canoe_proofs).expect("Failed to serialize canoe proof");
         eigenda_witness_data.canoe_proof_bytes = Some(canoe_proof_bytes);
 
         let eigenda_witness_bytes = serde_cbor::to_vec(&eigenda_witness_data)
