@@ -75,7 +75,7 @@ contract DeployOPSuccinctFDG is Script, Utils {
     function deployContracts(FDGConfig memory config) internal returns (DeployedContracts memory) {
         // Deploy factory proxy.
         ERC1967Proxy factoryProxy = new ERC1967Proxy(
-            address(new DisputeGameFactory()),
+            address(new DisputeGameFactory()), // 1.0.1
             abi.encodeWithSelector(DisputeGameFactory.initialize.selector, msg.sender)
         );
         DisputeGameFactory factory = DisputeGameFactory(address(factoryProxy));
@@ -89,7 +89,7 @@ contract DeployOPSuccinctFDG is Script, Utils {
             OutputRoot({root: Hash.wrap(config.startingRoot), l2BlockNumber: config.startingL2BlockNumber});
 
         // Deploy anchor state registry
-        AnchorStateRegistry registry = deployAnchorStateRegistry(factory, portalAddress, startingAnchorRoot);
+        AnchorStateRegistry registry = deployAnchorStateRegistry(factory, portalAddress, config.celoSuperchainConfigAddress, startingAnchorRoot);
 
         // Deploy and configure access manager
         AccessManager accessManager = deployAccessManager(config, address(factoryProxy));
@@ -104,6 +104,9 @@ contract DeployOPSuccinctFDG is Script, Utils {
         // Set initial bond and implementation in factory.
         factory.setInitBond(gameType, config.initialBondWei);
         factory.setImplementation(gameType, IDisputeGame(address(gameImpl)));
+
+        // Set respected game type
+        IOptimismPortal2(portalAddress).setRespectedGameType(gameType);
 
         // Create deployed contracts struct
         DeployedContracts memory deployedContracts = DeployedContracts({
@@ -136,21 +139,22 @@ contract DeployOPSuccinctFDG is Script, Utils {
             config.challengerBondWei,
             IAnchorStateRegistry(address(registry)),
             accessManager
-        );
+        ); // compatible with 1.4.0
     }
 
     function deployAnchorStateRegistry(
         DisputeGameFactory factory,
         address payable portalAddress,
+        address celoSuperchainConfig, // Celo-specific
         OutputRoot memory startingAnchorRoot
     ) internal returns (AnchorStateRegistry) {
         // Deploy the anchor state registry proxy.
         ERC1967Proxy registryProxy = new ERC1967Proxy(
-            address(new AnchorStateRegistry()),
+            address(new AnchorStateRegistry()), // 2.2.0-2.2.2
             abi.encodeCall(
                 AnchorStateRegistry.initialize,
                 (
-                    ISuperchainConfig(address(new SuperchainConfig())),
+                    ISuperchainConfig(celoSuperchainConfig), // 1.2.0 -> re-use config
                     IDisputeGameFactory(address(factory)),
                     IOptimismPortal2(portalAddress),
                     startingAnchorRoot
@@ -172,9 +176,10 @@ contract DeployOPSuccinctFDG is Script, Utils {
             portalAddress = payable(config.optimismPortal2Address);
             console.log("Using existing OptimismPortal2:", portalAddress);
         } else {
-            MockOptimismPortal2 portal = new MockOptimismPortal2(gameType, config.disputeGameFinalityDelaySeconds);
-            portalAddress = payable(address(portal));
-            console.log("Deployed MockOptimismPortal2:", portalAddress);
+            // MockOptimismPortal2 portal = new MockOptimismPortal2(gameType, config.disputeGameFinalityDelaySeconds);
+            // portalAddress = payable(address(portal));
+            // console.log("Deployed MockOptimismPortal2:", portalAddress);
+            revert("Mocking OptimismPortal2 not supported!");
         }
         return portalAddress;
     }
@@ -191,10 +196,12 @@ contract DeployOPSuccinctFDG is Script, Utils {
             SP1MockVerifier sp1Verifier = new SP1MockVerifier();
             sp1Config.verifierAddress = address(sp1Verifier);
             console.log("Using SP1 Mock Verifier:", address(sp1Verifier));
-        } else {
+        } else if (config.verifierAddress != address(0)) {
             // Use provided verifier address for production.
             sp1Config.verifierAddress = config.verifierAddress;
             console.log("Using SP1 Verifier Gateway:", sp1Config.verifierAddress);
+        } else {
+            revert("Verifier address cannot be 0!");
         }
 
         return sp1Config;

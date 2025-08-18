@@ -166,8 +166,12 @@ async fn update_fdg_config() -> Result<()> {
 
     let starting_output_root = optimism_output_data["outputRoot"].as_str().unwrap().to_string();
 
+    // @Celo: CeloSuperchainConfig address
+    let celo_superchain_config_address = env::var("CELO_SUPERCHAIN_CONFIG_ADDRESS").unwrap();
+
     let fdg_config = FaultDisputeGameConfig {
         aggregation_vkey: shared_config.aggregation_vkey,
+        celo_superchain_config_address,
         challenger_addresses,
         challenger_bond_wei,
         dispute_game_finality_delay_seconds,

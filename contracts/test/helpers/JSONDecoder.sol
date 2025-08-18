@@ -30,6 +30,7 @@ contract JSONDecoder {
 
     struct FDGConfig {
         bytes32 aggregationVkey;
+        address celoSuperchainConfigAddress; // Celo-specific
         address[] challengerAddresses;
         uint256 challengerBondWei;
         uint256 disputeGameFinalityDelaySeconds;
