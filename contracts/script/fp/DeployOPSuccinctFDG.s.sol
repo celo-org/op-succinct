@@ -98,8 +98,11 @@ contract DeployOPSuccinctFDG is Script, Utils {
             registry = AnchorStateRegistry(config.anchorStateRegistryAddress);
             console.log("Anchor state registry:", address(registry));
         } else {
-            OutputRoot memory startingAnchorRoot = OutputRoot({root: Hash.wrap(config.startingRoot), l2BlockNumber: config.startingL2BlockNumber});
-            registry = deployAnchorStateRegistry(factory, portalAddress, config.celoSuperchainConfigAddress, startingAnchorRoot);
+            OutputRoot memory startingAnchorRoot =
+                OutputRoot({root: Hash.wrap(config.startingRoot), l2BlockNumber: config.startingL2BlockNumber});
+            registry = deployAnchorStateRegistry(
+                factory, portalAddress, config.celoSuperchainConfigAddress, startingAnchorRoot
+            );
         }
 
         // Deploy and configure access manager
