@@ -73,23 +73,34 @@ contract DeployOPSuccinctFDG is Script, Utils {
     }
 
     function deployContracts(FDGConfig memory config) internal returns (DeployedContracts memory) {
-        // Deploy factory proxy.
-        ERC1967Proxy factoryProxy = new ERC1967Proxy(
-            address(new DisputeGameFactory()), // 1.0.1
-            abi.encodeWithSelector(DisputeGameFactory.initialize.selector, msg.sender)
-        );
-        DisputeGameFactory factory = DisputeGameFactory(address(factoryProxy));
-
         GameType gameType = GameType.wrap(config.gameType);
+
+        // Load or deploy factory proxy.
+        ERC1967Proxy factoryProxy;
+        DisputeGameFactory factory;
+        if (config.disputeGameFactoryAddress != address(0)) {
+            factoryProxy = ERC1967Proxy(payable(config.disputeGameFactoryAddress));
+            factory = DisputeGameFactory(config.disputeGameFactoryAddress);
+        } else {
+            factoryProxy = new ERC1967Proxy(
+                address(new DisputeGameFactory()), // 1.0.1
+                abi.encodeWithSelector(DisputeGameFactory.initialize.selector, msg.sender)
+            );
+            factory = DisputeGameFactory(address(factoryProxy));
+        }
 
         // Deploy MockOptimismPortal2 or get OptimismPortal2
         address payable portalAddress = deployOrGetOptimismPortal2(config, gameType);
 
-        OutputRoot memory startingAnchorRoot =
-            OutputRoot({root: Hash.wrap(config.startingRoot), l2BlockNumber: config.startingL2BlockNumber});
-
         // Deploy anchor state registry
-        AnchorStateRegistry registry = deployAnchorStateRegistry(factory, portalAddress, config.celoSuperchainConfigAddress, startingAnchorRoot);
+        AnchorStateRegistry registry;
+        if (config.anchorStateRegistryAddress != address(0)) {
+            registry = AnchorStateRegistry(config.anchorStateRegistryAddress);
+            console.log("Anchor state registry:", address(registry));
+        } else {
+            OutputRoot memory startingAnchorRoot = OutputRoot({root: Hash.wrap(config.startingRoot), l2BlockNumber: config.startingL2BlockNumber});
+            registry = deployAnchorStateRegistry(factory, portalAddress, config.celoSuperchainConfigAddress, startingAnchorRoot);
+        }
 
         // Deploy and configure access manager
         AccessManager accessManager = deployAccessManager(config, address(factoryProxy));

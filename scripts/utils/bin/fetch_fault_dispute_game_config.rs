@@ -58,6 +58,11 @@ use serde_json::Value;
 ///   If not provided, it's calculated as: `latest_finalized_block -
 ///   (dispute_game_finality_delay_seconds / block_time)`
 ///
+/// ## Celo-specific Configuration
+/// - `CELO_SUPERCHAIN_CONFIG_ADDRESS` - Will avoid re-creating new SuperchainConfig while creating new AnchorStateRegistry
+/// - `ANCHOR_STATE_REGISTRY_ADDRESS` - Will avoid re-creating new AnchorStateRegistry
+/// - `DISPUTE_GAME_FACTORY_ADDRESS` - Will avoid re-creating new DisputeGameFactory
+///
 /// # Shared Configuration
 ///
 /// The function also retrieves the following from shared configuration data:
@@ -166,14 +171,24 @@ async fn update_fdg_config() -> Result<()> {
 
     let starting_output_root = optimism_output_data["outputRoot"].as_str().unwrap().to_string();
 
-    // @Celo: CeloSuperchainConfig address
+    // @Celo-specific changes: required CeloSuperchainConfig, optional AnchorStateRegistry & DisputeGameFactory
     let celo_superchain_config_address = env::var("CELO_SUPERCHAIN_CONFIG_ADDRESS").unwrap();
+    let anchor_state_registry_address = env::var("ANCHOR_STATE_REGISTRY_ADDRESS").unwrap_or_else(|_| {
+        // Default to zero address if not provided - will deploy new AnchorStateRegistry
+        "0x0000000000000000000000000000000000000000".to_string()
+    });
+    let dispute_game_factory_address = env::var("DISPUTE_GAME_FACTORY_ADDRESS").unwrap_or_else(|_| {
+        // Default to zero address if not provided - will deploy new DisputeGameFactory
+        "0x0000000000000000000000000000000000000000".to_string()
+    });
 
     let fdg_config = FaultDisputeGameConfig {
         aggregation_vkey: shared_config.aggregation_vkey,
+        anchor_state_registry_address,
         celo_superchain_config_address,
         challenger_addresses,
         challenger_bond_wei,
+        dispute_game_factory_address,
         dispute_game_finality_delay_seconds,
         fallback_timeout_fp_secs,
         game_type,
