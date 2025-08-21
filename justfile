@@ -79,7 +79,7 @@ deploy-fdg-contracts env_file=".env" *features='':
     just _deploy-fdg-contracts {{env_file}}
 
 # Deploy contracts without fetching config
-_deploy-fdg-contracts env_file=".env" custom_config_file='':
+_deploy-fdg-contracts env_file=".env" custom_config_file="":
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -113,7 +113,7 @@ _deploy-fdg-contracts env_file=".env" custom_config_file='':
 
     # Use custom config file
     CUSTOM_CONFIG="{{custom_config_file}}"
-    if [ -n $CUSTOM_CONFIG ]; then
+    if [ -n "$CUSTOM_CONFIG" ]; then
       echo "Using custom config file: $CUSTOM_CONFIG..."
       cp $CUSTOM_CONFIG opsuccinctfdgconfig.json
     fi

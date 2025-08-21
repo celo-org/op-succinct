@@ -82,9 +82,7 @@ contract DeployOPSuccinctFDG is Script, Utils {
         address payable portalAddress = deployOrGetOptimismPortal2(config, gameType);
 
         // Deploy or get AnchorStateRegistry
-        AnchorStateRegistry registry = deployOrGetAnchorStateRegistry(
-            config, factory, portalAddress
-        );
+        AnchorStateRegistry registry = deployOrGetAnchorStateRegistry(config, factory, portalAddress);
 
         // Deploy and configure access manager
         AccessManager accessManager = deployAccessManager(config, address(factoryProxy));
@@ -137,9 +135,7 @@ contract DeployOPSuccinctFDG is Script, Utils {
         );
     }
 
-    function deployOrGetDisputeGameFactoryProxy(
-        FDGConfig memory config
-    ) internal returns (ERC1967Proxy) {
+    function deployOrGetDisputeGameFactoryProxy(FDGConfig memory config) internal returns (ERC1967Proxy) {
         if (config.disputeGameFactoryAddress != address(0)) {
             return ERC1967Proxy(payable(config.disputeGameFactoryAddress));
         } else {
