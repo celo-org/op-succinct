@@ -137,6 +137,7 @@ _deploy-fdg-contracts env_file=".env" custom_config_file='':
     echo "Running deployment script..."
     forge script script/fp/DeployOPSuccinctFDG.s.sol \
         --broadcast \
+        --no-storage-caching \
         --rpc-url "$RPC_URL_TO_USE" \
         --private-key "$PRIVATE_KEY" \
         $VERIFY
