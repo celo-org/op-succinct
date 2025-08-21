@@ -30,24 +30,24 @@ contract JSONDecoder {
 
     struct FDGConfig {
         bytes32 aggregationVkey;
-        address anchorStateRegistryAddress; // Celo-optional
-        address celoSuperchainConfigAddress; // Celo-specific
+        address anchorStateRegistryAddress;
         address[] challengerAddresses;
         uint256 challengerBondWei;
-        address disputeGameFactoryAddress; // Celo-optional
+        address disputeGameFactoryAddress;
         uint256 disputeGameFinalityDelaySeconds;
         uint256 fallbackTimeoutFpSecs;
         uint32 gameType;
         uint256 initialBondWei;
         uint256 maxChallengeDuration;
         uint256 maxProveDuration;
-        address optimismPortal2Address; // Non-optional
+        address optimismPortal2Address;
         bool permissionlessMode;
         address[] proposerAddresses;
         bytes32 rangeVkeyCommitment;
         bytes32 rollupConfigHash;
         uint256 startingL2BlockNumber;
         bytes32 startingRoot;
+        address superchainConfigAddress;
         bool useSp1MockVerifier;
         address verifierAddress;
     }

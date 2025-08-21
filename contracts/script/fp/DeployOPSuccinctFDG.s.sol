@@ -73,37 +73,18 @@ contract DeployOPSuccinctFDG is Script, Utils {
     }
 
     function deployContracts(FDGConfig memory config) internal returns (DeployedContracts memory) {
-        GameType gameType = GameType.wrap(config.gameType);
-
-        // Load or deploy factory proxy.
-        ERC1967Proxy factoryProxy;
-        DisputeGameFactory factory;
-        if (config.disputeGameFactoryAddress != address(0)) {
-            factoryProxy = ERC1967Proxy(payable(config.disputeGameFactoryAddress));
-            factory = DisputeGameFactory(config.disputeGameFactoryAddress);
-        } else {
-            factoryProxy = new ERC1967Proxy(
-                address(new DisputeGameFactory()), // 1.0.1
-                abi.encodeWithSelector(DisputeGameFactory.initialize.selector, msg.sender)
-            );
-            factory = DisputeGameFactory(address(factoryProxy));
-        }
+        // Deploy or get DisputeGameFactory
+        ERC1967Proxy factoryProxy = deployOrGetDisputeGameFactoryProxy(config);
+        DisputeGameFactory factory = DisputeGameFactory(address(factoryProxy));
 
         // Deploy MockOptimismPortal2 or get OptimismPortal2
+        GameType gameType = GameType.wrap(config.gameType);
         address payable portalAddress = deployOrGetOptimismPortal2(config, gameType);
 
-        // Deploy anchor state registry
-        AnchorStateRegistry registry;
-        if (config.anchorStateRegistryAddress != address(0)) {
-            registry = AnchorStateRegistry(config.anchorStateRegistryAddress);
-            console.log("Anchor state registry:", address(registry));
-        } else {
-            OutputRoot memory startingAnchorRoot =
-                OutputRoot({root: Hash.wrap(config.startingRoot), l2BlockNumber: config.startingL2BlockNumber});
-            registry = deployAnchorStateRegistry(
-                factory, portalAddress, config.celoSuperchainConfigAddress, startingAnchorRoot
-            );
-        }
+        // Deploy or get AnchorStateRegistry
+        AnchorStateRegistry registry = deployOrGetAnchorStateRegistry(
+            config, factory, portalAddress
+        );
 
         // Deploy and configure access manager
         AccessManager accessManager = deployAccessManager(config, address(factoryProxy));
@@ -115,7 +96,7 @@ contract DeployOPSuccinctFDG is Script, Utils {
         OPSuccinctFaultDisputeGame gameImpl =
             deployGameImplementation(config, factory, sp1Config, registry, accessManager);
 
-        // Set initial bond and implementation in factory.
+        // Set initial bond and implementation in factory
         factory.setInitBond(gameType, config.initialBondWei);
         factory.setImplementation(gameType, IDisputeGame(address(gameImpl)));
 
@@ -153,31 +134,62 @@ contract DeployOPSuccinctFDG is Script, Utils {
             config.challengerBondWei,
             IAnchorStateRegistry(address(registry)),
             accessManager
-        ); // compatible with 1.4.0
+        );
     }
 
-    function deployAnchorStateRegistry(
-        DisputeGameFactory factory,
-        address payable portalAddress,
-        address celoSuperchainConfig, // Celo-specific
-        OutputRoot memory startingAnchorRoot
-    ) internal returns (AnchorStateRegistry) {
-        // Deploy the anchor state registry proxy.
-        ERC1967Proxy registryProxy = new ERC1967Proxy(
-            address(new AnchorStateRegistry()), // 2.2.0-2.2.2
-            abi.encodeCall(
-                AnchorStateRegistry.initialize,
-                (
-                    ISuperchainConfig(celoSuperchainConfig), // 1.2.0 -> re-use config
-                    IDisputeGameFactory(address(factory)),
-                    IOptimismPortal2(portalAddress),
-                    startingAnchorRoot
-                )
-            )
-        );
+    function deployOrGetDisputeGameFactoryProxy(
+        FDGConfig memory config
+    ) internal returns (ERC1967Proxy) {
+        if (config.disputeGameFactoryAddress != address(0)) {
+            return ERC1967Proxy(payable(config.disputeGameFactoryAddress));
+        } else {
+            return new ERC1967Proxy(
+                address(new DisputeGameFactory()),
+                abi.encodeWithSelector(DisputeGameFactory.initialize.selector, msg.sender)
+            );
+        }
+    }
 
-        AnchorStateRegistry registry = AnchorStateRegistry(address(registryProxy));
-        console.log("Anchor state registry:", address(registry));
+    function deployOrGetAnchorStateRegistry(
+        FDGConfig memory config,
+        DisputeGameFactory factory,
+        address payable portalAddress
+    ) internal returns (AnchorStateRegistry) {
+        AnchorStateRegistry registry;
+        if (config.anchorStateRegistryAddress != address(0)) {
+            // Re-use anchor state registry
+            registry = AnchorStateRegistry(config.anchorStateRegistryAddress);
+            console.log("Using existing AnchorStateRegistry:", address(registry));
+        } else {
+            OutputRoot memory startingAnchorRoot =
+                OutputRoot({root: Hash.wrap(config.startingRoot), l2BlockNumber: config.startingL2BlockNumber});
+
+            // Get or create superchain config
+            ISuperchainConfig superchainConfig;
+            if (config.superchainConfigAddress != address(0)) {
+                superchainConfig = ISuperchainConfig(config.superchainConfigAddress);
+            } else {
+                superchainConfig = ISuperchainConfig(address(new SuperchainConfig()));
+            }
+
+            // Deploy the anchor state registry proxy
+            ERC1967Proxy registryProxy = new ERC1967Proxy(
+                address(new AnchorStateRegistry()),
+                abi.encodeCall(
+                    AnchorStateRegistry.initialize,
+                    (
+                        superchainConfig,
+                        IDisputeGameFactory(address(factory)),
+                        IOptimismPortal2(portalAddress),
+                        startingAnchorRoot
+                    )
+                )
+            );
+
+            registry = AnchorStateRegistry(address(registryProxy));
+            console.log("Deployed AnchorStateRegistry:", address(registry));
+        }
+
         return registry;
     }
 
@@ -190,10 +202,9 @@ contract DeployOPSuccinctFDG is Script, Utils {
             portalAddress = payable(config.optimismPortal2Address);
             console.log("Using existing OptimismPortal2:", portalAddress);
         } else {
-            // MockOptimismPortal2 portal = new MockOptimismPortal2(gameType, config.disputeGameFinalityDelaySeconds);
-            // portalAddress = payable(address(portal));
-            // console.log("Deployed MockOptimismPortal2:", portalAddress);
-            revert("Mocking OptimismPortal2 not supported!");
+            MockOptimismPortal2 portal = new MockOptimismPortal2(gameType, config.disputeGameFinalityDelaySeconds);
+            portalAddress = payable(address(portal));
+            console.log("Deployed MockOptimismPortal2:", portalAddress);
         }
         return portalAddress;
     }

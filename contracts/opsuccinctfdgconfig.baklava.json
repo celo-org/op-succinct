@@ -1,7 +1,6 @@
 {
   "aggregationVkey": "0x000ce954cedc18b3dbb347e363d59a6d993d5e7e4a11df76864599bf41a72ceb",
   "anchorStateRegistryAddress": "0xd088264165cd85ea5cf98303d5f44f5e6c16805a",
-  "celoSuperchainConfigAddress": "0x6ac47E296d59A8D3b8933276EA3dB1CC28e920DA",
   "challengerAddresses": [
     "0xDc94436A193a827786270dD4F6cD4b35c3f0C8f8",
     "0x85c7AC265419359806B147Fba6Ea654229928333"
@@ -24,6 +23,7 @@
   "rollupConfigHash": "0xaa8b37306ef7ede9abb7f4d5a69d5656b6eb22582e2cbec99e81c932a36fd0ba",
   "startingL2BlockNumber": 43608861,
   "startingRoot": "0xa0a00aae6a3171f033ad2c7d28e0f4036e10d9c2b42b396a6d55b25bc65a646e",
+  "superchainConfigAddress": "0x6ac47E296d59A8D3b8933276EA3dB1CC28e920DA",
   "useSp1MockVerifier": false,
   "verifierAddress": "0x397A5f7f3dBd538f23DE225B51f532c34448dA9B"
 }
