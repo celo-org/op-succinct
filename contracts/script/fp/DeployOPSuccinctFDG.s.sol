@@ -41,35 +41,25 @@ contract DeployOPSuccinctFDG is Script, Utils {
         address optimismPortal2;
     }
 
-    function run()
-        public
-        returns (
-            address factoryProxy,
-            address gameImplementation,
-            address sp1Verifier,
-            address anchorStateRegistry,
-            address accessManager,
-            address optimismPortal2
-        )
-    {
+    function run() public returns (DeployedContracts memory) {
         vm.startBroadcast();
 
         // Load configuration
         FDGConfig memory config = readFDGJson("opsuccinctfdgconfig.json");
 
         // Deploy contracts
-        DeployedContracts memory deployedContracts = deployContracts(config);
+        DeployedContracts memory contracts = deployContracts(config);
+
+        // Configure contracts
+        if (config.configureContracts) {
+            configureContracts(contracts, config);
+        } else {
+            console.log("Skipped contracts configuration. Ensure to configure contracts manually!");
+        }
 
         vm.stopBroadcast();
 
-        return (
-            deployedContracts.factoryProxy,
-            deployedContracts.gameImplementation,
-            deployedContracts.sp1Verifier,
-            deployedContracts.anchorStateRegistry,
-            deployedContracts.accessManager,
-            deployedContracts.optimismPortal2
-        );
+        return contracts;
     }
 
     function deployContracts(FDGConfig memory config) internal returns (DeployedContracts memory) {
@@ -94,13 +84,6 @@ contract DeployOPSuccinctFDG is Script, Utils {
         OPSuccinctFaultDisputeGame gameImpl =
             deployGameImplementation(config, factory, sp1Config, registry, accessManager);
 
-        // Set initial bond and implementation in factory
-        factory.setInitBond(gameType, config.initialBondWei);
-        factory.setImplementation(gameType, IDisputeGame(address(gameImpl)));
-
-        // Set respected game type
-        IOptimismPortal2(portalAddress).setRespectedGameType(gameType);
-
         // Create deployed contracts struct
         DeployedContracts memory deployedContracts = DeployedContracts({
             factoryProxy: address(factoryProxy),
@@ -112,6 +95,24 @@ contract DeployOPSuccinctFDG is Script, Utils {
         });
 
         return deployedContracts;
+    }
+
+    /// @dev msg.sender should have owner role of factory & guardian role of superchain
+    function configureContracts(
+        DeployedContracts memory contracts,
+        FDGConfig memory config
+    ) internal {
+        GameType gameType = GameType.wrap(config.gameType);
+        DisputeGameFactory factory = DisputeGameFactory(contracts.factoryProxy);
+
+        // Set initial bond and implementation in factory
+        /// @dev: Requires factory owner role
+        factory.setInitBond(gameType, config.initialBondWei);
+        factory.setImplementation(gameType, IDisputeGame(contracts.gameImplementation));
+
+        // Set respected game type
+        /// @dev: Requires superchain guardian role
+        IOptimismPortal2(payable(contracts.optimismPortal2)).setRespectedGameType(gameType);
     }
 
     function deployGameImplementation(

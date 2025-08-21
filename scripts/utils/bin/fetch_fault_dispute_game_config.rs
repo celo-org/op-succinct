@@ -26,6 +26,11 @@ use serde_json::Value;
 /// ## Game Configuration
 /// - `GAME_TYPE`: Unique identifier for the dispute game type (default: "42")
 ///
+/// ## Deployment Configuration
+/// - `CONFIGURE_CONTRACTS`: If set to false, will just perform predeployment of contracts, which
+///   might be useful when owner of factory is Gnosis Safe. If set to true, will deploy & configure
+///   contracts, which is preferable choice for simple & local environments (default: "true")
+///
 /// ## Timing Configuration
 /// - `DISPUTE_GAME_FINALITY_DELAY_SECONDS`: Delay in seconds before a dispute game can be finalized
 ///   (default: "604800" = 7 days)
@@ -81,6 +86,10 @@ async fn update_fdg_config() -> Result<()> {
 
     // Game configuration.
     let game_type = env::var("GAME_TYPE").unwrap_or("42".to_string()).parse().unwrap();
+
+    // Deployment configuration
+    let configure_contracts =
+        env::var("CONFIGURE_CONTRACTS").unwrap_or("true".to_string()).parse().unwrap();
 
     // Timing configuration.
     let dispute_game_finality_delay_seconds = env::var("DISPUTE_GAME_FINALITY_DELAY_SECONDS")
@@ -189,6 +198,7 @@ async fn update_fdg_config() -> Result<()> {
         anchor_state_registry_address,
         challenger_addresses,
         challenger_bond_wei,
+        configure_contracts,
         dispute_game_factory_address,
         dispute_game_finality_delay_seconds,
         fallback_timeout_fp_secs,

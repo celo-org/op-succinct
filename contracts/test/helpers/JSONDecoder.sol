@@ -33,6 +33,7 @@ contract JSONDecoder {
         address anchorStateRegistryAddress;
         address[] challengerAddresses;
         uint256 challengerBondWei;
+        bool configureContracts;
         address disputeGameFactoryAddress;
         uint256 disputeGameFinalityDelaySeconds;
         uint256 fallbackTimeoutFpSecs;
