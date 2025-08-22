@@ -98,10 +98,7 @@ contract DeployOPSuccinctFDG is Script, Utils {
     }
 
     /// @dev msg.sender should have owner role of factory & guardian role of superchain
-    function configureContracts(
-        DeployedContracts memory contracts,
-        FDGConfig memory config
-    ) internal {
+    function configureContracts(DeployedContracts memory contracts, FDGConfig memory config) internal {
         GameType gameType = GameType.wrap(config.gameType);
         DisputeGameFactory factory = DisputeGameFactory(contracts.factoryProxy);
 
