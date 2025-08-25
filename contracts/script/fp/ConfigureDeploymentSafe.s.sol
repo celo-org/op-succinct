@@ -4,16 +4,17 @@ pragma solidity ^0.8.15;
 // Libraries
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
+import {console2} from "forge-std/console2.sol";
 import {GameType} from "src/dispute/lib/Types.sol";
 
 // Interfaces
 import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
 import {IOptimismPortal2} from "interfaces/L1/IOptimismPortal2.sol";
+import {IMulticall3} from "forge-std/interfaces/IMulticall3.sol";
 
 // Contracts
 import {DisputeGameFactory} from "src/dispute/DisputeGameFactory.sol";
 import {GnosisSafe} from "@safe-contracts/GnosisSafe.sol";
-import {Multicall3Delegatecall} from "../../src/lib/Multicall3Delegatecall.sol";
 
 // Utils
 import {Utils} from "../../test/helpers/Utils.sol";
@@ -21,8 +22,6 @@ import {Enum} from "@safe-contracts/common/Enum.sol";
 
 /// @notice Configures deployment of OpSuccinct FDG using Safe
 contract ConfigureDeploymentSafe is Script, Utils {
-    address internal constant MULTICALL3_DELEGATE_ADDRESS = 0x93dc480940585D9961bfcEab58124fFD3d60f76a;
-
     error MissingSignatures();
 
     struct EnvConfig {
@@ -32,6 +31,7 @@ contract ConfigureDeploymentSafe is Script, Utils {
         address gameImplementation;
         address optimismPortal2;
         address safe;
+        address sender;
         bytes signatures;
     }
 
@@ -43,6 +43,7 @@ contract ConfigureDeploymentSafe is Script, Utils {
             vm.envAddress("GAME_IMPL"),
             vm.envOr("PORTAL", address(0)), // skip portal configuration if env not present
             vm.envAddress("SAFE"),
+            vm.envAddress("SENDER"),
             vm.envOr("SIG", bytes(hex"00"))
         );
     }
@@ -58,14 +59,14 @@ contract ConfigureDeploymentSafe is Script, Utils {
             opNumber = 3;
         }
 
-        // Build Multicall3Delegatecall calldata
-        Multicall3Delegatecall.Call3[] memory calls = new Multicall3Delegatecall.Call3[](opNumber);
-        calls[0] = Multicall3Delegatecall.Call3(
+        // Build IMulticall3 calldata
+        IMulticall3.Call3[] memory calls = new IMulticall3.Call3[](opNumber);
+        calls[0] = IMulticall3.Call3(
             config.factoryProxy,
             false,
             abi.encodeWithSelector(DisputeGameFactory.setInitBond.selector, gameType, config.initialBondWei)
         );
-        calls[1] = Multicall3Delegatecall.Call3(
+        calls[1] = IMulticall3.Call3(
             config.factoryProxy,
             false,
             abi.encodeWithSelector(
@@ -73,34 +74,34 @@ contract ConfigureDeploymentSafe is Script, Utils {
             )
         );
         if (config.optimismPortal2 != address(0)) {
-            calls[2] = Multicall3Delegatecall.Call3(
+            calls[2] = IMulticall3.Call3(
                 config.optimismPortal2,
                 false,
                 abi.encodeWithSelector(IOptimismPortal2.setRespectedGameType.selector, gameType)
             );
         }
 
-        return abi.encodeWithSelector(Multicall3Delegatecall.aggregate3.selector, calls);
+        return abi.encodeWithSelector(IMulticall3.aggregate3.selector, calls);
     }
 
     function getTransactionHash() public view returns (bytes32) {
         EnvConfig memory config = readEnv();
 
         // Build tx
-        bytes memory data = buildSafeTx(config);
+        bytes memory calls = buildSafeTx(config);
 
         // Build tx hash
         GnosisSafe safe = GnosisSafe(payable(config.safe));
         bytes32 txHash = safe.getTransactionHash(
-            MULTICALL3_DELEGATE_ADDRESS,
+            MULTICALL3_ADDRESS,
             0, // value
-            data,
+            calls,
             Enum.Operation(1), // delegate call
             0, // safeTxGas
             0, // baseGas
             0, // gasPrice
             address(0), // gasToken
-            msg.sender, // refundReceiver
+            config.sender, // refundReceiver
             safe.nonce()
         );
         console.log("Transaction hash for Safe: ");
@@ -116,22 +117,24 @@ contract ConfigureDeploymentSafe is Script, Utils {
         }
 
         // Build tx
-        bytes memory data = buildSafeTx(config);
+        bytes memory calls = buildSafeTx(config);
 
         // Exec tx
         GnosisSafe safe = GnosisSafe(payable(config.safe));
+        vm.startBroadcast();
         safe.execTransaction(
-            MULTICALL3_DELEGATE_ADDRESS,
+            MULTICALL3_ADDRESS,
             0, // value
-            data,
+            calls,
             Enum.Operation(1), // delegate call
             0, // safeTxGas
             0, // baseGas
             0, // gasPrice
             address(0), // gasToken
-            payable(msg.sender), // refundReceiver
+            payable(config.sender), // refundReceiver
             config.signatures
         );
+        vm.stopBroadcast();
         console.log("Transaction executed with Safe");
     }
 }
