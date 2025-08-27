@@ -102,14 +102,12 @@ celo-proof = { git = "https://github.com/celo-org/celo-kona", rev = "ec3b57a6" }
 celo-host = { git = "https://github.com/celo-org/celo-kona", rev = "ec3b57a6" }
 celo-protocol = { git = "https://github.com/celo-org/celo-kona", rev = "ec3b57a6", default-features = false }
 celo-genesis = { git = "https://github.com/celo-org/celo-kona", rev = "ec3b57a6", default-features = false }
-
 # hana
 # TODO(fakedev9999): Bump to 1.0.0 once the release is out.
 hana-blobstream = { git = "https://github.com/celestiaorg/hana", tag = "v0.1.0-beta.17" }
 hana-celestia = { git = "https://github.com/celestiaorg/hana", tag = "v0.1.0-beta.17" }
 hana-host = { git = "https://github.com/celestiaorg/hana", tag = "v0.1.0-beta.17" }
 hana-oracle = { git = "https://github.com/celestiaorg/hana", tag = "v0.1.0-beta.17" }
-
 # hokulea
 hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", rev = "2814384" }
 hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", rev = "2814384" }
@@ -117,7 +115,6 @@ hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", rev = "2814384" 
 hokulea-witgen = { git = "https://github.com/Layr-Labs/hokulea", rev = "2814384" }
 hokulea-zkvm-verification = { git = "https://github.com/Layr-Labs/hokulea", rev = "2814384" }
 canoe-sp1-cc-host = { git = "https://github.com/Layr-Labs/hokulea", rev = "2814384" }
-
 # op-succinct
 op-succinct-prove = { path = "scripts/prove" }
 op-succinct-client-utils = { path = "utils/client" }
@@ -136,7 +133,6 @@ op-succinct-proof-utils = { path = "utils/proof" }
 op-succinct-signer-utils = { path = "utils/signer" }
 op-succinct-range-utils = { path = "programs/range/utils" }
 op-succinct-bindings = { path = "bindings" }
-
 # Alloy (Network)
 alloy-signer-local = { version = "1.0.9" }
 alloy-provider = { version = "1.0.9" }
@@ -144,7 +140,6 @@ alloy-transport = { version = "1.0.9" }
 alloy-transport-http = { version = "1.0.9" }
 alloy-contract = { version = "1.0.9" }
 alloy-network = { version = "1.0.9" }
-
 # Alloy
 alloy-rlp = { version = "0.3.12", default-features = false }
 alloy-trie = { version = "0.8.1", default-features = false, features = [
@@ -168,7 +163,6 @@ alloy = { version = "1.0.9", features = [
     "sol-types",
     "rpc-types",
 ] }
-
 # Keccak with the SHA3 patch is more efficient than the default Keccak.
 alloy-primitives = { version = "1.0.0", default-features = false, features = [
     "sha3-keccak",
@@ -176,19 +170,16 @@ alloy-primitives = { version = "1.0.0", default-features = false, features = [
 alloy-sol-types = { version = "1.0.0", default-features = false }
 alloy-sol-macro = { version = "1.0.0", default-features = false }
 alloy-chains = { version = "0.2.3", default-features = false }
-
 # OP Alloy
 op-alloy-consensus = { version = "0.17.2", default-features = false }
 op-alloy-rpc-types = { version = "0.17.2", default-features = false }
 op-alloy-rpc-types-engine = { version = "0.17.2", default-features = false }
 op-alloy-network = { version = "0.17.2", default-features = false }
-
 # Celo Alloy
 celo-alloy-consensus = { git = "https://github.com/celo-org/celo-kona", rev = "ec3b57a6", default-features = false }
 celo-alloy-rpc-types = { git = "https://github.com/celo-org/celo-kona", rev = "ec3b57a6", default-features = false }
 celo-alloy-rpc-types-engine = { git = "https://github.com/celo-org/celo-kona", rev = "ec3b57a6", default-features = false }
 celo-alloy-network = { git = "https://github.com/celo-org/celo-kona", rev = "ec3b57a6", default-features = false }
-
 # Execution
 alloy-evm = { version = "0.10.0", default-features = false }
 alloy-op-evm = { version = "0.10.0", default-features = false }
@@ -198,7 +189,6 @@ revm = { version = "24.0.1", default-features = false, features = [
     "bn",
 ] }
 op-revm = { version = "5.0.1", default-features = false }
-
 # Celo Execution
 alloy-celo-evm = { git = "https://github.com/celo-org/celo-kona", rev = "ec3b57a6", default-features = false }
 

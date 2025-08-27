@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use celo_genesis::CeloRollupConfig;
-use kona_proof::{l1::OracleL1ChainProvider, l2::OracleL2ChainProvider};
+use celo_proof::CeloOracleL2ChainProvider;
+use kona_proof::l1::OracleL1ChainProvider;
 use op_succinct_client_utils::{
     boot::BootInfoStruct,
     witness::{
@@ -28,7 +29,7 @@ where
             O = PreimageStore,
             B = BlobStore,
             L1 = OracleL1ChainProvider<PreimageStore>,
-            L2 = OracleL2ChainProvider<PreimageStore>,
+            L2 = CeloOracleL2ChainProvider<PreimageStore>,
         > + Send
         + Sync,
     W: WitnessData + Send + Sync,
@@ -40,7 +41,7 @@ where
 
     let (boot_info, input) = get_inputs_for_pipeline(oracle.clone()).await.unwrap();
     let boot_info = match input {
-        Some((cursor, l1_provider, l2_provider, celo_provider)) => {
+        Some((cursor, l1_provider, l2_provider)) => {
             // Wrap RollupConfig with CeloRollupConfig
             let celo_rollup_config =
                 CeloRollupConfig { op_rollup_config: boot_info.rollup_config.clone() };
@@ -56,7 +57,7 @@ where
                 .await
                 .unwrap();
 
-            executor.run(boot_info, pipeline, cursor, celo_provider).await.unwrap()
+            executor.run(boot_info, pipeline, cursor, l2_provider).await.unwrap()
         }
         None => boot_info,
     };
