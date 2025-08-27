@@ -4,7 +4,7 @@
 [submodule "contracts/lib/optimism"]
 	path = contracts/lib/optimism
 	url = https://github.com/celo-org/optimism
-	branch = mc01/celo-contracts/v3.0.0--1
+	branch = celo-contracts/v3.0.0--1
 [submodule "contracts/lib/openzeppelin-contracts"]
 	path = contracts/lib/openzeppelin-contracts
 	url = https://github.com/openzeppelin/openzeppelin-contracts
