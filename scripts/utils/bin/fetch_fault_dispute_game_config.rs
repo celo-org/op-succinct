@@ -57,9 +57,11 @@ use serde_json::Value;
 /// ## Contract Configuration
 /// - `OPTIMISM_PORTAL2_ADDRESS`: Address of the OptimismPortal2 contract. If not provided or set to
 ///   zero address, a MockOptimismPortal2 will be deployed (default: zero address)
-/// - `SUPERCHAIN_CONFIG_ADDRESS` - If set will avoid re-creating new SuperchainConfig while creating new AnchorStateRegistry (default: zero address)
 /// - `ANCHOR_STATE_REGISTRY_ADDRESS` - If set will avoid avoid re-creating new AnchorStateRegistry (default: zero address)
 /// - `DISPUTE_GAME_FACTORY_ADDRESS` - If set will avoid avoid re-creating new DisputeGameFactory (default: zero address)
+///
+/// ## Celo-specific Configuration
+/// - `CELO_SUPERCHAIN_CONFIG_ADDRESS` - If set will avoid re-creating new SuperchainConfig while creating new AnchorStateRegistry (default: zero address)
 ///
 /// ## Starting State Configuration
 /// - `STARTING_L2_BLOCK_NUMBER`: L2 block number to use as the starting point for the dispute game.
@@ -179,7 +181,7 @@ async fn update_fdg_config() -> Result<()> {
     let starting_output_root = optimism_output_data["outputRoot"].as_str().unwrap().to_string();
 
     // Optional contract addresses
-    let superchain_config_address = env::var("SUPERCHAIN_CONFIG_ADDRESS").unwrap_or_else(|_| {
+    let celo_superchain_config_address = env::var("CELO_SUPERCHAIN_CONFIG_ADDRESS").unwrap_or_else(|_| {
         // Default to zero address if not provided - will deploy new SuperchainConfig 
         // (only in case of creating new AnchorStateRegistry)
         "0x0000000000000000000000000000000000000000".to_string()
@@ -196,6 +198,7 @@ async fn update_fdg_config() -> Result<()> {
     let fdg_config = FaultDisputeGameConfig {
         aggregation_vkey: shared_config.aggregation_vkey,
         anchor_state_registry_address,
+        celo_superchain_config_address,
         challenger_addresses,
         challenger_bond_wei,
         configure_contracts,
@@ -213,7 +216,6 @@ async fn update_fdg_config() -> Result<()> {
         rollup_config_hash: shared_config.rollup_config_hash,
         starting_l2_block_number,
         starting_root: starting_output_root,
-        superchain_config_address,
         use_sp1_mock_verifier: shared_config.use_sp1_mock_verifier,
         verifier_address: shared_config.verifier_address,
     };

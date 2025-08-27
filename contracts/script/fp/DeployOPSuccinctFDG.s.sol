@@ -160,8 +160,8 @@ contract DeployOPSuccinctFDG is Script, Utils {
 
             // Get or create superchain config
             ISuperchainConfig superchainConfig;
-            if (config.superchainConfigAddress != address(0)) {
-                superchainConfig = ISuperchainConfig(config.superchainConfigAddress);
+            if (config.celoSuperchainConfigAddress != address(0)) {
+                superchainConfig = ISuperchainConfig(config.celoSuperchainConfigAddress);
             } else {
                 superchainConfig = ISuperchainConfig(address(new SuperchainConfig()));
             }

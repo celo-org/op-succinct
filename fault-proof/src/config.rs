@@ -182,6 +182,7 @@ impl ChallengerConfig {
 pub struct FaultDisputeGameConfig {
     pub aggregation_vkey: String,
     pub anchor_state_registry_address: String,
+    pub celo_superchain_config_address: String,
     pub challenger_addresses: Vec<String>,
     pub challenger_bond_wei: u64,
     pub configure_contracts: bool,
@@ -199,7 +200,6 @@ pub struct FaultDisputeGameConfig {
     pub rollup_config_hash: String,
     pub starting_l2_block_number: u64,
     pub starting_root: String,
-    pub superchain_config_address: String,
     pub use_sp1_mock_verifier: bool,
     pub verifier_address: String,
 }

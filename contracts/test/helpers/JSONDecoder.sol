@@ -31,6 +31,7 @@ contract JSONDecoder {
     struct FDGConfig {
         bytes32 aggregationVkey;
         address anchorStateRegistryAddress;
+        address celoSuperchainConfigAddress;
         address[] challengerAddresses;
         uint256 challengerBondWei;
         bool configureContracts;
@@ -48,7 +49,6 @@ contract JSONDecoder {
         bytes32 rollupConfigHash;
         uint256 startingL2BlockNumber;
         bytes32 startingRoot;
-        address superchainConfigAddress;
         bool useSp1MockVerifier;
         address verifierAddress;
     }

@@ -32,6 +32,7 @@ pub fn test_config(starting_l2_block_number: u64, starting_root: String) -> Faul
     FaultDisputeGameConfig {
         aggregation_vkey: AGGREGATION_VKEY.to_string(),
         anchor_state_registry_address: Address::ZERO.to_string(),
+        celo_superchain_config_address: Address::ZERO.to_string(),
         challenger_addresses: vec![CHALLENGER_ADDRESS.to_string()],
         challenger_bond_wei: CHALLENGER_BOND.to::<u64>(),
         configure_contracts: true,
@@ -49,7 +50,6 @@ pub fn test_config(starting_l2_block_number: u64, starting_root: String) -> Faul
         rollup_config_hash: ROLLUP_CONFIG_HASH.to_string(),
         starting_l2_block_number,
         starting_root,
-        superchain_config_address: Address::ZERO.to_string(),
         use_sp1_mock_verifier: true,
         verifier_address: Address::ZERO.to_string(),
     }
