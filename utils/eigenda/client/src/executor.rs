@@ -3,15 +3,12 @@ use std::{fmt::Debug, sync::Arc};
 use anyhow::Result;
 use async_trait::async_trait;
 use celo_genesis::CeloRollupConfig;
+use celo_proof::{CeloOracleL2ChainProvider, CeloOraclePipeline};
 use hokulea_eigenda::{EigenDABlobProvider, EigenDABlobSource, EigenDADataSource};
 use kona_derive::{sources::EthereumDataSource, traits::BlobProvider};
 use kona_driver::PipelineCursor;
 use kona_preimage::CommsClient;
-use kona_proof::{
-    l1::{OracleL1ChainProvider, OraclePipeline},
-    l2::OracleL2ChainProvider,
-    FlushableCache,
-};
+use kona_proof::{l1::OracleL1ChainProvider, FlushableCache};
 use op_succinct_client_utils::witness::executor::WitnessExecutor;
 use spin::RwLock;
 
@@ -46,7 +43,7 @@ where
     type O = O;
     type B = B;
     type L1 = OracleL1ChainProvider<Self::O>;
-    type L2 = OracleL2ChainProvider<Self::O>;
+    type L2 = CeloOracleL2ChainProvider<Self::O>;
     type DA = EigenDADataSource<Self::L1, Self::B, E>;
 
     async fn create_pipeline(
@@ -57,7 +54,7 @@ where
         beacon: Self::B,
         l1_provider: Self::L1,
         l2_provider: Self::L2,
-    ) -> Result<OraclePipeline<Self::O, Self::L1, Self::L2, Self::DA>> {
+    ) -> Result<CeloOraclePipeline<Self::O, Self::L1, Self::L2, Self::DA>> {
         let ethereum_data_source = EthereumDataSource::new_from_parts(
             l1_provider.clone(),
             beacon,
@@ -66,7 +63,7 @@ where
         let eigenda_blob_source = EigenDABlobSource::new(self.eigenda_blob_provider.clone());
         let da_provider = EigenDADataSource::new(ethereum_data_source, eigenda_blob_source);
 
-        Ok(OraclePipeline::new(
+        Ok(CeloOraclePipeline::new(
             Arc::new(rollup_config.op_rollup_config.clone()),
             cursor,
             oracle,

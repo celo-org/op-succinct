@@ -4,20 +4,18 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use celo_driver::CeloDriver;
 use celo_genesis::CeloRollupConfig;
-use celo_proof::executor::CeloExecutor;
+use celo_proof::{
+    executor::CeloExecutor, l2::CeloOracleL2ChainProvider, new_oracle_pipeline_cursor,
+    CeloOraclePipeline,
+};
+use celo_protocol::CeloL2ChainProvider;
 use kona_derive::traits::{
-    BlobProvider, ChainProvider, DataAvailabilityProvider, L2ChainProvider, Pipeline,
-    SignalReceiver,
+    BlobProvider, ChainProvider, DataAvailabilityProvider, Pipeline, SignalReceiver,
 };
 use kona_driver::{DriverPipeline, PipelineCursor};
 use kona_executor::TrieDBProvider;
 use kona_preimage::CommsClient;
-use kona_proof::{
-    l1::{OracleL1ChainProvider, OraclePipeline},
-    l2::OracleL2ChainProvider,
-    sync::new_oracle_pipeline_cursor,
-    BootInfo, FlushableCache,
-};
+use kona_proof::{l1::OracleL1ChainProvider, BootInfo, FlushableCache};
 use spin::RwLock;
 use std::{fmt::Debug, sync::Arc};
 use tracing::info;
@@ -29,7 +27,7 @@ pub async fn get_inputs_for_pipeline<O>(
     oracle: Arc<O>,
 ) -> Result<(
     BootInfo,
-    Option<(Arc<RwLock<PipelineCursor>>, OracleL1ChainProvider<O>, OracleL2ChainProvider<O>)>,
+    Option<(Arc<RwLock<PipelineCursor>>, OracleL1ChainProvider<O>, CeloOracleL2ChainProvider<O>)>,
 )>
 where
     O: CommsClient + FlushableCache + Send + Sync + Debug,
@@ -52,7 +50,7 @@ where
 
     let mut l1_provider = OracleL1ChainProvider::new(boot.l1_head, oracle.clone());
     let mut l2_provider =
-        OracleL2ChainProvider::new(safe_head_hash, rollup_config.clone(), oracle.clone());
+        CeloOracleL2ChainProvider::new(safe_head_hash, rollup_config.clone(), oracle.clone());
 
     // Fetch the safe head's block header.
     let safe_head = l2_provider
@@ -91,7 +89,7 @@ pub trait WitnessExecutor {
     type O: CommsClient + FlushableCache + Send + Sync + Debug;
     type B: BlobProvider + Send + Sync + Debug + Clone;
     type L1: ChainProvider + Send + Sync + Debug + Clone;
-    type L2: L2ChainProvider + Send + Sync + Debug + Clone;
+    type L2: CeloL2ChainProvider + Send + Sync + Debug + Clone;
     type DA: DataAvailabilityProvider + Send + Sync + Debug + Clone;
 
     // Constructs the derivation pipeline.
@@ -103,7 +101,7 @@ pub trait WitnessExecutor {
         beacon: Self::B,
         l1_provider: Self::L1,
         l2_provider: Self::L2,
-    ) -> Result<OraclePipeline<Self::O, Self::L1, Self::L2, Self::DA>>;
+    ) -> Result<CeloOraclePipeline<Self::O, Self::L1, Self::L2, Self::DA>>;
 
     // Sourced from https://github.com/op-rs/kona/tree/main/bin/client/src/single.rs
     // Runs the OP Succinct witness executor using the given derivation pipeline,
@@ -112,7 +110,7 @@ pub trait WitnessExecutor {
         boot: BootInfo,
         pipeline: DP,
         cursor: Arc<RwLock<PipelineCursor>>,
-        l2_provider: OracleL2ChainProvider<O>,
+        l2_provider: CeloOracleL2ChainProvider<O>,
     ) -> Result<BootInfo>
     where
         O: CommsClient + FlushableCache + Send + Sync + Debug,

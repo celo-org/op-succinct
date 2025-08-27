@@ -40,7 +40,7 @@ where
 
     let (boot_info, input) = get_inputs_for_pipeline(oracle.clone()).await.unwrap();
     let boot_info = match input {
-        Some((cursor, l1_provider, l2_provider)) => {
+        Some((cursor, l1_provider, l2_provider, celo_provider)) => {
             // Wrap RollupConfig with CeloRollupConfig
             let celo_rollup_config =
                 CeloRollupConfig { op_rollup_config: boot_info.rollup_config.clone() };
@@ -56,7 +56,7 @@ where
                 .await
                 .unwrap();
 
-            executor.run(boot_info, pipeline, cursor, l2_provider).await.unwrap()
+            executor.run(boot_info, pipeline, cursor, celo_provider).await.unwrap()
         }
         None => boot_info,
     };

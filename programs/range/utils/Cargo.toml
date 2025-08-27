@@ -17,6 +17,7 @@ kona-proof.workspace = true
 
 # celo-kona
 celo-genesis.workspace = true
+celo-proof.workspace = true
 
 # sp1
 sp1-zkvm.workspace = true
