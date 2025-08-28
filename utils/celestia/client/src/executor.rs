@@ -3,13 +3,17 @@ use std::{fmt::Debug, sync::Arc};
 use anyhow::Result;
 use async_trait::async_trait;
 use celo_genesis::CeloRollupConfig;
-use celo_proof::{CeloOracleL2ChainProvider, CeloOraclePipeline};
+use celo_proof::CeloOracleL2ChainProvider;
+use celo_protocol::CeloL2ChainAdapter;
 use hana_celestia::{CelestiaDADataSource, CelestiaDASource};
 use hana_oracle::provider::OracleCelestiaProvider;
 use kona_derive::{sources::EthereumDataSource, traits::BlobProvider};
 use kona_driver::PipelineCursor;
 use kona_preimage::CommsClient;
-use kona_proof::{l1::OracleL1ChainProvider, FlushableCache};
+use kona_proof::{
+    l1::{OracleL1ChainProvider, OraclePipeline},
+    FlushableCache,
+};
 use op_succinct_client_utils::witness::executor::WitnessExecutor;
 use spin::RwLock;
 
@@ -41,7 +45,7 @@ where
     type O = O;
     type B = B;
     type L1 = OracleL1ChainProvider<Self::O>;
-    type L2 = CeloOracleL2ChainProvider<Self::O>;
+    type L2 = CeloL2ChainAdapter<CeloOracleL2ChainProvider<Self::O>>;
     type DA = CelestiaDADataSource<Self::L1, Self::B, OracleCelestiaProvider<Self::O>>;
 
     async fn create_pipeline(
@@ -51,8 +55,8 @@ where
         oracle: Arc<Self::O>,
         beacon: Self::B,
         l1_provider: Self::L1,
-        l2_provider: Self::L2,
-    ) -> Result<CeloOraclePipeline<Self::O, Self::L1, Self::L2, Self::DA>> {
+        l2_provider: CeloOracleL2ChainProvider<O>,
+    ) -> Result<OraclePipeline<Self::O, Self::L1, Self::L2, Self::DA>> {
         let ethereum_data_source = EthereumDataSource::new_from_parts(
             l1_provider.clone(),
             beacon,
@@ -62,13 +66,13 @@ where
             CelestiaDASource::new(OracleCelestiaProvider::new(oracle.clone()));
         let da_provider = CelestiaDADataSource::new(ethereum_data_source, celestia_data_source);
 
-        Ok(CeloOraclePipeline::new(
+        Ok(OraclePipeline::new(
             Arc::new(rollup_config.op_rollup_config.clone()),
             cursor,
             oracle,
             da_provider,
             l1_provider,
-            l2_provider,
+            CeloL2ChainAdapter(l2_provider.clone()),
         )
         .await?)
     }

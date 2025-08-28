@@ -19,6 +19,7 @@ kona-proof.workspace = true
 # celo-kona
 celo-genesis.workspace = true
 celo-proof.workspace = true
+celo-protocol.workspace = true
 
 # hana
 hana-celestia.workspace = true

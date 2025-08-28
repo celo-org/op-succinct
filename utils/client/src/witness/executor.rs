@@ -1,26 +1,27 @@
+use crate::client::{advance_to_target, fetch_safe_head_hash};
 use alloy_celo_evm::CeloEvmFactory;
 use alloy_primitives::Sealed;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use celo_driver::CeloDriver;
 use celo_genesis::CeloRollupConfig;
-use celo_proof::{
-    executor::CeloExecutor, l2::CeloOracleL2ChainProvider, new_oracle_pipeline_cursor,
-    CeloOraclePipeline,
-};
-use celo_protocol::CeloL2ChainProvider;
+use celo_proof::{executor::CeloExecutor, CeloOracleL2ChainProvider};
+use celo_protocol::CeloL2ChainAdapter;
 use kona_derive::traits::{
-    BlobProvider, ChainProvider, DataAvailabilityProvider, Pipeline, SignalReceiver,
+    BlobProvider, ChainProvider, DataAvailabilityProvider, L2ChainProvider, Pipeline,
+    SignalReceiver,
 };
 use kona_driver::{DriverPipeline, PipelineCursor};
 use kona_executor::TrieDBProvider;
 use kona_preimage::CommsClient;
-use kona_proof::{l1::OracleL1ChainProvider, BootInfo, FlushableCache};
+use kona_proof::{
+    l1::{OracleL1ChainProvider, OraclePipeline},
+    sync::new_oracle_pipeline_cursor,
+    BootInfo, FlushableCache,
+};
 use spin::RwLock;
 use std::{fmt::Debug, sync::Arc};
 use tracing::info;
-
-use crate::client::{advance_to_target, fetch_safe_head_hash};
 
 // Gets the inputs for constructing the derivation pipeline.
 pub async fn get_inputs_for_pipeline<O>(
@@ -76,7 +77,7 @@ where
         rollup_config.as_ref(),
         safe_head,
         &mut l1_provider,
-        &mut l2_provider,
+        &mut CeloL2ChainAdapter(l2_provider.clone()),
     )
     .await?;
     l2_provider.set_cursor(cursor.clone());
@@ -89,7 +90,7 @@ pub trait WitnessExecutor {
     type O: CommsClient + FlushableCache + Send + Sync + Debug;
     type B: BlobProvider + Send + Sync + Debug + Clone;
     type L1: ChainProvider + Send + Sync + Debug + Clone;
-    type L2: CeloL2ChainProvider + Send + Sync + Debug + Clone;
+    type L2: L2ChainProvider + Send + Sync + Debug + Clone;
     type DA: DataAvailabilityProvider + Send + Sync + Debug + Clone;
 
     // Constructs the derivation pipeline.
@@ -100,8 +101,8 @@ pub trait WitnessExecutor {
         oracle: Arc<Self::O>,
         beacon: Self::B,
         l1_provider: Self::L1,
-        l2_provider: Self::L2,
-    ) -> Result<CeloOraclePipeline<Self::O, Self::L1, Self::L2, Self::DA>>;
+        l2_provider: CeloOracleL2ChainProvider<Self::O>,
+    ) -> Result<OraclePipeline<Self::O, Self::L1, Self::L2, Self::DA>>;
 
     // Sourced from https://github.com/op-rs/kona/tree/main/bin/client/src/single.rs
     // Runs the OP Succinct witness executor using the given derivation pipeline,

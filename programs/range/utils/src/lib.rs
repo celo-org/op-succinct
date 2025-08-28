@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use celo_genesis::CeloRollupConfig;
-use celo_proof::CeloOracleL2ChainProvider;
 use kona_proof::l1::OracleL1ChainProvider;
 use op_succinct_client_utils::{
     boot::BootInfoStruct,
@@ -25,12 +24,8 @@ pub fn setup_tracing() {
 
 pub async fn run_range_program<E, W>(executor: E, witness_data: W)
 where
-    E: WitnessExecutor<
-            O = PreimageStore,
-            B = BlobStore,
-            L1 = OracleL1ChainProvider<PreimageStore>,
-            L2 = CeloOracleL2ChainProvider<PreimageStore>,
-        > + Send
+    E: WitnessExecutor<O = PreimageStore, B = BlobStore, L1 = OracleL1ChainProvider<PreimageStore>>
+        + Send
         + Sync,
     W: WitnessData + Send + Sync,
 {
