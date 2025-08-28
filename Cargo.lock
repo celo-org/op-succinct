@@ -8806,7 +8806,6 @@ dependencies = [
  "celo-alloy-network",
  "celo-genesis",
  "celo-host",
- "celo-proof",
  "celo-protocol",
  "cfg-if",
  "futures",
@@ -8890,8 +8889,6 @@ version = "3.0.0"
 dependencies = [
  "anyhow",
  "celo-genesis",
- "celo-proof",
- "celo-protocol",
  "kona-proof",
  "op-succinct-client-utils",
  "rkyv",

@@ -34,7 +34,6 @@ kona-rpc.workspace = true
 celo-host.workspace = true
 celo-protocol.workspace = true
 celo-genesis.workspace = true
-celo-proof.workspace = true
 
 # hana
 hana-host.workspace = true
