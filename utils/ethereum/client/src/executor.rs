@@ -53,7 +53,7 @@ where
         oracle: Arc<Self::O>,
         beacon: Self::B,
         l1_provider: Self::L1,
-        l2_provider: CeloOracleL2ChainProvider<O>,
+        l2_provider: Self::L2,
     ) -> Result<OraclePipeline<Self::O, Self::L1, Self::L2, Self::DA>> {
         let da_provider = EthereumDataSource::new_from_parts(
             l1_provider.clone(),
@@ -66,7 +66,7 @@ where
             oracle,
             da_provider,
             l1_provider,
-            CeloToOpProviderAdapter(l2_provider.clone()),
+            l2_provider,
         )
         .await?)
     }

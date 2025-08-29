@@ -16,6 +16,7 @@ use kona_executor::TrieDBProvider;
 use kona_preimage::CommsClient;
 use kona_proof::{
     l1::{OracleL1ChainProvider, OraclePipeline},
+    l2::OracleL2ChainProvider,
     sync::new_oracle_pipeline_cursor,
     BootInfo, FlushableCache,
 };
@@ -101,7 +102,7 @@ pub trait WitnessExecutor {
         oracle: Arc<Self::O>,
         beacon: Self::B,
         l1_provider: Self::L1,
-        l2_provider: CeloOracleL2ChainProvider<Self::O>,
+        l2_provider: Self::L2,
     ) -> Result<OraclePipeline<Self::O, Self::L1, Self::L2, Self::DA>>;
 
     // Sourced from https://github.com/op-rs/kona/tree/main/bin/client/src/single.rs
@@ -111,7 +112,7 @@ pub trait WitnessExecutor {
         boot: BootInfo,
         pipeline: DP,
         cursor: Arc<RwLock<PipelineCursor>>,
-        l2_provider: CeloOracleL2ChainProvider<O>,
+        l2_provider: OracleL2ChainProvider<O>,
     ) -> Result<BootInfo>
     where
         O: CommsClient + FlushableCache + Send + Sync + Debug,
