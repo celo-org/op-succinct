@@ -1,4 +1,3 @@
-use crate::client::{advance_to_target, fetch_safe_head_hash};
 use alloy_celo_evm::CeloEvmFactory;
 use alloy_primitives::Sealed;
 use anyhow::{anyhow, Result};
@@ -23,6 +22,8 @@ use kona_proof::{
 use spin::RwLock;
 use std::{fmt::Debug, sync::Arc};
 use tracing::info;
+
+use crate::client::{advance_to_target, fetch_safe_head_hash};
 
 // Gets the inputs for constructing the derivation pipeline.
 pub async fn get_inputs_for_pipeline<O>(
