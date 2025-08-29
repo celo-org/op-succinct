@@ -4,7 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use celo_genesis::CeloRollupConfig;
 use celo_proof::CeloOracleL2ChainProvider;
-use celo_protocol::CeloL2ChainAdapter;
+use celo_protocol::CeloToOpProviderAdapter;
 use hana_celestia::{CelestiaDADataSource, CelestiaDASource};
 use hana_oracle::provider::OracleCelestiaProvider;
 use kona_derive::{sources::EthereumDataSource, traits::BlobProvider};
@@ -45,7 +45,7 @@ where
     type O = O;
     type B = B;
     type L1 = OracleL1ChainProvider<Self::O>;
-    type L2 = CeloL2ChainAdapter<CeloOracleL2ChainProvider<Self::O>>;
+    type L2 = CeloToOpProviderAdapter<CeloOracleL2ChainProvider<Self::O>>;
     type DA = CelestiaDADataSource<Self::L1, Self::B, OracleCelestiaProvider<Self::O>>;
 
     async fn create_pipeline(
@@ -72,7 +72,7 @@ where
             oracle,
             da_provider,
             l1_provider,
-            CeloL2ChainAdapter(l2_provider.clone()),
+            CeloToOpProviderAdapter(l2_provider.clone()),
         )
         .await?)
     }
