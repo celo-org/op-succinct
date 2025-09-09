@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 env:
-  REGISTRY_URL: us-west1-docker.pkg.dev/blockchaintestsglobaltestnet/dev-images/${{ github.event.repository.name }}
+  REGISTRY_URL: us-west1-docker.pkg.dev/devopsre/dev-images/${{ github.event.repository.name }}
 
 jobs:
   build:
