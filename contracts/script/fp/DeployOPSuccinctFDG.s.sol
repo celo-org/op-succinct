@@ -41,45 +41,55 @@ contract DeployOPSuccinctFDG is Script, Utils {
         address optimismPortal2;
     }
 
-    function run() public returns (DeployedContracts memory) {
+    function run()
+        public
+        returns (
+            address factoryProxy,
+            address gameImplementation,
+            address sp1Verifier,
+            address anchorStateRegistry,
+            address accessManager,
+            address optimismPortal2
+        )
+    {
         vm.startBroadcast();
 
         // Load configuration
         FDGConfig memory config = readFDGJson("opsuccinctfdgconfig.json");
 
         // Deploy contracts
-        DeployedContracts memory contracts = deployContracts(config);
-
-        // Configure and activate contracts
-        if (config.configureContracts) {
-            configure(contracts, config);
-
-            // Activate contracts
-            if (config.activateContracts) {
-                activate(contracts, config);
-            } else {
-                console.log("Skipped contracts activation. Ensure to activate contracts manually!");
-            }
-        } else {
-            console.log("Skipped contracts configuration. Ensure to configure & activate contracts manually!");
-        }
+        DeployedContracts memory deployedContracts = deployContracts(config);
 
         vm.stopBroadcast();
 
-        return contracts;
+        return (
+            deployedContracts.factoryProxy,
+            deployedContracts.gameImplementation,
+            deployedContracts.sp1Verifier,
+            deployedContracts.anchorStateRegistry,
+            deployedContracts.accessManager,
+            deployedContracts.optimismPortal2
+        );
     }
 
     function deployContracts(FDGConfig memory config) internal returns (DeployedContracts memory) {
-        // Deploy or get DisputeGameFactory
-        ERC1967Proxy factoryProxy = deployOrGetDisputeGameFactoryProxy(config);
+        // Deploy factory proxy.
+        ERC1967Proxy factoryProxy = new ERC1967Proxy(
+            address(new DisputeGameFactory()),
+            abi.encodeWithSelector(DisputeGameFactory.initialize.selector, msg.sender)
+        );
         DisputeGameFactory factory = DisputeGameFactory(address(factoryProxy));
 
-        // Deploy MockOptimismPortal2 or get OptimismPortal2
         GameType gameType = GameType.wrap(config.gameType);
+
+        // Deploy MockOptimismPortal2 or get OptimismPortal2
         address payable portalAddress = deployOrGetOptimismPortal2(config, gameType);
 
-        // Deploy or get AnchorStateRegistry
-        AnchorStateRegistry registry = deployOrGetAnchorStateRegistry(config, factory, portalAddress);
+        OutputRoot memory startingAnchorRoot =
+            OutputRoot({root: Hash.wrap(config.startingRoot), l2BlockNumber: config.startingL2BlockNumber});
+
+        // Deploy anchor state registry
+        AnchorStateRegistry registry = deployAnchorStateRegistry(config, factory, portalAddress, startingAnchorRoot);
 
         // Deploy and configure access manager
         AccessManager accessManager = deployAccessManager(config, address(factoryProxy));
@@ -90,6 +100,10 @@ contract DeployOPSuccinctFDG is Script, Utils {
         // Deploy game implementation
         OPSuccinctFaultDisputeGame gameImpl =
             deployGameImplementation(config, factory, sp1Config, registry, accessManager);
+
+        // Set initial bond and implementation in factory.
+        factory.setInitBond(gameType, config.initialBondWei);
+        factory.setImplementation(gameType, IDisputeGame(address(gameImpl)));
 
         // Create deployed contracts struct
         DeployedContracts memory deployedContracts = DeployedContracts({
@@ -102,26 +116,6 @@ contract DeployOPSuccinctFDG is Script, Utils {
         });
 
         return deployedContracts;
-    }
-
-    /// @dev msg.sender should have owner role of factory
-    function configure(DeployedContracts memory contracts, FDGConfig memory config) internal {
-        GameType gameType = GameType.wrap(config.gameType);
-        DisputeGameFactory factory = DisputeGameFactory(contracts.factoryProxy);
-
-        // Set initial bond and implementation in factory
-        /// @dev: Requires factory owner role
-        factory.setInitBond(gameType, config.initialBondWei);
-        factory.setImplementation(gameType, IDisputeGame(contracts.gameImplementation));
-    }
-
-    /// @dev msg.sender should have guardian role of optimism portal
-    function activate(DeployedContracts memory contracts, FDGConfig memory config) internal {
-        GameType gameType = GameType.wrap(config.gameType);
-
-        // Set respected game type
-        /// @dev: Requires portal guardian role
-        IOptimismPortal2(payable(contracts.optimismPortal2)).setRespectedGameType(gameType);
     }
 
     function deployGameImplementation(
@@ -145,57 +139,36 @@ contract DeployOPSuccinctFDG is Script, Utils {
         );
     }
 
-    function deployOrGetDisputeGameFactoryProxy(FDGConfig memory config) internal returns (ERC1967Proxy) {
-        if (config.disputeGameFactoryAddress != address(0)) {
-            return ERC1967Proxy(payable(config.disputeGameFactoryAddress));
-        } else {
-            return new ERC1967Proxy(
-                address(new DisputeGameFactory()),
-                abi.encodeWithSelector(DisputeGameFactory.initialize.selector, msg.sender)
-            );
-        }
-    }
-
-    function deployOrGetAnchorStateRegistry(
+    function deployAnchorStateRegistry(
         FDGConfig memory config,
         DisputeGameFactory factory,
-        address payable portalAddress
+        address payable portalAddress,
+        OutputRoot memory startingAnchorRoot
     ) internal returns (AnchorStateRegistry) {
-        AnchorStateRegistry registry;
-        if (config.anchorStateRegistryAddress != address(0)) {
-            // Re-use anchor state registry
-            registry = AnchorStateRegistry(config.anchorStateRegistryAddress);
-            console.log("Using existing AnchorStateRegistry:", address(registry));
+        // Get or create superchain config
+        ISuperchainConfig superchainConfig;
+        if (config.celoSuperchainConfigAddress != address(0)) {
+            superchainConfig = ISuperchainConfig(config.celoSuperchainConfigAddress);
         } else {
-            OutputRoot memory startingAnchorRoot =
-                OutputRoot({root: Hash.wrap(config.startingRoot), l2BlockNumber: config.startingL2BlockNumber});
-
-            // Get or create superchain config
-            ISuperchainConfig superchainConfig;
-            if (config.celoSuperchainConfigAddress != address(0)) {
-                superchainConfig = ISuperchainConfig(config.celoSuperchainConfigAddress);
-            } else {
-                superchainConfig = ISuperchainConfig(address(new SuperchainConfig()));
-            }
-
-            // Deploy the anchor state registry proxy
-            ERC1967Proxy registryProxy = new ERC1967Proxy(
-                address(new AnchorStateRegistry()),
-                abi.encodeCall(
-                    AnchorStateRegistry.initialize,
-                    (
-                        superchainConfig,
-                        IDisputeGameFactory(address(factory)),
-                        IOptimismPortal2(portalAddress),
-                        startingAnchorRoot
-                    )
-                )
-            );
-
-            registry = AnchorStateRegistry(address(registryProxy));
-            console.log("Deployed AnchorStateRegistry:", address(registry));
+            superchainConfig = ISuperchainConfig(address(new SuperchainConfig()));
         }
 
+        // Deploy the anchor state registry proxy.
+        ERC1967Proxy registryProxy = new ERC1967Proxy(
+            address(new AnchorStateRegistry()),
+            abi.encodeCall(
+                AnchorStateRegistry.initialize,
+                (
+                    ISuperchainConfig(address(new SuperchainConfig())),
+                    IDisputeGameFactory(address(factory)),
+                    IOptimismPortal2(portalAddress),
+                    startingAnchorRoot
+                )
+            )
+        );
+
+        AnchorStateRegistry registry = AnchorStateRegistry(address(registryProxy));
+        console.log("Anchor state registry:", address(registry));
         return registry;
     }
 
@@ -227,12 +200,10 @@ contract DeployOPSuccinctFDG is Script, Utils {
             SP1MockVerifier sp1Verifier = new SP1MockVerifier();
             sp1Config.verifierAddress = address(sp1Verifier);
             console.log("Using SP1 Mock Verifier:", address(sp1Verifier));
-        } else if (config.verifierAddress != address(0)) {
+        } else {
             // Use provided verifier address for production.
             sp1Config.verifierAddress = config.verifierAddress;
             console.log("Using SP1 Verifier Gateway:", sp1Config.verifierAddress);
-        } else {
-            revert("Verifier address cannot be 0!");
         }
 
         return sp1Config;
