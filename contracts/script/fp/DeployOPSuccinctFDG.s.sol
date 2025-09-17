@@ -159,7 +159,7 @@ contract DeployOPSuccinctFDG is Script, Utils {
             abi.encodeCall(
                 AnchorStateRegistry.initialize,
                 (
-                    ISuperchainConfig(address(new SuperchainConfig())),
+                    ISuperchainConfig(superchainConfig),
                     IDisputeGameFactory(address(factory)),
                     IOptimismPortal2(portalAddress),
                     startingAnchorRoot

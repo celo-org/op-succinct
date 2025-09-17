@@ -751,7 +751,6 @@ where
                 tracing::info!(
                     game_address = ?game_address,
                     game_index = %index,
-                    game_address = ?game_address,
                     l2_block_end = %l2_block_number,
                     tx_hash = ?receipt.transaction_hash,
                     "Game resolved successfully"

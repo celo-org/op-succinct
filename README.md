@@ -83,7 +83,6 @@ mdbook serve --open
 
 To configure or change the OP Succinct codebase, please refer to the [OP Succinct Book](https://succinctlabs.github.io/op-succinct).
 
->>>>>>> upstream/main
 ## Acknowledgments
 
 This repo would not exist without:
