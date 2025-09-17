@@ -87,7 +87,7 @@ contract DeployOPSuccinctFDG is Script, Utils {
     }
 
     function deployContracts(FDGConfig memory config) internal returns (DeployedContracts memory) {
-        // Deploy factory proxy.
+        // Deploy or get DisputeGameFactory
         ERC1967Proxy factoryProxy = deployOrGetDisputeGameFactoryProxy(config);
         DisputeGameFactory factory = DisputeGameFactory(address(factoryProxy));
 
@@ -244,10 +244,12 @@ contract DeployOPSuccinctFDG is Script, Utils {
             SP1MockVerifier sp1Verifier = new SP1MockVerifier();
             sp1Config.verifierAddress = address(sp1Verifier);
             console.log("Using SP1 Mock Verifier:", address(sp1Verifier));
-        } else {
+        } else if (config.verifierAddress != address(0)) {
             // Use provided verifier address for production.
             sp1Config.verifierAddress = config.verifierAddress;
             console.log("Using SP1 Verifier Gateway:", sp1Config.verifierAddress);
+        } else {
+            revert("Verifier address cannot be 0!");
         }
 
         return sp1Config;
