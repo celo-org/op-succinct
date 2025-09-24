@@ -351,3 +351,12 @@ remove-config config_name env_file=".env":
         --rpc-url $L1_RPC \
         --private-key $PRIVATE_KEY \
         --broadcast
+
+audit-forkdiff:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    outpath=audits/audit-forkdiff.html
+    go install github.com/protolambda/forkdiff@v0.1.1
+    forkdiff --repo . --fork audits/audit-forkdiff.yaml --out $outpath
+    echo "Audit forkdiff written to $outpath"
