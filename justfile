@@ -355,8 +355,12 @@ remove-config config_name env_file=".env":
 audit-forkdiff:
     #!/usr/bin/env bash
     set -euo pipefail
-
     outpath=audits/audit-forkdiff.html
-    go install github.com/protolambda/forkdiff@v0.1.1
-    forkdiff --repo . --fork audits/audit-forkdiff.yaml --out $outpath
+
+    docker run --rm \
+        --mount src=$(pwd),target=/host-pwd,type=bind \
+        --platform linux/amd64 \
+        protolambda/forkdiff:latest \
+        -repo /host-pwd/ -fork /host-pwd/audits/audit-forkdiff.yaml -out /host-pwd/$outpath
+
     echo "Audit forkdiff written to $outpath"
