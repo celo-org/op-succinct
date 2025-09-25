@@ -144,8 +144,9 @@ impl WitnessGenerator for EigenDAWitnessGenerator {
         // Extract the EigenDA witness data
         let mut eigenda_witness_data = std::mem::take(&mut *eigenda_blobs_witness.lock().unwrap());
 
-        // If there are no EigenDA DA certs collected for this range, skip Canoe proof generation.
-        if eigenda_witness_data.validity.is_empty() {
+        // If no Hokulea preimage is required, then eigenda_data should be None
+        // (Todo), EigenDABlobWitness should expose a function, as opposed to check is_empty()
+        if eigenda_witness_data.recency.is_empty() {
             let witness = EigenDAWitnessData {
                 preimage_store: preimage_witness_store.lock().unwrap().clone(),
                 blob_data: blob_data.lock().unwrap().clone(),
@@ -155,27 +156,32 @@ impl WitnessGenerator for EigenDAWitnessGenerator {
             return Ok(witness);
         }
 
-        // Generate canoe proofs using the reduced proof provider for proof aggregation
-        use canoe_sp1_cc_host::CanoeSp1CCReducedProofProvider;
-        let eth_rpc_url = std::env::var("L1_RPC")
-            .map_err(|_| anyhow::anyhow!("L1_RPC environment variable not set"))?;
-        let mock_mode = env::var("OP_SUCCINCT_MOCK")
-            .unwrap_or("false".to_string())
-            .parse::<bool>()
-            .unwrap_or(false);
-        let canoe_provider = CanoeSp1CCReducedProofProvider { eth_rpc_url, mock_mode };
-        let canoe_proofs = hokulea_witgen::from_boot_info_to_canoe_proof(
-            &boot_info,
-            &eigenda_witness_data,
-            oracle.clone(),
-            canoe_provider,
-        )
-        .await?;
+        // If there is no da cert, skip Canoe proof generation
+        if eigenda_witness_data.require_canoe_proof() {
+             // Generate canoe proofs using the reduced proof provider for proof aggregation
+            use canoe_sp1_cc_host::CanoeSp1CCReducedProofProvider;
+            let eth_rpc_url = std::env::var("L1_RPC")
+                .map_err(|_| anyhow::anyhow!("L1_RPC environment variable not set"))?;
+            let mock_mode = env::var("OP_SUCCINCT_MOCK")
+                .unwrap_or("false".to_string())
+                .parse::<bool>()
+                .unwrap_or(false);
+            let canoe_provider = CanoeSp1CCReducedProofProvider { eth_rpc_url, mock_mode };
+            let canoe_proofs = hokulea_witgen::from_boot_info_to_canoe_proof(
+                &boot_info,
+                &eigenda_witness_data,
+                oracle.clone(),
+                canoe_provider,
+            )
+            .await?;
 
-        // Store the canoe proof in the witness data
-        let canoe_proof_bytes =
-            serde_cbor::to_vec(&canoe_proofs).expect("Failed to serialize canoe proof");
-        eigenda_witness_data.canoe_proof_bytes = Some(canoe_proof_bytes);
+            // Store the canoe proof in the witness data
+            let canoe_proof_bytes =
+                serde_cbor::to_vec(&canoe_proofs).expect("Failed to serialize canoe proof");
+            eigenda_witness_data.canoe_proof_bytes = Some(canoe_proof_bytes);
+        } else {
+            eigenda_witness_data.canoe_proof_bytes = None
+        }
 
         let eigenda_witness_bytes = serde_cbor::to_vec(&eigenda_witness_data)
             .expect("Failed to serialize EigenDA witness data");
