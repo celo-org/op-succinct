@@ -64,8 +64,9 @@ where
             beacon,
             &rollup_config.op_rollup_config,
         );
-        let eigenda_blob_source = EigenDAPreimageSource::new(self.eigenda_blob_provider.clone());
-        let da_provider = EigenDADataSource::new(ethereum_data_source, eigenda_blob_source);
+        let eigenda_preimage_source =
+            EigenDAPreimageSource::new(self.eigenda_blob_provider.clone());
+        let da_provider = EigenDADataSource::new(ethereum_data_source, eigenda_preimage_source);
 
         Ok(OraclePipeline::new(
             Arc::new(rollup_config.op_rollup_config.clone()),
