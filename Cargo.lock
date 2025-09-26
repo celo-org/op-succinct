@@ -145,7 +145,7 @@ dependencies = [
 [[package]]
 name = "alloy-celo-evm"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=ac170ba#ac170bac9a0de297eb6572a5268854d8550e4246"
+source = "git+https://github.com/celo-org/celo-kona?rev=4a6a618#4a6a618833ea851a4f4e3ebcb9c7381bc410a5b7"
 dependencies = [
  "alloy-consensus 1.0.9",
  "alloy-evm 0.10.0",
@@ -2611,14 +2611,6 @@ dependencies = [
 [[package]]
 name = "canoe-bindings"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c#0c8f62c1ca4872ba9afcd37c421b350e75679809"
-dependencies = [
- "alloy-sol-types",
-]
-
-[[package]]
-name = "canoe-bindings"
-version = "0.1.0"
 source = "git+https://github.com/Layr-Labs/hokulea?rev=2dae748#2dae748c69d7ace01ab1c1ff471e87449371893d"
 dependencies = [
  "alloy-sol-types",
@@ -2633,8 +2625,8 @@ dependencies = [
  "alloy-sol-types",
  "anyhow",
  "async-trait",
- "canoe-bindings 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
- "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
+ "canoe-bindings",
+ "eigenda-cert",
  "serde",
  "thiserror 2.0.12",
 ]
@@ -2650,9 +2642,9 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bincode",
- "canoe-bindings 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
+ "canoe-bindings",
  "canoe-provider",
- "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
+ "eigenda-cert",
  "rsp-primitives",
  "sp1-cc-client-executor",
  "sp1-cc-host-executor",
@@ -2786,7 +2778,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-consensus"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=ac170ba#ac170bac9a0de297eb6572a5268854d8550e4246"
+source = "git+https://github.com/celo-org/celo-kona?rev=4a6a618#4a6a618833ea851a4f4e3ebcb9c7381bc410a5b7"
 dependencies = [
  "alloy-consensus 1.0.9",
  "alloy-eips 1.0.9",
@@ -2802,7 +2794,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-network"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=ac170ba#ac170bac9a0de297eb6572a5268854d8550e4246"
+source = "git+https://github.com/celo-org/celo-kona?rev=4a6a618#4a6a618833ea851a4f4e3ebcb9c7381bc410a5b7"
 dependencies = [
  "alloy-consensus 1.0.9",
  "alloy-network 1.0.9",
@@ -2816,7 +2808,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-rpc-types"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=ac170ba#ac170bac9a0de297eb6572a5268854d8550e4246"
+source = "git+https://github.com/celo-org/celo-kona?rev=4a6a618#4a6a618833ea851a4f4e3ebcb9c7381bc410a5b7"
 dependencies = [
  "alloy-consensus 1.0.9",
  "alloy-eips 1.0.9",
@@ -2835,7 +2827,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-rpc-types-engine"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=ac170ba#ac170bac9a0de297eb6572a5268854d8550e4246"
+source = "git+https://github.com/celo-org/celo-kona?rev=4a6a618#4a6a618833ea851a4f4e3ebcb9c7381bc410a5b7"
 dependencies = [
  "alloy-consensus 1.0.9",
  "alloy-eips 1.0.9",
@@ -2851,7 +2843,7 @@ dependencies = [
 [[package]]
 name = "celo-client"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=ac170ba#ac170bac9a0de297eb6572a5268854d8550e4246"
+source = "git+https://github.com/celo-org/celo-kona?rev=4a6a618#4a6a618833ea851a4f4e3ebcb9c7381bc410a5b7"
 dependencies = [
  "alloy-celo-evm",
  "alloy-consensus 1.0.9",
@@ -2861,8 +2853,8 @@ dependencies = [
  "celo-proof",
  "celo-protocol",
  "cfg-if",
- "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c)",
- "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c)",
+ "hokulea-eigenda",
+ "hokulea-proof",
  "kona-client",
  "kona-derive",
  "kona-executor",
@@ -2876,7 +2868,7 @@ dependencies = [
 [[package]]
 name = "celo-driver"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=ac170ba#ac170bac9a0de297eb6572a5268854d8550e4246"
+source = "git+https://github.com/celo-org/celo-kona?rev=4a6a618#4a6a618833ea851a4f4e3ebcb9c7381bc410a5b7"
 dependencies = [
  "alloy-consensus 1.0.9",
  "alloy-primitives 1.1.2",
@@ -2897,7 +2889,7 @@ dependencies = [
 [[package]]
 name = "celo-executor"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=ac170ba#ac170bac9a0de297eb6572a5268854d8550e4246"
+source = "git+https://github.com/celo-org/celo-kona?rev=4a6a618#4a6a618833ea851a4f4e3ebcb9c7381bc410a5b7"
 dependencies = [
  "alloy-celo-evm",
  "alloy-consensus 1.0.9",
@@ -2924,7 +2916,7 @@ dependencies = [
 [[package]]
 name = "celo-genesis"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=ac170ba#ac170bac9a0de297eb6572a5268854d8550e4246"
+source = "git+https://github.com/celo-org/celo-kona?rev=4a6a618#4a6a618833ea851a4f4e3ebcb9c7381bc410a5b7"
 dependencies = [
  "alloy-consensus 1.0.9",
  "alloy-eips 1.0.9",
@@ -2932,6 +2924,7 @@ dependencies = [
  "alloy-op-hardforks",
  "alloy-primitives 1.1.2",
  "alloy-sol-types",
+ "derive_more 2.0.1",
  "kona-genesis",
  "kona-serde",
  "op-revm 5.0.1",
@@ -2944,7 +2937,7 @@ dependencies = [
 [[package]]
 name = "celo-host"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=ac170ba#ac170bac9a0de297eb6572a5268854d8550e4246"
+source = "git+https://github.com/celo-org/celo-kona?rev=4a6a618#4a6a618833ea851a4f4e3ebcb9c7381bc410a5b7"
 dependencies = [
  "alloy-consensus 1.0.9",
  "alloy-eips 1.0.9",
@@ -2960,8 +2953,8 @@ dependencies = [
  "celo-client",
  "celo-genesis",
  "clap",
- "hokulea-host-bin 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c)",
- "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c)",
+ "hokulea-host-bin",
+ "hokulea-proof",
  "kona-cli",
  "kona-host",
  "kona-mpt",
@@ -2981,7 +2974,7 @@ dependencies = [
 [[package]]
 name = "celo-proof"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=ac170ba#ac170bac9a0de297eb6572a5268854d8550e4246"
+source = "git+https://github.com/celo-org/celo-kona?rev=4a6a618#4a6a618833ea851a4f4e3ebcb9c7381bc410a5b7"
 dependencies = [
  "alloy-consensus 1.0.9",
  "alloy-eips 1.0.9",
@@ -3015,7 +3008,7 @@ dependencies = [
 [[package]]
 name = "celo-protocol"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=ac170ba#ac170bac9a0de297eb6572a5268854d8550e4246"
+source = "git+https://github.com/celo-org/celo-kona?rev=4a6a618#4a6a618833ea851a4f4e3ebcb9c7381bc410a5b7"
 dependencies = [
  "alloy-consensus 1.0.9",
  "alloy-eips 1.0.9",
@@ -3044,7 +3037,7 @@ dependencies = [
 [[package]]
 name = "celo-registry"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=ac170ba#ac170bac9a0de297eb6572a5268854d8550e4246"
+source = "git+https://github.com/celo-org/celo-kona?rev=4a6a618#4a6a618833ea851a4f4e3ebcb9c7381bc410a5b7"
 dependencies = [
  "alloy-chains",
  "alloy-primitives 1.1.2",
@@ -3059,7 +3052,7 @@ dependencies = [
 [[package]]
 name = "celo-revm"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=ac170ba#ac170bac9a0de297eb6572a5268854d8550e4246"
+source = "git+https://github.com/celo-org/celo-kona?rev=4a6a618#4a6a618833ea851a4f4e3ebcb9c7381bc410a5b7"
 dependencies = [
  "alloy-eips 1.0.9",
  "alloy-evm 0.10.0",
@@ -4088,25 +4081,12 @@ dependencies = [
 [[package]]
 name = "eigenda-cert"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c#0c8f62c1ca4872ba9afcd37c421b350e75679809"
-dependencies = [
- "alloy-primitives 1.1.2",
- "alloy-rlp",
- "anyhow",
- "canoe-bindings 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c)",
- "serde",
- "thiserror 2.0.12",
-]
-
-[[package]]
-name = "eigenda-cert"
-version = "0.1.0"
 source = "git+https://github.com/Layr-Labs/hokulea?rev=2dae748#2dae748c69d7ace01ab1c1ff471e87449371893d"
 dependencies = [
  "alloy-primitives 1.1.2",
  "alloy-rlp",
  "anyhow",
- "canoe-bindings 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
+ "canoe-bindings",
  "serde",
  "thiserror 2.0.12",
 ]
@@ -5264,30 +5244,11 @@ dependencies = [
 [[package]]
 name = "hokulea-client"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c#0c8f62c1ca4872ba9afcd37c421b350e75679809"
-dependencies = [
- "alloy-consensus 1.0.9",
- "alloy-evm 0.10.0",
- "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c)",
- "kona-client",
- "kona-derive",
- "kona-driver",
- "kona-executor",
- "kona-preimage",
- "kona-proof",
- "op-alloy-consensus 0.17.2",
- "op-revm 5.0.1",
- "tracing",
-]
-
-[[package]]
-name = "hokulea-client"
-version = "0.1.0"
 source = "git+https://github.com/Layr-Labs/hokulea?rev=2dae748#2dae748c69d7ace01ab1c1ff471e87449371893d"
 dependencies = [
  "alloy-consensus 1.0.9",
  "alloy-evm 0.10.0",
- "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
+ "hokulea-eigenda",
  "kona-client",
  "kona-derive",
  "kona-driver",
@@ -5302,30 +5263,12 @@ dependencies = [
 [[package]]
 name = "hokulea-client-bin"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c#0c8f62c1ca4872ba9afcd37c421b350e75679809"
-dependencies = [
- "alloy-evm 0.10.0",
- "cfg-if",
- "hokulea-client 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c)",
- "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c)",
- "kona-client",
- "kona-preimage",
- "kona-proof",
- "kona-std-fpvm",
- "kona-std-fpvm-proc",
- "op-alloy-consensus 0.17.2",
- "op-revm 5.0.1",
-]
-
-[[package]]
-name = "hokulea-client-bin"
-version = "0.1.0"
 source = "git+https://github.com/Layr-Labs/hokulea?rev=2dae748#2dae748c69d7ace01ab1c1ff471e87449371893d"
 dependencies = [
  "alloy-evm 0.10.0",
  "cfg-if",
- "hokulea-client 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
- "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
+ "hokulea-client",
+ "hokulea-proof",
  "kona-client",
  "kona-preimage",
  "kona-proof",
@@ -5349,26 +5292,11 @@ dependencies = [
 [[package]]
 name = "hokulea-eigenda"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c#0c8f62c1ca4872ba9afcd37c421b350e75679809"
-dependencies = [
- "alloy-primitives 1.1.2",
- "async-trait",
- "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c)",
- "kona-derive",
- "kona-protocol",
- "rust-kzg-bn254-primitives",
- "thiserror 2.0.12",
- "tracing",
-]
-
-[[package]]
-name = "hokulea-eigenda"
-version = "0.1.0"
 source = "git+https://github.com/Layr-Labs/hokulea?rev=2dae748#2dae748c69d7ace01ab1c1ff471e87449371893d"
 dependencies = [
  "alloy-primitives 1.1.2",
  "async-trait",
- "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
+ "eigenda-cert",
  "kona-derive",
  "kona-protocol",
  "rust-kzg-bn254-primitives",
@@ -5380,43 +5308,16 @@ dependencies = [
 [[package]]
 name = "hokulea-host-bin"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c#0c8f62c1ca4872ba9afcd37c421b350e75679809"
-dependencies = [
- "alloy-primitives 1.1.2",
- "anyhow",
- "async-trait",
- "clap",
- "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c)",
- "hokulea-client-bin 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c)",
- "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c)",
- "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c)",
- "kona-cli",
- "kona-client",
- "kona-host",
- "kona-preimage",
- "kona-proof",
- "kona-std-fpvm",
- "reqwest 0.12.22",
- "serde",
- "thiserror 2.0.12",
- "tokio",
- "tracing",
- "tracing-subscriber 0.3.19",
-]
-
-[[package]]
-name = "hokulea-host-bin"
-version = "0.1.0"
 source = "git+https://github.com/Layr-Labs/hokulea?rev=2dae748#2dae748c69d7ace01ab1c1ff471e87449371893d"
 dependencies = [
  "alloy-primitives 1.1.2",
  "anyhow",
  "async-trait",
  "clap",
- "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
- "hokulea-client-bin 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
- "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
- "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
+ "eigenda-cert",
+ "hokulea-client-bin",
+ "hokulea-eigenda",
+ "hokulea-proof",
  "kona-cli",
  "kona-client",
  "kona-host",
@@ -5434,30 +5335,6 @@ dependencies = [
 [[package]]
 name = "hokulea-proof"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c#0c8f62c1ca4872ba9afcd37c421b350e75679809"
-dependencies = [
- "alloy-primitives 1.1.2",
- "alloy-sol-types",
- "ark-bn254",
- "ark-ff 0.5.0",
- "async-trait",
- "canoe-bindings 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c)",
- "cfg-if",
- "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c)",
- "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=0c8f62c)",
- "kona-preimage",
- "kona-proof",
- "rust-kzg-bn254-primitives",
- "rust-kzg-bn254-verifier",
- "serde",
- "serde_json",
- "thiserror 2.0.12",
- "tracing",
-]
-
-[[package]]
-name = "hokulea-proof"
-version = "0.1.0"
 source = "git+https://github.com/Layr-Labs/hokulea?rev=2dae748#2dae748c69d7ace01ab1c1ff471e87449371893d"
 dependencies = [
  "alloy-primitives 1.1.2",
@@ -5465,10 +5342,10 @@ dependencies = [
  "ark-bn254",
  "ark-ff 0.5.0",
  "async-trait",
- "canoe-bindings 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
+ "canoe-bindings",
  "cfg-if",
- "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
- "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
+ "eigenda-cert",
+ "hokulea-eigenda",
  "kona-preimage",
  "kona-proof",
  "rust-kzg-bn254-primitives",
@@ -5492,10 +5369,10 @@ dependencies = [
  "anyhow",
  "async-trait",
  "canoe-provider",
- "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
+ "eigenda-cert",
  "hokulea-compute-proof",
- "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
- "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
+ "hokulea-eigenda",
+ "hokulea-proof",
  "kona-preimage",
  "kona-proof",
  "tracing",
@@ -5506,7 +5383,7 @@ name = "hokulea-zkvm-verification"
 version = "0.1.0"
 source = "git+https://github.com/Layr-Labs/hokulea?rev=2dae748#2dae748c69d7ace01ab1c1ff471e87449371893d"
 dependencies = [
- "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
+ "hokulea-proof",
  "kona-preimage",
  "kona-proof",
 ]
@@ -8652,8 +8529,8 @@ dependencies = [
  "celo-genesis",
  "celo-proof",
  "celo-protocol",
- "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
- "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
+ "hokulea-eigenda",
+ "hokulea-proof",
  "hokulea-witgen",
  "kona-derive",
  "kona-driver",
@@ -8678,9 +8555,9 @@ dependencies = [
  "celo-genesis",
  "celo-host",
  "celo-protocol",
- "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
- "hokulea-host-bin 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
- "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
+ "hokulea-eigenda",
+ "hokulea-host-bin",
+ "hokulea-proof",
  "hokulea-witgen",
  "kona-preimage",
  "kona-proof",
@@ -8809,7 +8686,7 @@ dependencies = [
  "cfg-if",
  "futures",
  "hana-host",
- "hokulea-host-bin 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
+ "hokulea-host-bin",
  "kona-derive",
  "kona-genesis",
  "kona-host",
@@ -10348,7 +10225,7 @@ dependencies = [
 name = "range-eigenda"
 version = "0.1.0"
 dependencies = [
- "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=2dae748)",
+ "hokulea-proof",
  "hokulea-zkvm-verification",
  "kona-proof",
  "op-succinct-client-utils",
