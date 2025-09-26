@@ -52,7 +52,7 @@ RUN apt-get update && apt-get install -y \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH=/root/.cargo/bin:$PATH
 RUN rustup install stable && rustup default stable
-    
+
 # Copy the built proposer binary
 COPY --from=builder /usr/src/app/target/release/proposer /usr/local/bin/
 
