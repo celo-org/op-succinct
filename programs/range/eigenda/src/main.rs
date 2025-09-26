@@ -30,22 +30,16 @@ fn main() {
             .expect("Failed to deserialize witness data.");
 
         let (oracle, _beacon) = witness_data.clone().get_oracle_and_blob_provider().await.unwrap();
-
-        let preloaded_blob_provider = match &witness_data.eigenda_data {
-            Some(eigenda_witness_bytes) => {
-                let eigenda_witness: EigenDABlobWitnessData = serde_cbor::from_slice(
-                    &eigenda_witness_bytes.clone(),
-                )
-                .expect("cannot deserialize eigenda witness");
-                let preloaded_blob_provider =
-                    eigenda_witness_to_preloaded_provider(oracle, CanoeSp1CCVerifier {}, eigenda_witness)
-                        .await
-                        .expect("Failed to get preloaded blob provider");
-                preloaded_blob_provider
-            },
-            // when no preimage (recency, validity or encoded payload) is required to run Hokulea
-            None => PreloadedEigenDABlobProvider::default(),
-        };
+        
+        let eigenda_witness: EigenDABlobWitnessData = serde_cbor::from_slice(
+            &witness_data.eigenda_data.clone().expect("eigenda witness data is not present"),
+        )
+        .expect("cannot deserialize eigenda witness");
+    
+        let preloaded_blob_provider =
+            eigenda_witness_to_preloaded_provider(oracle, CanoeSp1CCVerifier {}, eigenda_witness)
+                .await
+                .expect("Failed to get preloaded blob provider");
 
         run_range_program(EigenDAWitnessExecutor::new(preloaded_blob_provider), witness_data).await;
     });
