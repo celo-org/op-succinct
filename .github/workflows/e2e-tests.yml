@@ -26,6 +26,7 @@ on:
 jobs:
   e2e-tests:
     name: Run E2E Tests
+    environment: e2e
     runs-on: ubuntu-latest
     timeout-minutes: 30
     
