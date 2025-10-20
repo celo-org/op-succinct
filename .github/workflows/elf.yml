@@ -25,9 +25,9 @@ jobs:
       - name: Install SP1 toolchain
         run: |
           curl -L https://sp1.succinct.xyz | bash
+          $HOME/.sp1/bin/sp1up
+          $HOME/.sp1/bin/cargo-prove prove --version
           echo "$HOME/.sp1/bin" >> $GITHUB_PATH
-          sp1up
-          cargo-prove prove --version
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Install just
