@@ -98,7 +98,6 @@ where
                 self.config.max_games_to_check_for_challenge,
                 self.l1_provider.clone(),
                 self.l2_provider.clone(),
-                self.config.game_type,
                 |status| status == ProposalStatus::Unchallenged,
                 |output_root, game_claim| output_root == game_claim, /* Valid games (opposite of
                                                                       * honest challenger) */
@@ -119,7 +118,6 @@ where
                 self.config.max_games_to_check_for_challenge,
                 self.l1_provider.clone(),
                 self.l2_provider.clone(),
-                self.config.game_type,
             )
             .await?
         {
@@ -174,7 +172,6 @@ where
                 self.signer.clone(),
                 self.config.l1_rpc.clone(),
                 self.l1_provider.clone(),
-                self.config.game_type,
             )
             .await
     }
@@ -189,7 +186,6 @@ where
                 self.config.max_games_to_check_for_bond_claiming,
                 self.challenger_address,
                 Mode::Challenger,
-                self.config.game_type,
             )
             .await?
         {

@@ -48,7 +48,6 @@ fn main() -> anyhow::Result<()> {
         "SP1MockVerifier",
         "OPSuccinctFaultDisputeGame",
         "ERC1967Proxy",
-        "MockPermissionedDisputeGame",
         // Also include interfaces that we need
         "IDisputeGameFactory",
         "IDisputeGame",

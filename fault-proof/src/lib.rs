@@ -44,12 +44,6 @@ pub enum Action {
     Skipped,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Game {
-    pub game_type: u32,
-    pub address: Address,
-}
-
 #[async_trait]
 pub trait L2ProviderTrait {
     /// Get the L2 block by number.
@@ -139,8 +133,8 @@ where
     /// Fetches the latest game index.
     async fn fetch_latest_game_index(&self) -> Result<Option<U256>>;
 
-    /// Fetches the game by index.
-    async fn fetch_game_by_index(&self, game_index: U256) -> Result<Game>;
+    /// Fetches the game address by index.
+    async fn fetch_game_address_by_index(&self, game_index: U256) -> Result<Address>;
 
     /// Get the latest valid proposal.
     ///
@@ -149,7 +143,6 @@ where
     async fn get_latest_valid_proposal(
         &self,
         l2_provider: L2Provider,
-        expected_game_type: u32,
     ) -> Result<Option<(U256, U256)>>;
 
     /// Get the anchor state registry address.
@@ -173,13 +166,11 @@ where
     ) -> Result<bool>;
 
     /// Get the oldest game address with a given condition.
-    #[allow(clippy::too_many_arguments)]
     async fn get_oldest_game_address<S, O>(
         &self,
         max_games_to_check: u64,
         l1_provider: L1Provider,
         l2_provider: L2Provider,
-        expected_game_type: u32,
         status_check: S,
         output_root_check: O,
         log_message: &str,
@@ -189,13 +180,11 @@ where
         O: Fn(B256, B256) -> bool + Send + Sync;
 
     /// Get all game addresses with a given condition.
-    #[allow(clippy::too_many_arguments)]
     async fn get_game_addresses<S, O>(
         &self,
         max_games_to_check: u64,
         l1_provider: L1Provider,
         l2_provider: L2Provider,
-        expected_game_type: u32,
         status_check: S,
         output_root_check: O,
         log_message: &str,
@@ -213,7 +202,6 @@ where
         max_games_to_check_for_challenge: u64,
         l1_provider: L1Provider,
         l2_provider: L2Provider,
-        expected_game_type: u32,
     ) -> Result<Option<Address>>;
 
     /// Get the defensible game addresses.
@@ -228,7 +216,6 @@ where
         max_games_to_check_for_defense: u64,
         l1_provider: L1Provider,
         l2_provider: L2Provider,
-        expected_game_type: u32,
     ) -> Result<Vec<Address>>;
 
     /// Get the oldest game address with claimable bonds.
@@ -249,7 +236,6 @@ where
         max_games_to_check_for_bond_claiming: u64,
         claimant: Address,
         mode: Mode,
-        expected_game_type: u32,
     ) -> Result<Option<Address>>;
 
     /// Determines whether to attempt resolution or not. The `oldest_game_index` is configured
@@ -260,11 +246,7 @@ where
     ///
     /// NOTE(fakedev9999): Needs to be updated considering more complex cases where there are
     ///                    multiple branches of games.
-    async fn should_attempt_resolution(
-        &self,
-        oldest_game_index: U256,
-        expected_game_type: u32,
-    ) -> Result<bool>;
+    async fn should_attempt_resolution(&self, oldest_game_index: U256) -> Result<(bool, Address)>;
 
     /// Attempts to resolve a challenged game.
     ///
@@ -277,7 +259,6 @@ where
         signer: Signer,
         l1_rpc: Url,
         l1_provider: L1Provider,
-        expected_game_type: u32,
     ) -> Result<Action>;
 
     /// Attempts to resolve all challenged games that the challenger won, up to
@@ -289,7 +270,6 @@ where
         signer: Signer,
         l1_rpc: Url,
         l1_provider: L1Provider,
-        expected_game_type: u32,
     ) -> Result<()>;
 }
 
@@ -327,10 +307,10 @@ where
         Ok(Some(latest_game_index))
     }
 
-    /// Fetches the game by index.
-    async fn fetch_game_by_index(&self, game_index: U256) -> Result<Game> {
-        let game = self.gameAtIndex(game_index).call().await?;
-        Ok(Game { game_type: game.gameType, address: game.proxy })
+    /// Fetches the game address by index.
+    async fn fetch_game_address_by_index(&self, game_index: U256) -> Result<Address> {
+        let game = self.gameAtIndex(game_index).call().await?.proxy;
+        Ok(game)
     }
 
     /// Get the latest valid proposal.
@@ -340,60 +320,65 @@ where
     async fn get_latest_valid_proposal(
         &self,
         l2_provider: L2Provider,
-        expected_game_type: u32,
     ) -> Result<Option<(U256, U256)>> {
         // Get latest game index, return None if no games exist.
         let Some(mut game_index) = self.fetch_latest_game_index().await? else {
             return Ok(None);
         };
 
+        let mut block_number;
+
         // Loop through games in reverse order (latest to earliest) to find the most recent valid
         // game.
         loop {
-            let game = self.fetch_game_by_index(game_index).await?;
+            // Get the game contract for the current index.
+            let game_address = self.fetch_game_address_by_index(game_index).await?;
+            let game = OPSuccinctFaultDisputeGame::new(game_address, self.provider());
 
-            if game.game_type != expected_game_type {
-                tracing::debug!(
-                    game_index = %game_index,
-                    game_type = game.game_type,
-                    expected_game_type,
-                    "Skipping game with unexpected type"
-                );
-            } else {
-                let game_contract = OPSuccinctFaultDisputeGame::new(game.address, self.provider());
-                let block_number = game_contract.l2BlockNumber().call().await?;
-                tracing::debug!(
-                    "Checking if game {:?} at block {:?} is valid",
-                    game.address,
-                    block_number
-                );
+            // Get the L2 block number the game is proposing output for.
+            block_number = game.l2BlockNumber().call().await?;
+            tracing::debug!(
+                "Checking if game {:?} at block {:?} is valid",
+                game_address,
+                block_number
+            );
 
-                let game_claim = game_contract.rootClaim().call().await?;
-                let output_root = l2_provider.compute_output_root_at_block(block_number).await?;
+            // Get the output root the game is proposing.
+            let game_claim = game.rootClaim().call().await?;
 
-                if output_root == game_claim {
-                    tracing::info!(
-                        "Latest valid proposal at game index {:?} with l2 block number: {:?}",
-                        game_index,
-                        block_number
-                    );
-                    return Ok(Some((block_number, game_index)));
-                }
+            // Compute the actual output root at the L2 block number.
+            let output_root = l2_provider.compute_output_root_at_block(block_number).await?;
 
-                tracing::info!(
-                    "Output root {:?} is not same as game claim {:?}",
-                    output_root,
-                    game_claim
-                );
+            // If the output root matches the game claim, we've found the latest valid proposal.
+            if output_root == game_claim {
+                break;
             }
 
+            // If the output root doesn't match the game claim, we need to find earlier games.
+            tracing::info!(
+                "Output root {:?} is not same as game claim {:?}",
+                output_root,
+                game_claim
+            );
+
+            // If we've reached index 0 (the earliest game) and still haven't found a valid
+            // proposal. Return `None` as no valid proposals were found.
             if game_index == U256::ZERO {
                 tracing::info!("No valid proposals found after checking all games");
                 return Ok(None);
             }
 
+            // Decrement the game index to check the previous game.
             game_index -= U256::from(1);
         }
+
+        tracing::info!(
+            "Latest valid proposal at game index {:?} with l2 block number: {:?}",
+            game_index,
+            block_number
+        );
+
+        Ok(Some((block_number, game_index)))
     }
 
     /// Get the anchor state registry address.
@@ -481,13 +466,11 @@ where
         Ok(true)
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn get_oldest_game_address<S, O>(
         &self,
         max_games_to_check: u64,
         l1_provider: L1Provider,
         l2_provider: L2Provider,
-        expected_game_type: u32,
         status_check: S,
         output_root_check: O,
         log_message: &str,
@@ -504,27 +487,14 @@ where
         let mut game_index = latest_game_index.saturating_sub(U256::from(max_games_to_check));
 
         while game_index <= latest_game_index {
-            let game = self.fetch_game_by_index(game_index).await?;
-
-            if game.game_type != expected_game_type {
-                tracing::debug!(
-                    game_index = %game_index,
-                    game_type = game.game_type,
-                    expected_game_type,
-                    "Skipping game with unexpected type"
-                );
-                game_index += U256::from(1);
-                continue;
-            }
-
-            let game_contract: OPSuccinctFaultDisputeGame::OPSuccinctFaultDisputeGameInstance<&P> =
-                OPSuccinctFaultDisputeGame::new(game.address, self.provider());
-            let claim_data = game_contract.claimData().call().await?;
+            let game_address = self.fetch_game_address_by_index(game_index).await?;
+            let game = OPSuccinctFaultDisputeGame::new(game_address, self.provider());
+            let claim_data = game.claimData().call().await?;
 
             if !status_check(claim_data.status) {
                 tracing::debug!(
                     "Game {:?} at index {:?} does not match status criteria, skipping",
-                    game.address,
+                    game_address,
                     game_index
                 );
                 game_index += U256::from(1);
@@ -541,7 +511,7 @@ where
             if deadline < current_timestamp {
                 tracing::info!(
                     "Game {:?} at index {:?} deadline {:?} has passed, skipping",
-                    game.address,
+                    game_address,
                     game_index,
                     deadline
                 );
@@ -549,19 +519,19 @@ where
                 continue;
             }
 
-            let block_number = game_contract.l2BlockNumber().call().await?;
-            let game_claim = game_contract.rootClaim().call().await?;
+            let block_number = game.l2BlockNumber().call().await?;
+            let game_claim = game.rootClaim().call().await?;
             let output_root = l2_provider.compute_output_root_at_block(block_number).await?;
 
             if output_root_check(output_root, game_claim) {
                 tracing::info!(
                     "{} {:?} at game index {:?} with L2 block number: {:?}",
                     log_message,
-                    game.address,
+                    game_address,
                     game_index,
                     block_number
                 );
-                return Ok(Some(game.address));
+                return Ok(Some(game_address));
             }
 
             game_index += U256::from(1);
@@ -570,13 +540,11 @@ where
         Ok(None)
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn get_game_addresses<S, O>(
         &self,
         max_games_to_check: u64,
         l1_provider: L1Provider,
         l2_provider: L2Provider,
-        expected_game_type: u32,
         status_check: S,
         output_root_check: O,
         log_message: &str,
@@ -594,25 +562,14 @@ where
         let mut game_index = latest_game_index.saturating_sub(U256::from(max_games_to_check));
 
         while game_index <= latest_game_index {
-            let game = self.fetch_game_by_index(game_index).await?;
-            if game.game_type != expected_game_type {
-                tracing::debug!(
-                    game_index = %game_index,
-                    game_type = game.game_type,
-                    expected_game_type,
-                    "Skipping game with unexpected type"
-                );
-                game_index += U256::from(1);
-                continue;
-            }
-
-            let game_contract = OPSuccinctFaultDisputeGame::new(game.address, self.provider());
-            let claim_data = game_contract.claimData().call().await?;
+            let game_address = self.fetch_game_address_by_index(game_index).await?;
+            let game = OPSuccinctFaultDisputeGame::new(game_address, self.provider());
+            let claim_data = game.claimData().call().await?;
 
             if !status_check(claim_data.status) {
                 tracing::debug!(
                     "Game {:?} at index {:?} does not match status criteria, skipping",
-                    game.address,
+                    game_address,
                     game_index
                 );
                 game_index += U256::from(1);
@@ -629,7 +586,7 @@ where
             if deadline < current_timestamp {
                 tracing::info!(
                     "Game {:?} at index {:?} deadline {:?} has passed, skipping",
-                    game.address,
+                    game_address,
                     game_index,
                     deadline
                 );
@@ -637,19 +594,19 @@ where
                 continue;
             }
 
-            let block_number = game_contract.l2BlockNumber().call().await?;
-            let game_claim = game_contract.rootClaim().call().await?;
+            let block_number = game.l2BlockNumber().call().await?;
+            let game_claim = game.rootClaim().call().await?;
             let output_root = l2_provider.compute_output_root_at_block(block_number).await?;
 
             if output_root_check(output_root, game_claim) {
                 tracing::info!(
                     "{} {:?} at game index {:?} with L2 block number: {:?}",
                     log_message,
-                    game.address,
+                    game_address,
                     game_index,
                     block_number
                 );
-                addresses.push(game.address);
+                addresses.push(game_address);
             }
 
             game_index += U256::from(1);
@@ -664,13 +621,11 @@ where
         max_games_to_check_for_challenge: u64,
         l1_provider: L1Provider,
         l2_provider: L2Provider,
-        expected_game_type: u32,
     ) -> Result<Option<Address>> {
         self.get_oldest_game_address(
             max_games_to_check_for_challenge,
             l1_provider,
             l2_provider,
-            expected_game_type,
             |status| status == ProposalStatus::Unchallenged,
             |output_root, game_claim| output_root != game_claim,
             "Oldest challengable game",
@@ -684,13 +639,11 @@ where
         max_games_to_check_for_defense: u64,
         l1_provider: L1Provider,
         l2_provider: L2Provider,
-        expected_game_type: u32,
     ) -> Result<Vec<Address>> {
         self.get_game_addresses(
             max_games_to_check_for_defense,
             l1_provider,
             l2_provider,
-            expected_game_type,
             |status| status == ProposalStatus::Challenged,
             |output_root, game_claim| output_root == game_claim,
             "Defensible games",
@@ -712,7 +665,6 @@ where
         max_games_to_check_for_bond_claiming: u64,
         claimant: Address,
         mode: Mode,
-        expected_game_type: u32,
     ) -> Result<Option<Address>> {
         let latest_game_index = match self.fetch_latest_game_index().await? {
             Some(index) => index,
@@ -730,20 +682,9 @@ where
 
         for i in 0..games_to_check {
             let index = oldest_game_index + U256::from(i);
-            let game = self.fetch_game_by_index(index).await?;
-
-            if game.game_type != expected_game_type {
-                tracing::debug!(
-                    game_index = %index,
-                    game_type = game.game_type,
-                    expected_game_type,
-                    "Skipping game with unexpected type while checking bond claims"
-                );
-                continue;
-            }
-
-            if self.is_claimable(game_type, game.address, claimant, mode).await? {
-                return Ok(Some(game.address));
+            let game_address = self.fetch_game_address_by_index(index).await?;
+            if self.is_claimable(game_type, game_address, claimant, mode).await? {
+                return Ok(Some(game_address));
             }
         }
 
@@ -758,46 +699,22 @@ where
     ///
     /// NOTE(fakedev9999): Needs to be updated considering more complex cases where there are
     ///                    multiple branches of games.
-    async fn should_attempt_resolution(
-        &self,
-        oldest_game_index: U256,
-        expected_game_type: u32,
-    ) -> Result<bool> {
-        let oldest_game = self.fetch_game_by_index(oldest_game_index).await?;
+    async fn should_attempt_resolution(&self, oldest_game_index: U256) -> Result<(bool, Address)> {
+        let oldest_game_address = self.fetch_game_address_by_index(oldest_game_index).await?;
+        let oldest_game = OPSuccinctFaultDisputeGame::new(oldest_game_address, self.provider());
+        let parent_game_index = oldest_game.claimData().call().await?.parentIndex;
 
-        if oldest_game.game_type != expected_game_type {
-            tracing::debug!(
-                game_index = %oldest_game_index,
-                game_type = oldest_game.game_type,
-                expected_game_type,
-                "Oldest game has unexpected type; proceeding with resolution attempts for matching games"
-            );
-            return Ok(true);
-        }
-
-        let oldest_game_contract =
-            OPSuccinctFaultDisputeGame::new(oldest_game.address, self.provider());
-        let parent_game_index = oldest_game_contract.claimData().call().await?.parentIndex;
-
+        // Always attempt resolution for first games (those with parent_game_index == u32::MAX).
+        // For other games, only attempt if the oldest game's parent game is resolved.
         if parent_game_index == u32::MAX {
-            return Ok(true);
+            Ok((true, oldest_game_address))
+        } else {
+            let parent_game_address =
+                self.fetch_game_address_by_index(U256::from(parent_game_index)).await?;
+            let parent_game = OPSuccinctFaultDisputeGame::new(parent_game_address, self.provider());
+
+            Ok((parent_game.status().call().await? != GameStatus::IN_PROGRESS, oldest_game_address))
         }
-
-        let parent_game = self.fetch_game_by_index(U256::from(parent_game_index)).await?;
-
-        if parent_game.game_type != expected_game_type {
-            tracing::debug!(
-                parent_index = %parent_game_index,
-                game_type = parent_game.game_type,
-                expected_game_type,
-                "Parent game has unexpected type; treating as resolved for gating purposes"
-            );
-            return Ok(true);
-        }
-
-        let parent_game_contract =
-            OPSuccinctFaultDisputeGame::new(parent_game.address, self.provider());
-        Ok(parent_game_contract.status().call().await? != GameStatus::IN_PROGRESS)
     }
 
     /// Attempts to resolve a game.
@@ -810,33 +727,21 @@ where
         signer: Signer,
         l1_rpc: Url,
         l1_provider: L1Provider,
-        expected_game_type: u32,
     ) -> Result<Action> {
-        let game = self.fetch_game_by_index(index).await?;
-
-        if game.game_type != expected_game_type {
-            tracing::debug!(
-                game_index = %index,
-                game_type = game.game_type,
-                expected_game_type,
-                "Skipping resolution for game with unexpected type"
-            );
-            return Ok(Action::Skipped);
-        }
-
-        let game_contract = OPSuccinctFaultDisputeGame::new(game.address, l1_provider.clone());
+        let game_address = self.fetch_game_address_by_index(index).await?;
+        let game = OPSuccinctFaultDisputeGame::new(game_address, l1_provider.clone());
 
         // Early exit if game is not in progress
-        if game_contract.status().call().await? != GameStatus::IN_PROGRESS {
+        if game.status().call().await? != GameStatus::IN_PROGRESS {
             tracing::debug!(
-                game_address = ?game.address,
+                game_address = ?game_address,
                 game_index = %index,
                 "Game is not in progress, skipping"
             );
             return Ok(Action::Skipped);
         }
 
-        let claim_data = game_contract.claimData().call().await?;
+        let claim_data = game.claimData().call().await?;
         let is_proven = matches!(
             claim_data.status,
             ProposalStatus::UnchallengedAndValidProofProvided |
@@ -857,7 +762,7 @@ where
 
         if !can_resolve {
             tracing::debug!(
-                game_address = ?game.address,
+                game_address = ?game_address,
                 game_index = %index,
                 mode = ?mode,
                 status = ?claim_data.status,
@@ -868,39 +773,27 @@ where
 
         // Check parent game status (except for the first game, which has no parent)
         if claim_data.parentIndex != u32::MAX {
-            let parent_index = U256::from(claim_data.parentIndex);
-            let parent_game = self.fetch_game_by_index(parent_index).await?;
+            let parent_game_proxy =
+                self.fetch_game_address_by_index(U256::from(claim_data.parentIndex)).await?;
+            let parent_game =
+                OPSuccinctFaultDisputeGame::new(parent_game_proxy, l1_provider.clone());
+            let parent_status = parent_game.status().call().await?;
 
-            if parent_game.game_type != expected_game_type {
+            if parent_status == GameStatus::IN_PROGRESS {
                 tracing::debug!(
-                    game_address = ?game.address,
+                    game_address = ?game_address,
                     game_index = %index,
                     parent_index = %claim_data.parentIndex,
-                    parent_game_type = parent_game.game_type,
-                    expected_game_type,
-                    "Skipping parent status check for unexpected game type"
+                    "Cannot resolve game - parent game is still in progress"
                 );
-            } else {
-                let parent_game_contract =
-                    OPSuccinctFaultDisputeGame::new(parent_game.address, l1_provider.clone());
-                let parent_status = parent_game_contract.status().call().await?;
-
-                if parent_status == GameStatus::IN_PROGRESS {
-                    tracing::debug!(
-                        game_address = ?game.address,
-                        game_index = %index,
-                        parent_index = %claim_data.parentIndex,
-                        "Cannot resolve game - parent game is still in progress"
-                    );
-                    return Ok(Action::Skipped);
-                }
+                return Ok(Action::Skipped);
             }
         }
 
         // For proven games, resolve immediately without deadline check
         if is_proven {
             tracing::info!(
-                game_address = ?game.address,
+                game_address = ?game_address,
                 game_index = %index,
                 status = ?claim_data.status,
                 "Game is proven, resolving immediately"
@@ -916,7 +809,7 @@ where
 
             if U256::from(claim_data.deadline).to::<u64>() >= current_timestamp {
                 tracing::debug!(
-                    game_address = ?game.address,
+                    game_address = ?game_address,
                     game_index = %index,
                     deadline = %claim_data.deadline,
                     current_timestamp = %current_timestamp,
@@ -928,7 +821,7 @@ where
 
         // Attempt resolution
         tracing::info!(
-            game_address = ?game.address,
+            game_address = ?game_address,
             game_index = %index,
             status = ?claim_data.status,
             deadline = %claim_data.deadline,
@@ -936,17 +829,17 @@ where
             action = "attempting_resolution",
             "Attempting to resolve game"
         );
-        let game_contract = OPSuccinctFaultDisputeGame::new(game.address, self.provider());
+        let contract = OPSuccinctFaultDisputeGame::new(game_address, self.provider());
 
         // Get L2 block number for context
-        let l2_block_number = game_contract.l2BlockNumber().call().await?;
+        let l2_block_number = contract.l2BlockNumber().call().await?;
 
-        let transaction_request = game_contract.resolve().into_transaction_request();
+        let transaction_request = contract.resolve().into_transaction_request();
         match signer.send_transaction_request(l1_rpc.clone(), transaction_request).await {
             Ok(receipt) => {
                 tracing::info!(
+                    game_address = ?game_address,
                     game_index = %index,
-                    game_address = ?game.address,
                     l2_block_end = %l2_block_number,
                     tx_hash = ?receipt.transaction_hash,
                     "Game resolved successfully"
@@ -956,7 +849,7 @@ where
             Err(e) => {
                 tracing::error!(
                     game_index = %index,
-                    game_address = ?game.address,
+                    game_address = ?game_address,
                     l2_block_end = %l2_block_number,
                     error = ?e,
                     "Game resolution failed"
@@ -974,7 +867,6 @@ where
         signer: Signer,
         l1_rpc: Url,
         l1_provider: L1Provider,
-        expected_game_type: u32,
     ) -> Result<()> {
         // Find latest game index, return early if no games exist.
         let Some(latest_game_index) = self.fetch_latest_game_index().await? else {
@@ -989,33 +881,35 @@ where
         let games_to_check = (latest_game_index - oldest_game_index + U256::from(1))
             .min(U256::from(max_games_to_check_for_resolution));
 
-        if !self.should_attempt_resolution(oldest_game_index, expected_game_type).await? {
-            tracing::info!(
-                oldest_game_index = %oldest_game_index,
-                "Skipping resolution: oldest game has parent still in progress"
-            );
-            return Ok(());
-        }
+        let (should_attempt_resolution, game_address) =
+            self.should_attempt_resolution(oldest_game_index).await?;
 
-        for i in 0..games_to_check.to::<u64>() {
-            let index = oldest_game_index + U256::from(i);
-            if let Ok(Action::Performed) = self
-                .try_resolve_games(
-                    index,
-                    mode,
-                    signer.clone(),
-                    l1_rpc.clone(),
-                    l1_provider.clone(),
-                    expected_game_type,
-                )
-                .await
-            {
-                // Use mode-specific metrics to avoid cross-contamination
-                match mode {
-                    Mode::Proposer => ProposerGauge::GamesResolved.increment(1.0),
-                    Mode::Challenger => ChallengerGauge::GamesResolved.increment(1.0),
+        if should_attempt_resolution {
+            for i in 0..games_to_check.to::<u64>() {
+                let index = oldest_game_index + U256::from(i);
+                if let Ok(Action::Performed) = self
+                    .try_resolve_games(
+                        index,
+                        mode,
+                        signer.clone(),
+                        l1_rpc.clone(),
+                        l1_provider.clone(),
+                    )
+                    .await
+                {
+                    // Use mode-specific metrics to avoid cross-contamination
+                    match mode {
+                        Mode::Proposer => ProposerGauge::GamesResolved.increment(1.0),
+                        Mode::Challenger => ChallengerGauge::GamesResolved.increment(1.0),
+                    }
                 }
             }
+        } else {
+            tracing::info!(
+                "Oldest game {:?} at index {:?} has unresolved parent, not attempting resolution",
+                game_address,
+                oldest_game_index
+            );
         }
 
         Ok(())
