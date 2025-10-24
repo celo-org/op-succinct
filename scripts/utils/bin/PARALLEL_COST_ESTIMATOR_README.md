@@ -31,7 +31,7 @@ cargo run --release --bin parallel-cost-estimator -- \
 #### Required Parameters
 
 - `--from <BLOCK_NUMBER>`: Starting block number (inclusive)
-- `--to <BLOCK_NUMBER>`: Ending block number (inclusive)
+- `--to <BLOCK_NUMBER>`: Ending block number (exclusive)
 - `--range <SIZE>`: Number of blocks in each processing range
 
 #### Optional Parameters
