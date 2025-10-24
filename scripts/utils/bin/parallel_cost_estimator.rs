@@ -1,7 +1,9 @@
 use anyhow::Result;
 use clap::Parser;
 use log::{info, warn};
+use op_succinct_host_utils::block_range::{split_range_basic, SpanBatchRange};
 use std::{
+    cmp::min,
     path::PathBuf,
     process::Stdio,
     sync::Arc,
@@ -20,7 +22,7 @@ pub struct ParallelCostEstimatorArgs {
     #[arg(long)]
     pub from: u64,
     
-    /// Ending block number (inclusive)
+    /// Ending block number (exclusive)
     #[arg(long)]
     pub to: u64,
     
@@ -65,13 +67,6 @@ pub struct ParallelCostEstimatorArgs {
     pub reverse: bool,
 }
 
-/// Represents a block range to be processed
-#[derive(Debug, Clone)]
-struct BlockRange {
-    start: u64,
-    end: u64,
-}
-
 /// Statistics tracker for parallel execution
 #[derive(Debug, Default)]
 struct ExecutionTracker {
@@ -108,15 +103,16 @@ impl ExecutionTracker {
 
 /// Run a single cost_estimator instance for the given range
 async fn run_cost_estimator(
-    range: BlockRange,
+    range: SpanBatchRange,
     args: &ParallelCostEstimatorArgs,
-) -> Result<BlockRange> {
+) -> Result<SpanBatchRange> {
     info!("Starting cost_estimator for blocks {} to {}", range.start, range.end);
     
     let cargo_metadata = cargo_metadata::MetadataCommand::new().exec()?;
     let workspace_root = PathBuf::from(cargo_metadata.workspace_root);
     
     let mut cmd = Command::new("cargo");
+    let batch_size = min(args.batch_size, range.end - range.start);
     cmd.current_dir(&workspace_root)
         .arg("run")
         .arg("--release")
@@ -128,7 +124,7 @@ async fn run_cost_estimator(
         .arg("--end")
         .arg(range.end.to_string())
         .arg("--batch-size")
-        .arg(args.batch_size.to_string())
+        .arg(batch_size.to_string())
         .arg("--default-range")
         .arg(args.default_range.to_string())
         .arg("--env-file")
@@ -167,31 +163,9 @@ async fn run_cost_estimator(
     }
 }
 
-/// Split the overall range into sub-ranges
-fn split_into_ranges(from: u64, to: u64, range_size: u64, reverse: bool) -> Vec<BlockRange> {
-    let mut ranges = Vec::new();
-    let mut current = from;
-    
-    while current <= to {
-        let end = std::cmp::min(current + range_size - 1, to);
-        ranges.push(BlockRange {
-            start: current,
-            end,
-        });
-        current = end + 1;
-    }
-    
-    // Reverse the order if requested
-    if reverse {
-        ranges.reverse();
-    }
-    
-    ranges
-}
-
 /// Process all ranges with controlled concurrency
 async fn process_ranges(
-    ranges: Vec<BlockRange>,
+    ranges: Vec<SpanBatchRange>,
     args: &ParallelCostEstimatorArgs,
 ) -> Result<()> {
     let total_ranges = ranges.len();
@@ -328,11 +302,11 @@ async fn main() -> Result<()> {
     );
     
     // Split the overall range into sub-ranges
-    let ranges = split_into_ranges(args.from, args.to, args.range, args.reverse);
-    
+    let mut ranges = split_range_basic(args.from, args.to, args.range);
     if args.reverse {
-        info!("Processing in REVERSE order (highest blocks first)");
+        ranges.reverse();
     }
+    
     info!("Split into {} ranges: {:?}", ranges.len(), ranges);
     
     // Process all ranges with controlled concurrency
