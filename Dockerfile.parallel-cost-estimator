@@ -58,5 +58,5 @@ RUN curl -L https://sp1.succinct.xyz | bash && \
 ENV PATH=/root/.sp1/bin:$PATH
 
 # Default command (can be overridden)
-CMD ["/usr/src/app/target/release/parallel-cost-estimator", "--help"]
+CMD ["/usr/src/app/target/release/parallel-cost-estimator"]
 
