@@ -45,6 +45,7 @@ cargo run --release --bin parallel-cost-estimator -- \
 - `--prove`: Generate proofs
 - `--safe-db-fallback`: Fallback to timestamp-based L1 head estimation
 - `--reverse`: Process ranges in reverse order (highest blocks first)
+- `--log-only`: Skip writing CSV files and only log execution statistics
 
 ### Examples
 
@@ -106,6 +107,23 @@ This will:
 - Process ranges in reverse: [250-300, 200-249, 150-199, 100-149]
 - First 2 concurrent processes: range 250-300 and range 200-249
 - Useful for prioritizing recent block data
+
+#### Example 5: Log only mode (no CSV files)
+
+```bash
+cargo run --release --bin parallel-cost-estimator -- \
+  --from 1000 \
+  --to 2000 \
+  --range 100 \
+  --concurrency 4 \
+  --log-only
+```
+
+This will:
+- Process blocks 1000-2000 in ranges of 100
+- Output execution statistics to logs instead of CSV files
+- Useful for quick testing or when you don't need persistent reports
+- Saves disk space and reduces I/O overhead
 
 ## How It Works
 
@@ -193,11 +211,39 @@ The script will:
 1. Log the overall plan (number of ranges, configuration)
 2. Show progress as each range completes
 3. Display final statistics (completed, failed, total)
-4. Generate individual CSV reports in `execution-reports/<chain-id>/` for each range
+4. Generate individual CSV reports in `execution-reports/<chain-id>/` for each range (unless `--log-only` is used)
+
+### CSV Output Mode (Default)
 
 Each cost_estimator instance produces its own report file:
 ```
 execution-reports/<chain-id>/<start>-<end>-report.csv
+```
+
+Example CSV content:
+```csv
+batch_start,batch_end,total_instruction_count,oracle_verify_instruction_count,...
+1000,1100,45234123,1234567,...
+```
+
+### Log-Only Mode (`--log-only`)
+
+When using the `--log-only` flag:
+- **No CSV files are created**
+- Execution statistics are logged to console in real-time
+- Reduces disk I/O and saves storage space
+- Useful for testing, debugging, or when persistent reports aren't needed
+
+Example log output:
+```
+[INFO] Execution stats for blocks 1000 to 1100:
+ExecutionStats {
+    batch_start: 1000,
+    batch_end: 1100,
+    total_instruction_count: 45234123,
+    oracle_verify_instruction_count: 1234567,
+    ...
+}
 ```
 
 ## Error Handling

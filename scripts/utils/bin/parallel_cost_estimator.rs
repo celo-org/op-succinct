@@ -65,6 +65,10 @@ pub struct ParallelCostEstimatorArgs {
     /// Process ranges and batches in reverse order (from highest to lowest block)
     #[arg(long)]
     pub reverse: bool,
+    
+    /// Skip writing CSV files and only log execution statistics (passed to cost_estimator)
+    #[arg(long, default_value = "true")]
+    pub log_only: bool,
 }
 
 /// Statistics tracker for parallel execution
@@ -146,6 +150,10 @@ async fn run_cost_estimator(
     
     if args.safe_db_fallback {
         cmd.arg("--safe-db-fallback");
+    }
+    
+    if args.log_only {
+        cmd.arg("--log-only");
     }
     
     let status = cmd.status().await?;
