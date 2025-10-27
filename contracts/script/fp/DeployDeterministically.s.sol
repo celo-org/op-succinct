@@ -10,7 +10,6 @@ import {
 
 // Interfaces
 import {IDisputeGameFactory} from "interfaces/dispute/IDisputeGameFactory.sol";
-import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
 import {ISP1Verifier} from "@sp1-contracts/src/ISP1Verifier.sol";
 import {IAnchorStateRegistry} from "interfaces/dispute/IAnchorStateRegistry.sol";
 
@@ -124,7 +123,7 @@ contract DeployDeterministically is Script {
             expected_.accessManagerFactory != address(0) && 
             amFactory_ != expected_.accessManagerFactory
         ) {
-            revert AddressNotExpected(address(0), amFactory_);
+            revert AddressNotExpected(expected_.accessManagerFactory, amFactory_);
         }
         if (
             expected_.accessManager != address(0) && 
