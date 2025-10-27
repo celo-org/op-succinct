@@ -1,0 +1,62 @@
+# syntax=docker/dockerfile:1.4
+
+# Base stage: Install Rust and dependencies
+FROM ubuntu:24.04 AS rust-base
+
+WORKDIR /usr/src/app
+
+# Install required dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    clang \
+    build-essential \
+    git \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH=/root/.cargo/bin:$PATH
+RUN rustup install stable && rustup default stable
+
+
+# Install SP1
+RUN curl -L https://sp1.succinct.xyz | bash && \
+    /root/.sp1/bin/sp1up && \
+    /root/.sp1/bin/cargo-prove prove --version
+ENV PATH=/root/.sp1/bin:$PATH
+
+# Build stage
+FROM rust-base AS builder
+
+# Copy the entire workspace
+COPY . .
+
+# Pre-build the cost-estimator binary (the one that gets spawned)
+RUN cargo build --release --bin cost-estimator
+
+# Build the parallel-cost-estimator binary
+RUN cargo build --release --bin parallel-cost-estimator
+
+# Runtime stage: Keep full environment since we spawn cargo processes
+FROM ubuntu:24.04
+
+WORKDIR /app
+COPY resources/ ./resources/
+
+# Install only necessary runtime dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install SP1 (needed for cost-estimator execution)
+RUN curl -L https://sp1.succinct.xyz | bash && \
+    /root/.sp1/bin/sp1up && \
+    /root/.sp1/bin/cargo-prove prove --version
+ENV PATH=/root/.sp1/bin:$PATH
+
+# Default command (can be overridden)
+CMD ["/usr/src/app/target/release/parallel-cost-estimator", "--help"]
+
