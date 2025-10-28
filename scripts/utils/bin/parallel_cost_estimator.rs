@@ -120,18 +120,28 @@ async fn run_cost_estimator(
 ) -> Result<SpanBatchRange> {
     info!("Starting cost_estimator for blocks {} to {}", range.start, range.end);
     
-    let cargo_metadata = cargo_metadata::MetadataCommand::new().exec()?;
-    let workspace_root = PathBuf::from(cargo_metadata.workspace_root);
+    // Find cost-estimator binary:
+    // 1. Try in PATH (works in Docker or when installed)
+    // 2. Try in workspace target/release (works when running locally)
+    // 3. Fall back to just "cost-estimator" and let the OS find it
+    let cost_estimator_bin = std::env::var("COST_ESTIMATOR_BIN")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| {
+            // Try to find in workspace
+            cargo_metadata::MetadataCommand::new()
+                .exec()
+                .ok()
+                .map(|metadata| {
+                    PathBuf::from(metadata.workspace_root).join("target/release/cost-estimator")
+                })
+                .filter(|p| p.exists())
+        })
+        .unwrap_or_else(|| PathBuf::from("cost-estimator"));
     
-    let mut cmd = Command::new("cargo");
     let batch_size = min(args.batch_size, range.end - range.start);
-    cmd.current_dir(&workspace_root)
-        .arg("run")
-        .arg("--release")
-        .arg("--bin")
-        .arg("cost-estimator")
-        .arg("--")
-        .arg("--start")
+    let mut cmd = Command::new(&cost_estimator_bin);
+    cmd.arg("--start")
         .arg(range.start.to_string())
         .arg("--end")
         .arg(range.end.to_string())
@@ -139,8 +149,6 @@ async fn run_cost_estimator(
         .arg(batch_size.to_string())
         .arg("--default-range")
         .arg(args.default_range.to_string())
-        .arg("--reverse")
-        .arg(args.reverse.to_string())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     
@@ -162,6 +170,10 @@ async fn run_cost_estimator(
     
     if args.log_only {
         cmd.arg("--log-only");
+    }
+
+    if args.reverse {
+        cmd.arg("--reverse");
     }
     
     let status = cmd.status().await?;

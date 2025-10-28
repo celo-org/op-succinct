@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1.4
 
-# Base stage: Install Rust and dependencies
-FROM ubuntu:24.04 AS rust-base
+# Build stage with full development environment
+FROM ubuntu:24.04 AS builder
 
-WORKDIR /usr/src/app
+WORKDIR /workspace
 
-# Install required dependencies
+# Install build dependencies
 RUN apt-get update && apt-get install -y \
     curl \
     clang \
@@ -13,50 +13,57 @@ RUN apt-get update && apt-get install -y \
     git \
     pkg-config \
     libssl-dev \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH=/root/.cargo/bin:$PATH
-RUN rustup install stable && rustup default stable
 
+# Copy rust-toolchain to install correct nightly version
+COPY rust-toolchain.toml ./
+RUN rustup show
 
 # Install SP1
 RUN curl -L https://sp1.succinct.xyz | bash && \
-    /root/.sp1/bin/sp1up && \
-    /root/.sp1/bin/cargo-prove prove --version
+    ~/.sp1/bin/sp1up && \
+    ~/.sp1/bin/cargo-prove prove --version
 ENV PATH=/root/.sp1/bin:$PATH
 
-# Build stage
-FROM rust-base AS builder
+# Copy workspace files
+COPY Cargo.toml Cargo.lock ./
+COPY rustfmt.toml ./
+COPY bindings/ ./bindings/
+COPY programs/ ./programs/
+COPY scripts/ ./scripts/
+COPY utils/ ./utils/
+COPY resources/ ./resources/
 
-# Copy the entire workspace
-COPY . .
+# Build both binaries
+RUN cargo build --release --bin cost-estimator --features eigenda && \
+    cargo build --release --bin parallel-cost-estimator --features eigenda
 
-# Pre-build the cost-estimator binary (the one that gets spawned)
-RUN cargo build --release --bin cost-estimator
+# Runtime stage - minimal image (~500MB instead of 10GB!)
+FROM ubuntu:24.04
 
-# Build the parallel-cost-estimator binary
-RUN cargo build --release --bin parallel-cost-estimator
+WORKDIR /app
 
-# # Runtime stage: Keep full environment since we spawn cargo processes
-# FROM ubuntu:24.04
+# Install only runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
 
-# WORKDIR /app
-# COPY resources/ ./resources/
+# Copy resources directory
+COPY --from=builder /workspace/resources/ ./resources/
 
-# # Install only necessary runtime dependencies
-# RUN apt-get update && apt-get install -y \
-#     curl \
-#     libssl-dev \
-#     && rm -rf /var/lib/apt/lists/*
+# Copy only the built binaries
+COPY --from=builder /workspace/target/release/cost-estimator /usr/local/bin/cost-estimator
+COPY --from=builder /workspace/target/release/parallel-cost-estimator /usr/local/bin/parallel-cost-estimator
 
-# COPY --from=builder /usr/src/app/target/release/parallel-cost-estimator /usr/local/bin/parallel-cost-estimator
-# COPY --from=builder /usr/src/app/target/release/cost-estimator /usr/local/bin/cost-estimator
+# Set environment variable to use the built cost-estimator binary
+ENV COST_ESTIMATOR_BIN=/usr/local/bin/cost-estimator
 
-# Default command (can be overridden)
-RUN cp /usr/src/app/target/release/parallel-cost-estimator /usr/local/bin/parallel-cost-estimator && \
-    cp /usr/src/app/target/release/cost-estimator /usr/local/bin/cost-estimator
-
+# Default command
 CMD ["parallel-cost-estimator"]
 
