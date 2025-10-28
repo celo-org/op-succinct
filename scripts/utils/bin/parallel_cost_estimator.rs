@@ -1,7 +1,11 @@
+use alloy_eips::BlockId;
 use anyhow::Result;
 use clap::Parser;
 use log::{info, warn};
-use op_succinct_host_utils::block_range::{split_range_basic, SpanBatchRange};
+use op_succinct_host_utils::{
+    block_range::{split_range_basic, SpanBatchRange},
+    fetcher::OPSuccinctDataFetcher,
+};
 use std::{
     cmp::min,
     path::PathBuf,
@@ -14,17 +18,21 @@ use tokio::{
     task::JoinSet,
 };
 
+// Number of blocks in 2 weeks (assuming 1 second block time)
+// 2 weeks = 14 days * 24 hours * 60 minutes * 60 seconds
+const TWO_WEEKS_IN_BLOCKS: u64 = 14 * 24 * 60 * 60;
+
 /// Parallel cost estimator that runs multiple cost_estimator instances concurrently
 #[derive(Parser, Debug, Clone)]
 #[command(about = "Runs cost estimator for a range of blocks with configurable concurrency")]
 pub struct ParallelCostEstimatorArgs {
-    /// Starting block number (inclusive)
+    /// Starting block number (inclusive). If not provided, uses latest finalized block from L2 RPC.
     #[arg(long)]
-    pub from: u64,
+    pub from: Option<u64>,
     
-    /// Ending block number (exclusive)
+    /// Ending block number (exclusive). If not provided, calculates as (from - TWO_WEEKS_IN_BLOCKS).
     #[arg(long)]
-    pub to: u64,
+    pub to: Option<u64>,
     
     /// Number of blocks in each range to process
     #[arg(long)]
@@ -131,8 +139,8 @@ async fn run_cost_estimator(
         .arg(batch_size.to_string())
         .arg("--default-range")
         .arg(args.default_range.to_string())
-        .arg("--env-file")
-        .arg(args.env_file.display().to_string())
+        .arg("--reverse")
+        .arg(args.reverse.to_string())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     
@@ -291,9 +299,33 @@ async fn main() -> Result<()> {
     
     let args = ParallelCostEstimatorArgs::parse();
     
+    let from_block = if args.from.is_none() {
+        // Only to provided, fetch from from L2 RPC
+        info!("'from' not provided, fetching latest finalized block from L2 RPC...");
+        dotenv::from_path(&args.env_file).ok();
+        let data_fetcher = OPSuccinctDataFetcher::new_with_rollup_config().await?;
+        let finalized_header = data_fetcher.get_l2_header(BlockId::finalized()).await?;
+        let from = finalized_header.number;
+        info!("Using latest finalized block: {}", from);
+        from
+    } else {
+        args.from.unwrap()
+    };
+    let to_block = if args.to.is_none() {
+        // Only from provided, calculate to as from - TWO_WEEKS_IN_BLOCKS
+        let to = from_block.saturating_sub(TWO_WEEKS_IN_BLOCKS);
+        info!("'to' not provided, using from ({}) - TWO_WEEKS_IN_BLOCKS = {}", from_block, to);
+        to
+    } else {
+        args.to.unwrap()
+    };
+
     // Validate arguments
-    if args.from > args.to {
-        anyhow::bail!("'from' block ({}) must be <= 'to' block ({})", args.from, args.to);
+    if from_block <= to_block {
+        anyhow::bail!(
+            "'from' block ({}) must be > 'to' block ({}). Note: 'to' is the older block when processing backwards.",
+            from_block, to_block
+        );
     }
     
     if args.range == 0 {
@@ -306,11 +338,11 @@ async fn main() -> Result<()> {
     
     info!(
         "Starting parallel cost estimator for blocks {} to {} with range size {} and concurrency {}",
-        args.from, args.to, args.range, args.concurrency
+        from_block, to_block, args.range, args.concurrency
     );
     
     // Split the overall range into sub-ranges
-    let mut ranges = split_range_basic(args.from, args.to, args.range);
+    let mut ranges = split_range_basic(to_block, from_block, args.range);
     if args.reverse {
         ranges.reverse();
     }
