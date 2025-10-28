@@ -22,7 +22,8 @@ ENV PATH=/root/.cargo/bin:$PATH
 
 # Copy rust-toolchain to install correct nightly version
 COPY rust-toolchain.toml ./
-RUN rustup show
+RUN rustup show && \
+    rm -rf ~/.rustup/toolchains/stable-*
 
 # Install SP1
 RUN curl -L https://sp1.succinct.xyz | bash && \
@@ -39,11 +40,16 @@ COPY scripts/ ./scripts/
 COPY utils/ ./utils/
 COPY resources/ ./resources/
 
-# Build both binaries
+# Build both binaries and clean up build artifacts
 RUN cargo build --release --bin cost-estimator --features eigenda && \
-    cargo build --release --bin parallel-cost-estimator --features eigenda
+    cargo build --release --bin parallel-cost-estimator --features eigenda && \
+    rm -rf /workspace/target/release/build && \
+    rm -rf /workspace/target/release/deps && \
+    rm -rf /workspace/target/release/incremental && \
+    rm -rf /root/.cargo/registry && \
+    rm -rf /root/.cargo/git
 
-# Runtime stage - minimal image (~500MB instead of 10GB!)
+# Runtime stage - minimal image
 FROM ubuntu:24.04
 
 WORKDIR /app
