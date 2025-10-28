@@ -30,16 +30,22 @@ cargo run --release --bin parallel-cost-estimator -- \
 
 #### Required Parameters
 
-- `--from <BLOCK_NUMBER>`: Starting block number (inclusive)
-- `--to <BLOCK_NUMBER>`: Ending block number (exclusive)
 - `--range <SIZE>`: Number of blocks in each processing range
+
+#### Semi-Optional Parameters
+
+- `--from <BLOCK_NUMBER>`: Starting block number (inclusive). If not provided, fetches latest finalized block from L2 RPC.
+- `--to <BLOCK_NUMBER>`: Ending block number (exclusive). If not provided, calculates as `(from - TWO_WEEKS_IN_BLOCKS)`.
+
+**Note:** If neither `--from` nor `--to` are provided, the script will:
+1. Fetch the latest finalized block from L2 RPC as `from`
+2. Calculate `to` as `from - TWO_WEEKS_IN_BLOCKS` (604,800 blocks for 2-second block time)
 
 #### Optional Parameters
 
 - `--concurrency <NUM>`: Number of concurrent cost_estimator instances (default: 4)
 - `--batch-size <SIZE>`: Blocks per batch within each range (default: 10, passed to cost_estimator)
 - `--default-range <SIZE>`: Default range size (default: 5, passed to cost_estimator)
-- `--env-file <PATH>`: Environment file path (default: .env)
 - `--use-cache`: Enable cached witness generation
 - `--rolling`: Use rolling block range
 - `--prove`: Generate proofs
@@ -124,6 +130,35 @@ This will:
 - Output execution statistics to logs instead of CSV files
 - Useful for quick testing or when you don't need persistent reports
 - Saves disk space and reduces I/O overhead
+
+#### Example 6: Auto-fetch latest blocks (no from/to specified)
+
+```bash
+cargo run --release --bin parallel-cost-estimator -- \
+  --range 1000 \
+  --concurrency 8 \
+  --batch-size 50
+```
+
+This will:
+- Fetch the latest finalized block from L2 RPC as `from`
+- Calculate `to` as `from - 604,800` (2 weeks of blocks)
+- Process the last 2 weeks of blocks automatically
+- Useful for continuous monitoring or regular analysis
+
+#### Example 7: Specify only 'from', auto-calculate 'to'
+
+```bash
+cargo run --release --bin parallel-cost-estimator -- \
+  --from 2000000 \
+  --range 5000 \
+  --concurrency 6
+```
+
+This will:
+- Use 2,000,000 as the starting block
+- Calculate `to` as 2,000,000 - 604,800 = 1,395,200
+- Process blocks 2,000,000 down to 1,395,200
 
 ## How It Works
 
