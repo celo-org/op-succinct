@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH=/root/.cargo/bin:$PATH
 
-# Copy rust-toolchain to install correct nightly version
+# Copy rust-toolchain from workspace root
 COPY rust-toolchain.toml ./
 RUN rustup show && \
     rm -rf ~/.rustup/toolchains/stable-*
@@ -31,6 +31,7 @@ RUN curl -L https://sp1.succinct.xyz | bash && \
     ~/.sp1/bin/cargo-prove prove --version
 ENV PATH=/root/.sp1/bin:$PATH
 
+# Copy entire workspace
 COPY . .
 
 # Build both binaries

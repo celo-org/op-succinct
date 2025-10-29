@@ -289,10 +289,23 @@ ExecutionStats {
 
 ## Building
 
+### Native Build
+
 From the op-succinct root directory:
 
 ```bash
 cargo build --release --bin parallel-cost-estimator
+```
+
+### Docker Build
+
+The Dockerfile is located at `scripts/utils/Dockerfile.parallel-cost-estimator`.
+
+Build from the workspace root:
+
+```bash
+# From op-succinct root directory
+docker build -f scripts/utils/Dockerfile.parallel-cost-estimator -t parallel-cost-estimator .
 ```
 
 ## Testing
