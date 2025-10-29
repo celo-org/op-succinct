@@ -85,6 +85,8 @@ struct ExecutionTracker {
     completed: usize,
     failed: usize,
     total: usize,
+    completed_ranges: Vec<SpanBatchRange>,
+    failed_ranges: Vec<SpanBatchRange>,
 }
 
 impl ExecutionTracker {
@@ -93,23 +95,21 @@ impl ExecutionTracker {
             completed: 0,
             failed: 0,
             total,
+            completed_ranges: Vec::new(),
+            failed_ranges: Vec::new(),
         }
     }
     
-    fn mark_completed(&mut self) {
+    fn mark_completed(&mut self, range: SpanBatchRange) {
+        info!("Completed cost_estimator for blocks {} to {}", range.start, range.end);
         self.completed += 1;
-        info!(
-            "Progress: {}/{} completed, {} failed",
-            self.completed, self.total, self.failed
-        );
+        self.completed_ranges.push(range);
     }
     
-    fn mark_failed(&mut self) {
+    fn mark_failed(&mut self, range: SpanBatchRange, error: String) {
+        warn!("Failed to process blocks {} to {} with error: {}", range.start, range.end, error);
         self.failed += 1;
-        warn!(
-            "Progress: {}/{} completed, {} failed",
-            self.completed, self.total, self.failed
-        );
+        self.failed_ranges.push(range);
     }
 }
 
@@ -206,26 +206,27 @@ async fn process_ranges(
     let mut handles = JoinSet::new();
     let mut range_iter = ranges.into_iter();
     
+    // Helper function to spawn a new task
+    let spawn_task = |handles: &mut JoinSet<_>, range: SpanBatchRange, args: ParallelCostEstimatorArgs, tracker: Arc<Mutex<ExecutionTracker>>| {
+        handles.spawn(async move {
+            let result = run_cost_estimator(range.clone(), &args).await;
+            let mut tracker = tracker.lock().await;
+            
+            match &result {
+                Ok(_) => tracker.mark_completed(range),
+                Err(e) => {
+                    tracker.mark_failed(range, e.to_string());
+                }
+            }
+
+            result
+        });
+    };
+    
     // Spawn initial batch of tasks
     for _ in 0..args.concurrency {
         if let Some(range) = range_iter.next() {
-            let args = args.clone();
-            let tracker = tracker.clone();
-            
-            handles.spawn(async move {
-                let result = run_cost_estimator(range.clone(), &args).await;
-                let mut tracker = tracker.lock().await;
-                
-                match &result {
-                    Ok(_) => tracker.mark_completed(),
-                    Err(e) => {
-                        warn!("Failed to process range {:?}: {}", range, e);
-                        tracker.mark_failed();
-                    }
-                }
-                
-                result
-            });
+            spawn_task(&mut handles, range, args.clone(), tracker.clone());
         }
     }
     
@@ -233,56 +234,20 @@ async fn process_ranges(
     while let Some(result) = handles.join_next().await {
         match result {
             Ok(Ok(_)) => {
-                // Task completed successfully, spawn next task if available
-                if let Some(range) = range_iter.next() {
-                    let args = args.clone();
-                    let tracker = tracker.clone();
-                    
-                    handles.spawn(async move {
-                        let result = run_cost_estimator(range.clone(), &args).await;
-                        let mut tracker = tracker.lock().await;
-                        
-                        match &result {
-                            Ok(_) => tracker.mark_completed(),
-                            Err(e) => {
-                                warn!("Failed to process range {:?}: {}", range, e);
-                                tracker.mark_failed();
-                            }
-                        }
-                        
-                        result
-                    });
-                }
+                // Task completed successfully
             }
-            Ok(Err(e)) => {
+            Ok(Err(_)) => {
                 // Task failed, but continue with remaining tasks
-                warn!("Task execution error: {}", e);
-                
-                // Spawn next task if available
-                if let Some(range) = range_iter.next() {
-                    let args = args.clone();
-                    let tracker = tracker.clone();
-                    
-                    handles.spawn(async move {
-                        let result = run_cost_estimator(range.clone(), &args).await;
-                        let mut tracker = tracker.lock().await;
-                        
-                        match &result {
-                            Ok(_) => tracker.mark_completed(),
-                            Err(e) => {
-                                warn!("Failed to process range {:?}: {}", range, e);
-                                tracker.mark_failed();
-                            }
-                        }
-                        
-                        result
-                    });
-                }
             }
             Err(e) => {
                 // Task panicked
                 warn!("Task panicked: {}", e);
             }
+        }
+        
+        // Spawn next task if available (regardless of success/failure/panic)
+        if let Some(range) = range_iter.next() {
+            spawn_task(&mut handles, range, args.clone(), tracker.clone());
         }
     }
     
@@ -291,13 +256,11 @@ async fn process_ranges(
         "All tasks completed. Success: {}, Failed: {}, Total: {}",
         final_tracker.completed, final_tracker.failed, final_tracker.total
     );
-    
+
+    info!("Completed ranges: {:?}", final_tracker.completed_ranges);
+    info!("Failed ranges: {:?}", final_tracker.failed_ranges);
     if final_tracker.failed > 0 {
-        anyhow::bail!(
-            "{} out of {} ranges failed to process",
-            final_tracker.failed,
-            final_tracker.total
-        );
+        anyhow::bail!("{} out of {} ranges failed to process", final_tracker.failed, final_tracker.total);
     }
     
     Ok(())
