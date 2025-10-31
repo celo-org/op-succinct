@@ -10,7 +10,7 @@ use std::{
     collections::{HashMap, HashSet},
     env,
     fs::File,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::Duration,
 };
@@ -136,14 +136,14 @@ impl MonitorState {
 /// Spawns a cost estimator process for the given block range.
 fn spawn_cost_estimator(
     cost_estimator_binary_path: &PathBuf,
-    env_file: &PathBuf,
+    env_file: &Path,
     log_file: &PathBuf,
     start_block: u64,
     end_block: u64,
     batch_size: u64,
 ) -> Result<Child> {
     // Create log file for this specific run
-    let stdout_file = File::create(&log_file)?;
+    let stdout_file = File::create(log_file)?;
     let stderr_file = stdout_file.try_clone()?;
 
     let args = [
