@@ -33,27 +33,27 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Docker meta for proposer
-        id: meta-proposer
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY_URL }}/proposer
-          tags: |
-            type=semver,pattern={{version}}
-            type=edge
-            type=sha
-            type=raw,value=latest
+      # - name: Docker meta for proposer
+      #   id: meta-proposer
+      #   uses: docker/metadata-action@v5
+      #   with:
+      #     images: ${{ env.REGISTRY_URL }}/proposer
+      #     tags: |
+      #       type=semver,pattern={{version}}
+      #       type=edge
+      #       type=sha
+      #       type=raw,value=latest
 
-      - name: Docker meta for challenger
-        id: meta-challenger
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY_URL }}/challenger
-          tags: |
-            type=semver,pattern={{version}}
-            type=edge
-            type=sha
-            type=raw,value=latest
+      # - name: Docker meta for challenger
+      #   id: meta-challenger
+      #   uses: docker/metadata-action@v5
+      #   with:
+      #     images: ${{ env.REGISTRY_URL }}/challenger
+      #     tags: |
+      #       type=semver,pattern={{version}}
+      #       type=edge
+      #       type=sha
+      #       type=raw,value=latest
 
       - name: Docker meta for game monitor
         id: meta-game-monitor
@@ -73,29 +73,29 @@ jobs:
           service-account: "op-succinct-gh-dev@devopsre.iam.gserviceaccount.com"
           docker-gcp-registries: us-west1-docker.pkg.dev
 
-      - name: Build and push proposer
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: fault-proof/Dockerfile.proposer
-          push: true
-          tags: ${{ steps.meta-proposer.outputs.tags }}
-          labels: ${{ steps.meta-proposer.outputs.labels }}
-          platforms: linux/amd64
-          cache-from: type=registry,ref=${{ env.REGISTRY_URL }}/proposer-buildcache:buildcache
-          cache-to: type=registry,mode=max,ref=${{ env.REGISTRY_URL }}/proposer-buildcache:buildcache
+      # - name: Build and push proposer
+      #   uses: docker/build-push-action@v6
+      #   with:
+      #     context: .
+      #     file: fault-proof/Dockerfile.proposer
+      #     push: true
+      #     tags: ${{ steps.meta-proposer.outputs.tags }}
+      #     labels: ${{ steps.meta-proposer.outputs.labels }}
+      #     platforms: linux/amd64
+      #     cache-from: type=registry,ref=${{ env.REGISTRY_URL }}/proposer-buildcache:buildcache
+      #     cache-to: type=registry,mode=max,ref=${{ env.REGISTRY_URL }}/proposer-buildcache:buildcache
 
-      - name: Build and push challenger
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: fault-proof/Dockerfile.challenger
-          push: true
-          tags: ${{ steps.meta-challenger.outputs.tags }}
-          labels: ${{ steps.meta-challenger.outputs.labels }}
-          platforms: linux/amd64
-          cache-from: type=registry,ref=${{ env.REGISTRY_URL }}/challenger-buildcache:buildcache
-          cache-to: type=registry,mode=max,ref=${{ env.REGISTRY_URL }}/challenger-buildcache:buildcache
+      # - name: Build and push challenger
+      #   uses: docker/build-push-action@v6
+      #   with:
+      #     context: .
+      #     file: fault-proof/Dockerfile.challenger
+      #     push: true
+      #     tags: ${{ steps.meta-challenger.outputs.tags }}
+      #     labels: ${{ steps.meta-challenger.outputs.labels }}
+      #     platforms: linux/amd64
+      #     cache-from: type=registry,ref=${{ env.REGISTRY_URL }}/challenger-buildcache:buildcache
+      #     cache-to: type=registry,mode=max,ref=${{ env.REGISTRY_URL }}/challenger-buildcache:buildcache
 
       - name: Build and push game-monitor
         uses: docker/build-push-action@v6
