@@ -55,6 +55,17 @@ jobs:
             type=sha
             type=raw,value=latest
 
+      - name: Docker meta for game monitor
+        id: meta-game-monitor
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_URL }}/game-monitor
+          tags: |
+            type=semver,pattern={{version}}
+            type=edge
+            type=sha
+            type=raw,value=latest
+
       - name: Login at GCP Artifact Registry
         uses: celo-org/reusable-workflows/.github/actions/auth-gcp-artifact-registry@v2.0
         with:
@@ -85,3 +96,15 @@ jobs:
           platforms: linux/amd64
           cache-from: type=registry,ref=${{ env.REGISTRY_URL }}/challenger-buildcache:buildcache
           cache-to: type=registry,mode=max,ref=${{ env.REGISTRY_URL }}/challenger-buildcache:buildcache
+
+      - name: Build and push game-monitor
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: scripts/utils/Dockerfile.game-monitor
+          push: true
+          tags: ${{ steps.meta-game-monitor.outputs.tags }}
+          labels: ${{ steps.meta-game-monitor.outputs.labels }}
+          platforms: linux/amd64
+          cache-from: type=registry,ref=${{ env.REGISTRY_URL }}/game-monitor-buildcache:buildcache
+          cache-to: type=registry,mode=max,ref=${{ env.REGISTRY_URL }}/game-monitor-buildcache:buildcache

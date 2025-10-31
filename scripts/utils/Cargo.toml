@@ -39,6 +39,10 @@ path = "bin/fetch_fault_dispute_game_config.rs"
 name = "gen-sp1-test-artifacts"
 path = "bin/gen_sp1_test_artifacts.rs"
 
+[[bin]]
+name = "game-monitor"
+path = "bin/game_monitor.rs"
+
 [dependencies]
 
 # workspace
@@ -65,6 +69,9 @@ op-succinct-client-utils.workspace = true
 op-succinct-proof-utils.workspace = true
 op-succinct-elfs.workspace = true
 op-succinct-fp.workspace = true
+
+# alloy
+alloy-provider.workspace = true
 
 # sp1
 sp1-sdk.workspace = true
