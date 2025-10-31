@@ -92,7 +92,7 @@ struct Game {
 /// - `canonical_head_index`/`canonical_head_l2_block`: the best known game for scheduling work
 /// - `cursor`: the last index of factory's dispute game list processed during incremental syncs
 /// - `games`: cached metadata for every tracked game keyed by index
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct ProposerState {
     anchor_game: Option<Game>,
     canonical_head_index: Option<U256>,
@@ -131,6 +131,28 @@ impl ProposerState {
     fn remove_subtree(&mut self, root_index: U256) {
         for index in self.descendants_of(root_index) {
             self.games.remove(&index);
+        }
+    }
+
+    /// Computes the canonical head by scanning all cached games.
+    ///
+    /// Canonical head is the game with the highest L2 block number. When an anchor game is present,
+    /// only its descendants are eligible for canonical head.
+    fn compute_canonical_head(&mut self) {
+        let canonical_head = if let Some(anchor_game) = self.anchor_game.as_ref() {
+            let reachable = self.descendants_of(anchor_game.index);
+            self.games
+                .values()
+                .filter(|game| reachable.contains(&game.index))
+                .max_by_key(|game| game.l2_block)
+                .cloned()
+        } else {
+            self.games.values().max_by_key(|game| game.l2_block).cloned()
+        };
+
+        if let Some(canonical_head) = canonical_head {
+            self.canonical_head_index = Some(canonical_head.index);
+            self.canonical_head_l2_block = Some(canonical_head.l2_block);
         }
     }
 }
@@ -459,23 +481,7 @@ where
     /// only its descendants are eligible for canonical head.
     async fn compute_canonical_head(&self) {
         let mut state = self.state.lock().await;
-
-        let canonical_head = if let Some(anchor_game) = state.anchor_game.as_ref() {
-            let reachable = state.descendants_of(anchor_game.index);
-            state
-                .games
-                .values()
-                .filter(|game| reachable.contains(&game.index))
-                .max_by_key(|game| game.l2_block)
-                .cloned()
-        } else {
-            state.games.values().max_by_key(|game| game.l2_block).cloned()
-        };
-
-        if let Some(canonical_head) = canonical_head {
-            state.canonical_head_index = Some(canonical_head.index);
-            state.canonical_head_l2_block = Some(canonical_head.l2_block);
-        }
+        state.compute_canonical_head();
     }
 
     /// Proves a dispute game at the given address.
@@ -1476,5 +1482,236 @@ where
         self.tasks.lock().await.insert(task_id, (handle, task_info));
         tracing::info!("Spawned bond claim task {}", task_id);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::Address;
+
+    /// Helper function to create a test game with the given parameters
+    fn create_test_game(index: u32, parent_index: u32, l2_block: u64, address: Address) -> Game {
+        Game {
+            index: U256::from(index),
+            address,
+            parent_index,
+            l2_block: U256::from(l2_block),
+            status: GameStatus::IN_PROGRESS,
+            proposal_status: ProposalStatus::Unchallenged,
+            deadline: 1000000,
+            should_attempt_to_resolve: false,
+            should_attempt_to_claim_bond: false,
+        }
+    }
+
+    #[test]
+    fn test_proposer_state_consecutive_games() {
+        let mut state = ProposerState::default();
+
+        // Create 5 consecutive games, each pointing to the previous one
+        // Game 0: parent = u32::MAX (root game)
+        // Game 1: parent = 0
+        // Game 2: parent = 1
+        // Game 3: parent = 2
+        // Game 4: parent = 3
+        let games = vec![
+            create_test_game(0, u32::MAX, 1000, Address::from([0x01; 20])),
+            create_test_game(1, 0, 2000, Address::from([0x02; 20])),
+            create_test_game(2, 1, 3000, Address::from([0x03; 20])),
+            create_test_game(3, 2, 4000, Address::from([0x04; 20])),
+            create_test_game(4, 3, 5000, Address::from([0x05; 20])),
+        ];
+
+        // Insert all games into the state
+        for game in &games {
+            state.games.insert(game.index, game.clone());
+        }
+
+        state.anchor_game = Some(games[3].clone());
+
+        // Test descendants_of functionality
+        let descendants_from_root = state.descendants_of(U256::from(0));
+        let expected_descendants: HashSet<U256> =
+            [0, 1, 2, 3, 4].iter().map(|&i| U256::from(i)).collect();
+        assert_eq!(descendants_from_root, expected_descendants);
+
+        // Test descendants from middle of chain
+        let descendants_from_2 = state.descendants_of(U256::from(2));
+        let expected_from_2: HashSet<U256> = [2, 3, 4].iter().map(|&i| U256::from(i)).collect();
+        assert_eq!(descendants_from_2, expected_from_2);
+
+        // Test descendants from leaf node
+        let descendants_from_4 = state.descendants_of(U256::from(4));
+        let expected_from_4: HashSet<U256> = [4].iter().map(|&i| U256::from(i)).collect();
+        assert_eq!(descendants_from_4, expected_from_4);
+
+        // Test remove_subtree functionality
+        let mut state_copy = state.clone();
+        state_copy.remove_subtree(U256::from(2));
+
+        // Should only have games 0 and 1 remaining
+        assert_eq!(state_copy.games.len(), 2);
+        assert!(state_copy.games.contains_key(&U256::from(0)));
+        assert!(state_copy.games.contains_key(&U256::from(1)));
+        assert!(!state_copy.games.contains_key(&U256::from(2)));
+        assert!(!state_copy.games.contains_key(&U256::from(3)));
+        assert!(!state_copy.games.contains_key(&U256::from(4)));
+
+        // Test L2 block progression
+        for (i, game) in games.iter().enumerate() {
+            assert_eq!(game.l2_block, U256::from(1000 + i * 1000));
+        }
+
+        // Test setting canonical head
+        state.canonical_head_index = Some(U256::from(4));
+        state.canonical_head_l2_block = Some(U256::from(5000));
+
+        assert_eq!(state.canonical_head_index, Some(U256::from(4)));
+        assert_eq!(state.canonical_head_l2_block, Some(U256::from(5000)));
+    }
+
+    #[test]
+    fn test_proposer_state_branching_chain() {
+        let mut state = ProposerState::default();
+
+        // Create a branching structure:
+        // Game 0 (root)
+        // ├── Game 1 (parent: 0)
+        // │   └── Game 3 (parent: 1)
+        // └── Game 2 (parent: 0)
+        //     └── Game 4 (parent: 2)
+        let games = vec![
+            create_test_game(0, u32::MAX, 1000, Address::from([0x01; 20])),
+            create_test_game(1, 0, 2000, Address::from([0x02; 20])),
+            create_test_game(2, 0, 2100, Address::from([0x03; 20])), // Different branch from 0
+            create_test_game(3, 1, 3000, Address::from([0x04; 20])),
+            create_test_game(4, 2, 3100, Address::from([0x05; 20])),
+        ];
+
+        for game in &games {
+            state.games.insert(game.index, game.clone());
+        }
+
+        // Test descendants from root includes all games
+        let descendants_from_root = state.descendants_of(U256::from(0));
+        let expected_all: HashSet<U256> = [0, 1, 2, 3, 4].iter().map(|&i| U256::from(i)).collect();
+        assert_eq!(descendants_from_root, expected_all);
+
+        // Test descendants from branch 1
+        let descendants_from_1 = state.descendants_of(U256::from(1));
+        let expected_branch_1: HashSet<U256> = [1, 3].iter().map(|&i| U256::from(i)).collect();
+        assert_eq!(descendants_from_1, expected_branch_1);
+
+        // Test descendants from branch 2
+        let descendants_from_2 = state.descendants_of(U256::from(2));
+        let expected_branch_2: HashSet<U256> = [2, 4].iter().map(|&i| U256::from(i)).collect();
+        assert_eq!(descendants_from_2, expected_branch_2);
+
+        // Test removing a subtree only affects that branch
+        let mut state_copy = state.clone();
+        state_copy.remove_subtree(U256::from(1));
+
+        // Should have games 0, 2, and 4 remaining (branch 2 intact)
+        assert_eq!(state_copy.games.len(), 3);
+        assert!(state_copy.games.contains_key(&U256::from(0)));
+        assert!(!state_copy.games.contains_key(&U256::from(1)));
+        assert!(state_copy.games.contains_key(&U256::from(2)));
+        assert!(!state_copy.games.contains_key(&U256::from(3)));
+        assert!(state_copy.games.contains_key(&U256::from(4)));
+    }
+
+    #[test]
+    fn test_canonical_head_computation() {
+        let mut state = ProposerState::default();
+
+        // Test 1: Empty state should have no canonical head
+        state.compute_canonical_head();
+        assert_eq!(state.canonical_head_index, None);
+        assert_eq!(state.canonical_head_l2_block, None);
+
+        // Test 2: Single game becomes canonical head
+        let game0 = create_test_game(0, u32::MAX, 1000, Address::from([0x01; 20]));
+        state.games.insert(U256::from(0), game0);
+
+        state.compute_canonical_head();
+        assert_eq!(state.canonical_head_index, Some(U256::from(0)));
+        assert_eq!(state.canonical_head_l2_block, Some(U256::from(1000)));
+
+        // Test 3: Multiple games - highest L2 block wins
+        let game1 = create_test_game(1, 0, 2000, Address::from([0x02; 20]));
+        let game2 = create_test_game(2, 1, 3000, Address::from([0x03; 20]));
+        let game3 = create_test_game(3, 2, 2500, Address::from([0x04; 20])); // Lower block number
+
+        state.games.insert(U256::from(1), game1);
+        state.games.insert(U256::from(2), game2);
+        state.games.insert(U256::from(3), game3);
+
+        state.compute_canonical_head();
+        assert_eq!(state.canonical_head_index, Some(U256::from(2))); // Game 2 has highest L2 block (3000)
+        assert_eq!(state.canonical_head_l2_block, Some(U256::from(3000)));
+
+        // Test 4: With anchor game - only descendants are eligible
+        state.anchor_game = Some(state.games[&U256::from(1)].clone()); // Set game 1 as anchor
+
+        state.compute_canonical_head();
+        // Now only games 1, 2, 3 are reachable from anchor game 1
+        // Game 2 still has the highest L2 block among reachable games
+        assert_eq!(state.canonical_head_index, Some(U256::from(2)));
+        assert_eq!(state.canonical_head_l2_block, Some(U256::from(3000)));
+
+        // Test 5: Anchor game excludes higher block games outside its subtree
+        // Add a higher block game that's not reachable from anchor
+        let game4 = create_test_game(4, u32::MAX, 5000, Address::from([0x05; 20])); // Higher block but different root
+        state.games.insert(U256::from(4), game4);
+
+        state.compute_canonical_head();
+        // Game 4 has higher L2 block (5000) but is not reachable from anchor game 1
+        // So game 2 should still be canonical head
+        assert_eq!(state.canonical_head_index, Some(U256::from(2)));
+        assert_eq!(state.canonical_head_l2_block, Some(U256::from(3000)));
+
+        // Test 6: Change anchor to include the higher game
+        state.anchor_game = None; // Remove anchor restriction
+
+        state.compute_canonical_head();
+        // Now game 4 should become canonical head due to highest L2 block
+        assert_eq!(state.canonical_head_index, Some(U256::from(4)));
+        assert_eq!(state.canonical_head_l2_block, Some(U256::from(5000)));
+
+        // Test 7: Branching structure with anchor
+        let mut branching_state = ProposerState::default();
+
+        // Create branching structure:
+        // Game 0 (L2: 1000)
+        // ├── Game 1 (L2: 2000)
+        // │   └── Game 3 (L2: 4000) <- highest in this branch
+        // └── Game 2 (L2: 2100)
+        //     └── Game 5 (L2: 3500)
+        let branching_games = vec![
+            create_test_game(0, u32::MAX, 1000, Address::from([0x01; 20])),
+            create_test_game(1, 0, 2000, Address::from([0x02; 20])),
+            create_test_game(2, 0, 2100, Address::from([0x03; 20])),
+            create_test_game(3, 1, 4000, Address::from([0x04; 20])), // Highest in branch 1
+            create_test_game(5, 2, 3500, Address::from([0x06; 20])), // Lower than game 3
+        ];
+
+        for game in &branching_games {
+            branching_state.games.insert(game.index, game.clone());
+        }
+
+        // Set anchor to game 1 (should only consider branch 1: games 1, 3)
+        branching_state.anchor_game = Some(branching_games[1].clone());
+
+        branching_state.compute_canonical_head();
+        assert_eq!(branching_state.canonical_head_index, Some(U256::from(3))); // Game 3 highest in branch 1
+        assert_eq!(branching_state.canonical_head_l2_block, Some(U256::from(4000)));
+
+        // Set anchor to game 2 (should only consider branch 2: games 2, 5)
+        branching_state.anchor_game = Some(branching_games[2].clone());
+
+        branching_state.compute_canonical_head();
+        assert_eq!(branching_state.canonical_head_index, Some(U256::from(5))); // Game 5 highest in branch 2
+        assert_eq!(branching_state.canonical_head_l2_block, Some(U256::from(3500)));
     }
 }
