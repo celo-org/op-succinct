@@ -51,7 +51,13 @@ RUN apt-get update && apt-get install -y \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH=/root/.cargo/bin:$PATH
 RUN rustup install stable && rustup default stable
-    
+
+# We also need the actual project checked out it seems in order for cargo_metadata::MetadataCommand to work
+
+
 # Copy the built binaries
 COPY --from=builder /usr/src/app/target/release/cost-estimator /usr/local/bin/
 COPY --from=builder /usr/src/app/target/release/game-monitor /usr/local/bin/
+
+# Copy the entire workspace so we can run cargo_metadata::MetadataCommand to get the workspace root.
+COPY . .
