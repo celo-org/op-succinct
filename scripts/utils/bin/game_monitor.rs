@@ -8,7 +8,7 @@ use fault_proof::contract::{
 use log::{error, info, warn};
 use std::{
     collections::{HashMap, HashSet},
-    env,
+    env, fs,
     fs::File,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -52,6 +52,10 @@ pub struct GameMonitorArgs {
     /// The path to the cost estimator binary.
     #[arg(long, default_value = "cost-estimator")]
     pub cost_estimator_binary_path: PathBuf,
+
+    /// The directory under which to store the logs.
+    #[arg(long, default_value = "logs")]
+    pub logs_dir: PathBuf,
 }
 
 /// Represents a running cost estimator process for a game.
@@ -168,6 +172,11 @@ async fn main() -> Result<()> {
     // Load environment variables
     dotenv::from_path(&args.env_file).ok();
     sp1_sdk::utils::setup_logger();
+
+    // Create the logs directory if it doesn't exist
+    if !args.logs_dir.exists() {
+        fs::create_dir_all(&args.logs_dir).context("Failed to create logs directory")?;
+    }
 
     info!("Starting game monitor for game type {}", GAME_TYPE);
     info!("Environment file: {}", args.env_file.display());
@@ -289,10 +298,11 @@ async fn main() -> Result<()> {
                     state.cleanup_finished_processes();
                 }
 
-                let log_file = PathBuf::from(format!(
+                let mut log_file = PathBuf::from(format!(
                     "cost-estimator-{}-{}-{}.log",
                     start_block, end_block, game_address
                 ));
+                log_file = args.logs_dir.join(log_file);
                 // Spawn the cost estimator process
                 match spawn_cost_estimator(
                     &args.cost_estimator_binary_path,
