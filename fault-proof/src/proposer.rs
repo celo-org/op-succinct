@@ -790,13 +790,17 @@ where
         let game = self.factory.gameAtIndex(index).call().await?;
         let game_address = game.proxy;
         let game_type = game.gameType;
+
+        let mut state = self.state.lock().await;
         if game_type != self.config.game_type {
             tracing::debug!(game_index = %index, ?game_address, game_type,
                 expected_game_type = self.config.game_type,
                 "Dropping game due to invalid game type"
             );
+            state.cursor = Some(index);
             return Ok(());
         }
+
         let contract = OPSuccinctFaultDisputeGame::new(game_address, self.l1_provider.clone());
 
         let l2_block = contract.l2BlockNumber().call().await?;
@@ -806,7 +810,7 @@ where
             Ok(data) => (data.parentIndex, data.status, U256::from(data.deadline).to::<u64>()),
             Err(error) => {
                 tracing::debug!(game_index = %index, ?game_address, ?error,
-                    "Falling back to legacy game with dummy claim data");
+                  "Falling back to legacy game with dummy claim data");
                 (u32::MAX, ProposalStatus::Unchallenged, 0)
             }
         };
@@ -814,11 +818,9 @@ where
         let was_respected = contract.wasRespectedGameTypeWhenCreated().call().await?;
         let status = contract.status().call().await?;
 
-        let mut state = self.state.lock().await;
-
         if !was_respected || output_root != claim {
             tracing::debug!(game_index = %index, ?game_address,
-                "Dropping game due to invalid game type or output root");
+              "Dropping game due to invalid game type or output root");
             state.cursor = Some(index);
             return Ok(());
         }
@@ -837,7 +839,7 @@ where
                     );
                 } else {
                     tracing::debug!(game_index = %index, ?game_address,
-                      parent_index = %parent_idx, "Dropping game due to missing parent");
+                    parent_index = %parent_idx, "Dropping game due to missing parent");
                     state.cursor = Some(index);
                     return Ok(());
                 }
