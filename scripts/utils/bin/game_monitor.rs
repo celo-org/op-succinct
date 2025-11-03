@@ -75,11 +75,11 @@ struct MonitorState {
 }
 
 impl MonitorState {
-    fn new() -> Self {
+    fn new(last_checked_index: Option<u64>) -> Self {
         Self {
             processed_games: HashSet::new(),
             running_processes: HashMap::new(),
-            last_checked_index: None,
+            last_checked_index,
         }
     }
 
@@ -203,15 +203,14 @@ async fn main() -> Result<()> {
     let initial_game_count = factory.gameCount().call().await?.to::<u64>();
     info!("Initial game count: {}", initial_game_count);
 
-    let mut state = MonitorState::new();
-
     // Setup the last checked game so we check from the most recent game, or the next most recent
     // game if there is only one game.
-    state.last_checked_index = match initial_game_count {
+    let mut state = MonitorState::new(match initial_game_count {
         0 => None,
         1 => Some(0),
         n => Some(n - 2),
-    };
+    });
+
     // Main monitoring loop
     loop {
         // Clean up any finished processes
