@@ -65,11 +65,9 @@ struct MonitorState {
     /// Set of game addresses we've already spawned estimators for.
     processed_games: HashSet<Address>,
     /// Currently running estimator processes.
-    running_processes: HashMap<u32, RunningEstimator>,
+    running_processes: HashMap<u64, RunningEstimator>,
     /// The last game index we checked.
     last_checked_index: Option<u64>,
-    /// Counter for process IDs.
-    next_process_id: u32,
 }
 
 impl MonitorState {
@@ -78,7 +76,6 @@ impl MonitorState {
             processed_games: HashSet::new(),
             running_processes: HashMap::new(),
             last_checked_index: None,
-            next_process_id: 0,
         }
     }
 
@@ -123,13 +120,6 @@ impl MonitorState {
     /// Check if we can spawn a new process.
     fn can_spawn_new(&self, max_concurrent: usize) -> bool {
         self.running_processes.len() < max_concurrent
-    }
-
-    /// Get a new process ID.
-    fn next_id(&mut self) -> u32 {
-        let id = self.next_process_id;
-        self.next_process_id += 1;
-        id
     }
 }
 
@@ -228,12 +218,11 @@ async fn main() -> Result<()> {
 
         // Check for new games
         if current_game_count > start_index {
-            for i in start_index..current_game_count {
-                let game_index = U256::from(i);
-                state.last_checked_index = Some(i);
+            for game_index in start_index..current_game_count {
+                state.last_checked_index = Some(game_index);
 
                 // Get game info
-                let game_info = match factory.gameAtIndex(game_index).call().await {
+                let game_info = match factory.gameAtIndex(U256::from(game_index)).call().await {
                     Ok(info) => info,
                     Err(e) => {
                         error!("Failed to get game at index {}: {}", game_index, e);
@@ -314,15 +303,14 @@ async fn main() -> Result<()> {
                     end_block - start_block,
                 ) {
                     Ok(child) => {
-                        let process_id = state.next_id();
                         info!(
                             "Started cost estimator {} for game {} (blocks {}-{})",
-                            process_id, game_address, start_block, end_block
+                            game_index, game_address, start_block, end_block
                         );
 
                         state
                             .running_processes
-                            .insert(process_id, RunningEstimator { process: child, log_file });
+                            .insert(game_index, RunningEstimator { process: child, log_file });
                         state.processed_games.insert(game_address);
                     }
                     Err(e) => {
