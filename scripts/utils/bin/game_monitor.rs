@@ -10,6 +10,7 @@ use std::{
     collections::{HashMap, HashSet},
     env, fs,
     fs::File,
+    io::Write,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::Duration,
@@ -136,10 +137,6 @@ fn spawn_cost_estimator(
     end_block: u64,
     batch_size: u64,
 ) -> Result<Child> {
-    // Create log file for this specific run
-    let stdout_file = File::create(log_file)?;
-    let stderr_file = stdout_file.try_clone()?;
-
     let args = [
         "--start",
         &start_block.to_string(),
@@ -151,8 +148,37 @@ fn spawn_cost_estimator(
         env_file.to_str().unwrap(),
     ];
 
+    let cmd = format!("{} {}", cost_estimator_binary_path.display(), args.join(" "));
+
+    // Write command and env to log file to facilitate easy re-running of the command.
+    let mut log_file_handle = File::create(log_file)?;
+    writeln!(log_file_handle, "=== Cost Estimator Command ===")?;
+    writeln!(log_file_handle, "{}", cmd)?;
+    writeln!(log_file_handle, "=== Cost Estimator ENV ===")?;
+    let relevant_vars = [
+        "DISPUTE_GAME_FACTORY_ADDRESS",
+        "L1_RPC",
+        "L1_BEACON_RPC",
+        "L2_RPC",
+        "L2_NODE_RPC",
+        "EIGENDA_PROXY_ADDRESS",
+        "OP_SUCCINCT_MOCK",
+        "SP1_PROVER",
+    ];
+    for var in relevant_vars {
+        if let Ok(value) = env::var(var) {
+            writeln!(log_file_handle, "{}={}", var, value)?;
+        }
+    }
+    writeln!(log_file_handle, "=== Output ===")?;
+    writeln!(log_file_handle)?;
+
+    // Create log file for this specific run
+    let stdout_file = log_file_handle.try_clone()?;
+    let stderr_file = log_file_handle.try_clone()?;
+
+    info!("Running cost estimator:: {}", cmd);
     info!("Logging to: {:}", log_file.display());
-    info!("Running cost estimator:: {} {}", cost_estimator_binary_path.display(), args.join(" "));
 
     let child = Command::new(cost_estimator_binary_path)
         .args(args)
@@ -296,10 +322,8 @@ async fn main() -> Result<()> {
                     state.cleanup_finished_processes();
                 }
 
-                let mut log_file = PathBuf::from(format!(
-                    "cost-estimator-{}-{}-{}.log",
-                    start_block, end_block, game_address
-                ));
+                let mut log_file =
+                    PathBuf::from(format!("cost-estimator-{}-{}.log", game_index, game_address));
                 log_file = args.logs_dir.join(log_file);
                 // Spawn the cost estimator process
                 match spawn_cost_estimator(
