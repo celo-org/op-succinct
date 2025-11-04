@@ -56,6 +56,10 @@ pub struct GameMonitorArgs {
     /// The directory under which to store the logs.
     #[arg(long, default_value = "logs")]
     pub logs_dir: PathBuf,
+
+    // The index of the game to start checking from. If unset the monitor will
+    #[arg(long, default_value = None)]
+    pub start_index: Option<u64>,
 }
 
 /// Represents a running cost estimator process for a game.
@@ -70,17 +74,13 @@ struct MonitorState {
     processed_games: HashSet<Address>,
     /// Currently running estimator processes.
     running_processes: HashMap<u64, RunningEstimator>,
-    /// The last game index we checked.
-    last_checked_index: Option<u64>,
+    /// The next game index to check.
+    next_game_index: u64,
 }
 
 impl MonitorState {
-    fn new(last_checked_index: Option<u64>) -> Self {
-        Self {
-            processed_games: HashSet::new(),
-            running_processes: HashMap::new(),
-            last_checked_index,
-        }
+    fn new(next_game_index: u64) -> Self {
+        Self { processed_games: HashSet::new(), running_processes: HashMap::new(), next_game_index }
     }
 
     /// Clean up finished processes and return their results.
@@ -199,17 +199,19 @@ async fn main() -> Result<()> {
     let factory =
         DisputeGameFactoryInstance::new(dispute_game_factory_address, l1_provider.clone());
 
-    // Get initial game count
-    let initial_game_count = factory.gameCount().call().await?.to::<u64>();
-    info!("Initial game count: {}", initial_game_count);
-
-    // Setup the last checked game so we check from the most recent game, or the next most recent
-    // game if there is only one game.
-    let mut state = MonitorState::new(match initial_game_count {
-        0 => None,
-        1 => Some(0),
-        n => Some(n - 2),
-    });
+    // If start_index is unset start from the most recent game, or game at index 0 if there are no
+    // games. Otherwise use the start_index.
+    let next_game_index = match args.start_index {
+        Some(index) => index,
+        None => {
+            let initial_game_count = factory.gameCount().call().await?.to::<u64>();
+            match initial_game_count {
+                0 => 0,
+                n => n - 1,
+            }
+        }
+    };
+    let mut state = MonitorState::new(next_game_index);
 
     // Main monitoring loop
     loop {
@@ -221,14 +223,11 @@ async fn main() -> Result<()> {
         // Get current game count
         let current_game_count = factory.gameCount().call().await?.to::<u64>();
 
-        // Determine the range of game indices to check
-        let start_index = state.last_checked_index.map(|idx| idx + 1).unwrap_or(0);
-
         // Check for new games
+        let start_index = state.next_game_index;
         if current_game_count > start_index {
+            state.next_game_index = current_game_count;
             for game_index in start_index..current_game_count {
-                state.last_checked_index = Some(game_index);
-
                 // Get game info
                 let game_info = match factory.gameAtIndex(U256::from(game_index)).call().await {
                     Ok(info) => info,
