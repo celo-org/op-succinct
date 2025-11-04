@@ -194,10 +194,10 @@ fn spawn_cost_estimator(
 async fn main() -> Result<()> {
     let args = GameMonitorArgs::parse();
 
-    info!("Game monitor args: {:?}", args);
     // Load environment variables
     dotenv::from_path(&args.env_file).ok();
     sp1_sdk::utils::setup_logger();
+    info!("Game monitor args: {:?}", args);
 
     // Create the logs directory if it doesn't exist
     if !args.logs_dir.exists() {
