@@ -30,10 +30,21 @@ RUN cargo build --release --bin cost-estimator --features eigenda
 # Build the game-monitor
 RUN cargo build --release --bin game-monitor
 
-# Runtime stage
-FROM rust:1.89.0-trixie 
+# Runtime stage (minimal image)
+FROM ubuntu:24.04
 
 WORKDIR /app
+
+# Install only necessary runtime dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust (needed by calls to cargo_metadata::MetadataCommand)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH=/root/.cargo/bin:$PATH
+RUN rustup install stable && rustup default stable
 
 # Copy the built binaries
 COPY --from=builder /app/target/release/cost-estimator /usr/local/bin/
