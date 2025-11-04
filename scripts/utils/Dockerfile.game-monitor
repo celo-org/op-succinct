@@ -36,8 +36,8 @@ FROM rust:1.89.0-trixie
 WORKDIR /app
 
 # Copy the built binaries
-COPY --from=builder /usr/src/app/target/release/cost-estimator /usr/local/bin/
-COPY --from=builder /usr/src/app/target/release/game-monitor /usr/local/bin/
+COPY --from=builder /app/target/release/cost-estimator /usr/local/bin/
+COPY --from=builder /app/target/release/game-monitor /usr/local/bin/
 
 # Copy the entire workspace so we can run cargo_metadata::MetadataCommand to get the workspace root.
 COPY . .
