@@ -29,7 +29,8 @@ COPY . .
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/app/target \
-    cargo build --release --bin proposer --features eigenda
+    cargo build --release --bin proposer --features eigenda && \
+    cp target/release/proposer /app/proposer # We need to copy the binary out of the cache so that it can be referenced by the next stage.
 
 # Runtime stage
 FROM rust:1.89.0-trixie 
@@ -38,7 +39,7 @@ WORKDIR /app
 COPY resources/ ./resources/
 
 # Copy the built proposer binary
-COPY --from=builder /app/target/release/proposer /usr/local/bin/
+COPY --from=builder /app/proposer /usr/local/bin/
 
 # Set the command
 CMD ["proposer"]
