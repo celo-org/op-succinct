@@ -25,6 +25,11 @@ RUN curl -L https://sp1.succinct.xyz | bash && \
     ~/.sp1/bin/sp1up -v v5.2.2 && \
     ~/.sp1/bin/cargo-prove prove --version
 
+# Copy toolchain file
+COPY rust-toolchain.toml .
+# This installs the nightly version from the file
+RUN rustup show
+
 # Build stage
 FROM rust-base AS builder
 
@@ -52,8 +57,10 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH=/root/.cargo/bin:$PATH
 RUN rustup install stable && rustup default stable
 
-# We also need the actual project checked out it seems in order for cargo_metadata::MetadataCommand to work
-
+# Copy toolchain file
+COPY rust-toolchain.toml .
+# This installs the nightly version from the file
+RUN rustup show
 
 # Copy the built binaries
 COPY --from=builder /app/target/release/cost-estimator /usr/local/bin/
