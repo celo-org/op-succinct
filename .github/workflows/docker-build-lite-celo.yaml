@@ -55,7 +55,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: fault-proof/Dockerfile.proposer
+          file: fault-proof/Dockerfile.proposer.celo
           push: true
           tags: ${{ steps.meta-proposer.outputs.tags }}
           labels: ${{ steps.meta-proposer.outputs.labels }}
