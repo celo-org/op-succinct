@@ -227,7 +227,7 @@ where
 
             // 2. Handle completed tasks.
             if let Err(e) = self.handle_completed_tasks().await {
-                tracing::warn!("Failed to handle completed tasks s: {:?}", e);
+                tracing::warn!("Failed to handle completed tasks: {:?}", e);
             }
 
             // 3. Spawn new work (non-blocking).
