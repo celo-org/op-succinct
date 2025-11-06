@@ -55,7 +55,8 @@ use serde_json::Value;
 ///   if permissionless mode is true)
 /// - `CHALLENGER_ADDRESSES`: Comma-separated list of addresses authorized to challenge games
 ///   (ignored if permissionless mode is true)
-/// - `GUARDIAN_ADDRESS`: Address of the guardian who will be set as the owner of the Access Manager. 
+/// - `GUARDIAN_ADDRESS`: Address of the guardian who will be set as the owner of the Access
+///   Manager.
 //    If not provided, ownership remains with the deployer (default: zero address).
 ///
 /// ## Contract Configuration
@@ -205,11 +206,10 @@ async fn update_fdg_config() -> Result<()> {
             // Default to zero address if not provided - will deploy new DisputeGameFactory
             "0x0000000000000000000000000000000000000000".to_string()
         });
-    let guardian_address =
-        env::var("GUARDIAN_ADDRESS").unwrap_or_else(|_| {
-            // Default to zero address if not provided - will not transfer ownership to guardian
-            "0x0000000000000000000000000000000000000000".to_string()
-        });
+    let guardian_address = env::var("GUARDIAN_ADDRESS").unwrap_or_else(|_| {
+        // Default to zero address if not provided - will not transfer ownership to guardian
+        "0x0000000000000000000000000000000000000000".to_string()
+    });
 
     let fdg_config = FaultDisputeGameConfig {
         activate_contracts,
