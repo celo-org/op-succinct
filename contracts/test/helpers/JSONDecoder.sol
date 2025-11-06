@@ -40,6 +40,7 @@ contract JSONDecoder {
         uint256 disputeGameFinalityDelaySeconds;
         uint256 fallbackTimeoutFpSecs;
         uint32 gameType;
+        address guardianAddress;
         uint256 initialBondWei;
         uint256 maxChallengeDuration;
         uint256 maxProveDuration;

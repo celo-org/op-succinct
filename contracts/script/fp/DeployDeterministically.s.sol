@@ -108,6 +108,10 @@ contract DeployDeterministically is Script {
             salt: vm.envOr("DISPUTE_GAME_SALT", bytes32(hex"ce10"))
         });
         emit DisputeGameParamsSet(gameParams_);
+
+        // Load optionally guardian address from env
+        address guardian_ = vm.envOr("GUARDIAN", address(0));
+        console.log("Detected guardian address:", guardian_);
         
         // Deterministically deploy contracts & optionally verify their addresses
         vm.startBroadcast();
@@ -118,7 +122,7 @@ contract DeployDeterministically is Script {
         ) {
             revert AddressNotExpected(expected_.create3Deployer, address(create3Deployer));
         }
-        (address amFactory_, AccessManager accessManager_) = newAccessManager(managerParams_);
+        (address amFactory_, AccessManager accessManager_) = newAccessManager(managerParams_, guardian_);
         if (
             expected_.accessManagerFactory != address(0) && 
             amFactory_ != expected_.accessManagerFactory
@@ -167,7 +171,8 @@ contract DeployDeterministically is Script {
     }
 
     function newAccessManager(
-        AccessManagerParams memory _params
+        AccessManagerParams memory _params,
+        address _guardian
     ) internal returns (address amFactory_, AccessManager accessManager_) {
         // Compute the deterministic address of the AccessManagerFactory
         address amFactoryAddress_ = vm.computeCreate2Address(
@@ -245,6 +250,12 @@ contract DeployDeterministically is Script {
                 }
             }
             console.log("Access Manager configured for permissioned mode");
+        }
+
+        // Optionally set guardian as owner
+        if (_guardian != address(0)) {
+            accessManager_.transferOwnership(_guardian);
+            console.log("Access Manager ownership transferred to guardian:", _guardian);
         }
     }
 

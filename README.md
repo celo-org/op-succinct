@@ -31,6 +31,7 @@ Following modifications were introduced by Celo:
     - `DISPUTE_GAME_FACTORY_ADDRESS` - if provided it allows to avoid deploying new DisputeGameFactory
     - `CONFIGURE_CONTRACTS` - if `true` performs deployment of contracts & registering of new games on factory, if `false` performs just deployment of contracts without configuration
     - `ACTIVATE_CONTRACTS` - if `true` sets respected game type on optimism portal during deployment - resulting in immediate activation of deployed contracts (effective only if `CONFIGURE_CONTRACTS` is also `true`), if `false` skips contract activation requiring manual invocation of setting respected game type later
+    - `GUARDIAN_ADDRESS` - optional address to which the AccessManager ownership will be transferred after deployment, useful for transferring control to a multisig or governance contract
 - separation of justfile methods:
     - `deploy-fdg-contracts .{env}` - works like before (fetches config & deploys contracts)
     - `fetch-fdg-config .{env}` - allows to explicitly fetch config (useful when fetching live network config & deploying contracts over forked network in anvil)
@@ -43,6 +44,12 @@ Following modifications were introduced by Celo:
         - pre-deploys new Game contract with dedicated private key
         - registers new Game on DisputeGameFactory with Safe (Safe needs to be owner of DisputeGameFactory)
         - sets respected game type in OptimismPortal with dedicated private key (private key of guardian of OptimismPortal)
+- **deterministic deployment**: Supports deploying contracts to the same address across different chains using CREATE2/CREATE3
+    - Use `DeployDeterministically.s.sol` script for deterministic deployments
+    - Configurable via salt parameters: `CREATE3_SALT`, `ACCESS_MANAGER_SALT`, `DISPUTE_GAME_SALT`
+    - Optionally verify expected addresses by setting: `CREATE3_DEPLOYER`, `ACCESS_MANAGER_FACTORY`, `ACCESS_MANAGER`, `DISPUTE_GAME`
+    - Deploys: Create3Deployer, AccessManagerFactory, AccessManager, and OPSuccinctFaultDisputeGame
+    - Supports guardian ownership transfer via `GUARDIAN_ADDRESS` environment variable
 
 ## Celo Remarks
 

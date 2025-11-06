@@ -222,6 +222,7 @@ pub struct FaultDisputeGameConfig {
     pub dispute_game_finality_delay_seconds: u64,
     pub fallback_timeout_fp_secs: u64,
     pub game_type: u32,
+    pub guardian_address: String,
     pub initial_bond_wei: u64,
     pub max_challenge_duration: u64,
     pub max_prove_duration: u64,

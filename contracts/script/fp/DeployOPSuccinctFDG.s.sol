@@ -290,6 +290,12 @@ contract DeployOPSuccinctFDG is Script, Utils {
             }
         }
 
+        // Optionally set guardian as owner
+        if (config.guardianAddress != address(0)) {
+            accessManager.transferOwnership(config.guardianAddress);
+            console.log("Guardian address set to:", config.guardianAddress);
+        }
+
         return accessManager;
     }
 }

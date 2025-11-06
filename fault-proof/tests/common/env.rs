@@ -49,6 +49,7 @@ pub fn test_config(starting_l2_block_number: u64, starting_root: String) -> Faul
         dispute_game_finality_delay_seconds: DISPUTE_GAME_FINALITY_DELAY_SECONDS,
         fallback_timeout_fp_secs: FALLBACK_TIMEOUT.to::<u64>(),
         game_type: TEST_GAME_TYPE,
+        guardian_address: Address::ZERO.to_string(),
         initial_bond_wei: INIT_BOND.to::<u64>(),
         configure_contracts: true,
         dispute_game_factory_address: Address::ZERO.to_string(),
