@@ -239,6 +239,7 @@ async fn main() -> Result<()> {
     };
     let mut state = MonitorState::new(next_game_index);
 
+    let poll_interval = Duration::from_secs(args.poll_interval);
     // Main monitoring loop
     loop {
         // Clean up any finished processes
@@ -318,7 +319,7 @@ async fn main() -> Result<()> {
                         "Max concurrent processes reached ({}), waiting for one to finish...",
                         args.max_concurrent
                     );
-                    sleep(Duration::from_secs(5)).await;
+                    sleep(poll_interval).await;
                     state.cleanup_finished_processes();
                 }
 
@@ -353,6 +354,6 @@ async fn main() -> Result<()> {
         }
 
         // Wait before next poll
-        sleep(Duration::from_secs(args.poll_interval)).await;
+        sleep(poll_interval).await;
     }
 }
