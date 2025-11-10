@@ -186,6 +186,9 @@ pub struct ChallengerConfig {
     /// Set to 0.0 (default) for production use (honest challenging only).
     /// Set to >0.0 for testing defense mechanisms.
     pub malicious_challenge_percentage: f64,
+
+    /// Enables the challenger to send challenge transactions.
+    pub challenger_enable: bool,
 }
 
 impl ChallengerConfig {
@@ -201,6 +204,9 @@ impl ChallengerConfig {
                 .parse()?,
             malicious_challenge_percentage: env::var("MALICIOUS_CHALLENGE_PERCENTAGE")
                 .unwrap_or("0.0".to_string())
+                .parse()?,
+            challenger_enable: env::var("CHALLENGER_ENABLE")
+                .unwrap_or("false".to_string())
                 .parse()?,
         })
     }

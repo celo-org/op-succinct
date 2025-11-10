@@ -65,13 +65,17 @@ where
     /// cached state, and then handles challenging, resolution, and bond-claiming tasks.
     pub async fn run(&mut self) -> Result<()> {
         tracing::info!("OP Succinct Lite Challenger running...");
-        if self.config.malicious_challenge_percentage > 0.0 {
-            tracing::warn!(
+        if self.config.challenger_enable {
+            if self.config.malicious_challenge_percentage > 0.0 {
+                tracing::warn!(
                 "\x1b[33mMalicious challenging enabled: {}% of valid games will be challenged for testing\x1b[0m",
                 self.config.malicious_challenge_percentage
             );
+            } else {
+                tracing::info!("Honest challenger mode (malicious challenging disabled)");
+            }
         } else {
-            tracing::info!("Honest challenger mode (malicious challenging disabled)");
+            tracing::info!("Challenger disabled, no challenges will be submitted");
         }
 
         let mut interval = time::interval(Duration::from_secs(self.config.fetch_interval));
@@ -329,6 +333,11 @@ where
     /// configured.
     #[tracing::instrument(skip(self), level = "info", name = "[[Challenging]]")]
     async fn handle_game_challenging(&mut self) -> Result<()> {
+        if !self.config.challenger_enable {
+            tracing::info!("Challenger disabled, skipping challenging");
+            return Ok(())
+        }
+
         let candidates = {
             let state = self.state.lock().await;
             state
