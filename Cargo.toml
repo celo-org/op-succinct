@@ -197,11 +197,11 @@ celo-alloy-network = { git = "https://github.com/celo-org/celo-kona", rev = "64f
 alloy-evm = { version = "0.23.1", default-features = false }
 alloy-op-evm = { version = "0.23.1", default-features = false }
 # Use kzg-rs and substrate-bn for the zkVM.
-revm = { version = "31.0.0", default-features = false, features = [
+revm = { version = "31.0.1", default-features = false, features = [
     "bn",
 ] }
-revm-precompile = { version = "29.0.0", default-features = false }
-op-revm = { version = "12.0.0", default-features = false }
+revm-precompile = { version = "29.0.1", default-features = false }
+op-revm = { version = "12.0.1", default-features = false }
 
 # Celo Execution
 alloy-celo-evm = { git = "https://github.com/celo-org/celo-kona", rev = "64f4c0c", default-features = false }
