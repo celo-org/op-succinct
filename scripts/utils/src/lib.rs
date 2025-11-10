@@ -37,9 +37,6 @@ pub struct HostExecutorArgs {
     /// Skip writing CSV files and only log execution statistics.
     #[arg(long)]
     pub log_only: bool,
-    /// Process ranges and batches in reverse order (from highest to lowest block).
-    #[arg(long, default_value = "false")]
-    pub reverse: bool,
 }
 
 #[derive(Debug, Clone, Parser)]

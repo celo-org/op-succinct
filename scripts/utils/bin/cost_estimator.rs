@@ -233,15 +233,11 @@ async fn main() -> Result<()> {
     // splitting algorithm. Otherwise, we use the simple range splitting algorithm.
     let safe_db_activated = data_fetcher.is_safe_db_activated().await?;
 
-    let mut split_ranges = if safe_db_activated {
+    let split_ranges = if safe_db_activated {
         split_range_based_on_safe_heads(l2_start_block, l2_end_block, args.batch_size).await?
     } else {
         split_range_basic(l2_start_block, l2_end_block, args.batch_size)
     };
-
-    if args.reverse {
-        split_ranges.reverse();
-    }
 
     info!("The span batch ranges which will be executed: {split_ranges:?}");
 

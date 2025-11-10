@@ -1,13 +1,14 @@
 use alloy_eips::BlockId;
 use anyhow::Result;
 use clap::Parser;
-use log::{info, warn};
+use log::{info, warn, error};
 use op_succinct_host_utils::{
     block_range::{split_range_basic, SpanBatchRange},
     fetcher::OPSuccinctDataFetcher,
 };
-use std::{cmp::min, path::PathBuf, process::Stdio, sync::Arc};
+use std::{cmp::min, panic::AssertUnwindSafe, path::PathBuf, process::Stdio, sync::Arc};
 use tokio::{process::Command, sync::Mutex, task::JoinSet};
+use futures::FutureExt;
 
 /// Parallel cost estimator that runs multiple cost_estimator instances concurrently
 #[derive(Parser, Debug, Clone)]
@@ -27,10 +28,6 @@ pub struct ParallelCostEstimatorArgs {
     #[arg(long, default_value = "14")]
     pub days: u64,
 
-    /// Number of blocks in each range to process
-    #[arg(long)]
-    pub range: u64,
-
     /// Number of concurrent cost_estimator instances to run
     #[arg(long, default_value = "4")]
     pub concurrency: usize,
@@ -39,29 +36,9 @@ pub struct ParallelCostEstimatorArgs {
     #[arg(long, default_value = "10")]
     pub batch_size: u64,
 
-    /// Use cached witness generation (passed to cost_estimator)
-    #[arg(long)]
-    pub use_cache: bool,
-
-    /// Use a fixed recent range (passed to cost_estimator)
-    #[arg(long)]
-    pub rolling: bool,
-
-    /// The number of blocks to use for the default range (passed to cost_estimator)
-    #[arg(long, default_value = "5")]
-    pub default_range: u64,
-
     /// The environment file to use (passed to cost_estimator)
     #[arg(long, default_value = ".env")]
     pub env_file: PathBuf,
-
-    /// Whether to generate proofs (passed to cost_estimator)
-    #[arg(long)]
-    pub prove: bool,
-
-    /// Whether to fallback to timestamp-based L1 head estimation (passed to cost_estimator)
-    #[arg(long)]
-    pub safe_db_fallback: bool,
 
     /// Process ranges and batches in reverse order (from highest to lowest block)
     #[arg(long)]
@@ -77,9 +54,11 @@ pub struct ParallelCostEstimatorArgs {
 struct ExecutionTracker {
     completed: usize,
     failed: usize,
+    panicked: usize,
     total: usize,
     completed_ranges: Vec<SpanBatchRange>,
     failed_ranges: Vec<SpanBatchRange>,
+    panicked_ranges: Vec<SpanBatchRange>,
 }
 
 impl ExecutionTracker {
@@ -87,9 +66,11 @@ impl ExecutionTracker {
         Self {
             completed: 0,
             failed: 0,
+            panicked: 0,
             total,
             completed_ranges: Vec::new(),
             failed_ranges: Vec::new(),
+            panicked_ranges: Vec::new(),
         }
     }
 
@@ -100,9 +81,14 @@ impl ExecutionTracker {
     }
 
     fn mark_failed(&mut self, range: SpanBatchRange, error: String) {
-        warn!("Failed to process blocks {} to {} with error: {}", range.start, range.end, error);
+        error!("Failed to process blocks {} to {} with error: {}", range.start, range.end, error);
         self.failed += 1;
         self.failed_ranges.push(range);
+    }
+    fn mark_panicked(&mut self, range: SpanBatchRange, panic_msg: String) {
+        error!("Panicked while processing blocks {} to {} with message: {}", range.start, range.end, panic_msg);
+        self.panicked += 1;
+        self.panicked_ranges.push(range);
     }
 }
 
@@ -141,46 +127,17 @@ async fn run_cost_estimator(
         .arg("--batch-size")
         .arg(batch_size.to_string())
         .arg("--default-range")
-        .arg(args.default_range.to_string())
+        .arg(batch_size.to_string())
+        .arg("--log-only")
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-
-    if args.use_cache {
-        cmd.arg("--use-cache");
-    }
-
-    if args.rolling {
-        cmd.arg("--rolling");
-    }
-
-    if args.prove {
-        cmd.arg("--prove");
-    }
-
-    if args.safe_db_fallback {
-        cmd.arg("--safe-db-fallback");
-    }
-
-    if args.log_only {
-        cmd.arg("--log-only");
-    }
-
-    if args.reverse {
-        cmd.arg("--reverse");
-    }
 
     let status = cmd.status().await?;
 
     if status.success() {
-        info!("Completed cost_estimator for blocks {} to {}", range.start, range.end);
         Ok(range)
     } else {
-        anyhow::bail!(
-            "cost_estimator failed for blocks {} to {} with exit code: {:?}",
-            range.start,
-            range.end,
-            status.code()
-        )
+        anyhow::bail!("cost_estimator failed for blocks {} to {} with exit code: {:?}", range.start, range.end, status.code());
     }
 }
 
@@ -201,18 +158,35 @@ async fn process_ranges(
                       range: SpanBatchRange,
                       args: ParallelCostEstimatorArgs,
                       tracker: Arc<Mutex<ExecutionTracker>>| {
+        let range_clone = range.clone();
         handles.spawn(async move {
-            let result = run_cost_estimator(range.clone(), &args).await;
+            // Wrap the execution in catch_unwind to handle panics gracefully
+            let result = AssertUnwindSafe(run_cost_estimator(range.clone(), &args))
+                .catch_unwind()
+                .await;
+            
             let mut tracker = tracker.lock().await;
-
-            match &result {
-                Ok(_) => tracker.mark_completed(range),
-                Err(e) => {
-                    tracker.mark_failed(range, e.to_string());
+            match result {
+                Ok(Ok(span_range)) => {
+                    tracker.mark_completed(span_range.clone());
+                    Ok(span_range)
+                }
+                Ok(Err(e)) => {
+                    tracker.mark_failed(range_clone, e.to_string());
+                    Err(e)
+                }
+                Err(panic_err) => {
+                    let panic_msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_err.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "Unknown panic".to_string()
+                    };
+                    tracker.mark_panicked(range_clone, panic_msg.clone());
+                    Err(anyhow::anyhow!("Task panicked: {}", panic_msg))
                 }
             }
-
-            result
         });
     };
 
@@ -226,15 +200,11 @@ async fn process_ranges(
     // Process results and spawn new tasks as slots become available
     while let Some(result) = handles.join_next().await {
         match result {
-            Ok(Ok(_)) => {
-                // Task completed successfully
-            }
-            Ok(Err(_)) => {
-                // Task failed, but continue with remaining tasks
-            }
+            Ok(_) => {},
             Err(e) => {
-                // Task panicked
-                warn!("Task panicked: {}", e);
+                warn!("Tokio task error (critical): {}", e);
+                let mut t = tracker.lock().await;
+                t.panicked += 1;
             }
         }
 
@@ -252,10 +222,13 @@ async fn process_ranges(
 
     info!("Completed ranges: {:?}", final_tracker.completed_ranges);
     info!("Failed ranges: {:?}", final_tracker.failed_ranges);
-    if final_tracker.failed > 0 {
+    info!("Panicked ranges: {:?}", final_tracker.panicked_ranges);
+    info!("Total ranges: {}", final_tracker.total);
+    if final_tracker.failed > 0 || final_tracker.panicked > 0 {
         anyhow::bail!(
-            "{} out of {} ranges failed to process",
+            "{} ranges failed, {} ranges panicked, out of {} total ranges",
             final_tracker.failed,
+            final_tracker.panicked,
             final_tracker.total
         );
     }
@@ -303,21 +276,17 @@ async fn main() -> Result<()> {
         );
     }
 
-    if args.range == 0 {
-        anyhow::bail!("'range' must be greater than 0");
-    }
-
     if args.concurrency == 0 {
         anyhow::bail!("'concurrency' must be greater than 0");
     }
 
     info!(
-        "Starting parallel cost estimator for blocks {} to {} with range size {} and concurrency {}",
-        from_block, to_block, args.range, args.concurrency
+        "Starting parallel cost estimator for blocks {} to {} with batch size {} and concurrency {}",
+        from_block, to_block, args.batch_size, args.concurrency
     );
 
     // Split the overall range into sub-ranges
-    let mut ranges = split_range_basic(to_block, from_block, args.range);
+    let mut ranges = split_range_basic(to_block, from_block, args.batch_size);
     if args.reverse {
         ranges.reverse();
     }
