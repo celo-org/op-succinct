@@ -1,14 +1,14 @@
 use alloy_eips::BlockId;
 use anyhow::Result;
 use clap::Parser;
-use log::{info, warn, error};
+use futures::FutureExt;
+use log::{error, info, warn};
 use op_succinct_host_utils::{
     block_range::{split_range_basic, SpanBatchRange},
     fetcher::OPSuccinctDataFetcher,
 };
 use std::{cmp::min, panic::AssertUnwindSafe, path::PathBuf, process::Stdio, sync::Arc};
 use tokio::{process::Command, sync::Mutex, task::JoinSet};
-use futures::FutureExt;
 
 /// Parallel cost estimator that runs multiple cost_estimator instances concurrently
 #[derive(Parser, Debug, Clone)]
@@ -86,7 +86,10 @@ impl ExecutionTracker {
         self.failed_ranges.push(range);
     }
     fn mark_panicked(&mut self, range: SpanBatchRange, panic_msg: String) {
-        error!("Panicked while processing blocks {} to {} with message: {}", range.start, range.end, panic_msg);
+        error!(
+            "Panicked while processing blocks {} to {} with message: {}",
+            range.start, range.end, panic_msg
+        );
         self.panicked += 1;
         self.panicked_ranges.push(range);
     }
@@ -137,7 +140,12 @@ async fn run_cost_estimator(
     if status.success() {
         Ok(range)
     } else {
-        anyhow::bail!("cost_estimator failed for blocks {} to {} with exit code: {:?}", range.start, range.end, status.code());
+        anyhow::bail!(
+            "cost_estimator failed for blocks {} to {} with exit code: {:?}",
+            range.start,
+            range.end,
+            status.code()
+        );
     }
 }
 
@@ -161,10 +169,9 @@ async fn process_ranges(
         let range_clone = range.clone();
         handles.spawn(async move {
             // Wrap the execution in catch_unwind to handle panics gracefully
-            let result = AssertUnwindSafe(run_cost_estimator(range.clone(), &args))
-                .catch_unwind()
-                .await;
-            
+            let result =
+                AssertUnwindSafe(run_cost_estimator(range.clone(), &args)).catch_unwind().await;
+
             let mut tracker = tracker.lock().await;
             match result {
                 Ok(Ok(span_range)) => {
@@ -200,7 +207,7 @@ async fn process_ranges(
     // Process results and spawn new tasks as slots become available
     while let Some(result) = handles.join_next().await {
         match result {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(e) => {
                 warn!("Tokio task error (critical): {}", e);
                 let mut t = tracker.lock().await;
