@@ -131,9 +131,12 @@ async fn run_cost_estimator(
         .arg(batch_size.to_string())
         .arg("--default-range")
         .arg(batch_size.to_string())
-        .arg("--log-only")
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+
+    if args.log_only {
+        cmd.arg("--log-only");
+    }
 
     let status = cmd.status().await?;
 
