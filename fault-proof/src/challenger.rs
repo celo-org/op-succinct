@@ -129,11 +129,29 @@ where
         };
 
         let Some(latest_index) = self.factory.fetch_latest_game_index().await? else {
+            tracing::warn!("No games to fetch (factory returned None)");
             return Ok(());
         };
 
+        if next_index >= latest_index {
+            tracing::info!("No games to fetch");
+        } else {
+            tracing::info!(
+                start=%next_index,
+                latest=%latest_index,
+                number=%latest_index.saturating_add(U256::from(1u8)).saturating_sub(next_index),
+                "Begin fetching games",
+            );
+        }
+
         while next_index <= latest_index {
             self.fetch_game(next_index).await?;
+
+            tracing::info!(
+                current=%next_index, latest=%latest_index, remaining=%latest_index.saturating_sub(next_index),
+                "Fetched game",
+            );
+
             next_index += U256::from(1);
         }
 
@@ -165,9 +183,13 @@ where
                 Remove(U256),
             }
 
+            tracing::info!(count = games.len(), "Begin updating game statuses");
+
             let mut actions = Vec::with_capacity(games.len());
 
             for game in games {
+                tracing::info!(index=%game.index, address=%game.address, "Updating game status");
+
                 let contract =
                     OPSuccinctFaultDisputeGame::new(game.address, self.l1_provider.clone());
                 let status = contract.status().call().await?;
@@ -266,6 +288,8 @@ where
             }
         }
 
+        tracing::info!("Synced games to latest index");
+
         Ok(())
     }
 
@@ -348,7 +372,20 @@ where
                 .collect::<Vec<_>>()
         };
 
+        if !candidates.is_empty() {
+            tracing::info!("No candidates to challenge");
+        } else {
+            tracing::info!(count = candidates.len(), "Begin challenging candidates");
+        }
+
         for game in candidates {
+            tracing::debug!(
+                index = %game.index,
+                address = %game.address,
+                parent_index = %game.parent_index,
+                "Challenging game"
+            );
+
             if let Err(error) = self.submit_challenge_transaction(&game).await {
                 tracing::warn!(
                     game_index = %game.index,
@@ -377,6 +414,8 @@ where
             let should_challenge: f64 = rng.random_range(0.0..100.0);
 
             if should_challenge <= self.config.malicious_challenge_percentage {
+                tracing::info!("Malicious challenger enabled, attempting a challenge");
+
                 let candidate = {
                     let state = self.state.lock().await;
                     state
@@ -417,6 +456,8 @@ where
             }
         }
 
+        tracing::info!("Challenging job completed");
+
         Ok(())
     }
 
@@ -453,6 +494,13 @@ where
                 .collect::<Vec<_>>()
         };
 
+        if candidates.is_empty() {
+            tracing::info!("No games to resolve");
+            return Ok(());
+        } else {
+            tracing::info!(count = candidates.len(), "Begin resolving games");
+        }
+
         for game in candidates {
             if let Err(error) = self.submit_resolution_transaction(&game).await {
                 tracing::warn!(
@@ -467,6 +515,8 @@ where
 
             ChallengerGauge::GamesResolved.increment(1.0);
         }
+
+        tracing::info!("Resolving job completed");
 
         Ok(())
     }
@@ -503,6 +553,13 @@ where
                 .collect::<Vec<_>>()
         };
 
+        if candidates.is_empty() {
+            tracing::info!("No bonds to claim");
+            return Ok(());
+        } else {
+            tracing::info!(count = candidates.len(), "Begin claiming bonds");
+        }
+
         for game in candidates {
             if let Err(error) = self.submit_bond_claim_transaction(&game).await {
                 tracing::warn!(
@@ -517,6 +574,8 @@ where
 
             ChallengerGauge::GamesBondsClaimed.increment(1.0);
         }
+
+        tracing::info!("Claiming bonds job completed");
 
         Ok(())
     }
