@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{Address, U256};
 use alloy_provider::{Provider, ProviderBuilder};
-use anyhow::{Context, Result};
+use anyhow::{Context, Ok, Result};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use tokio::{sync::Mutex, time};
 
@@ -357,11 +357,6 @@ where
     /// configured.
     #[tracing::instrument(skip(self), level = "info", name = "[[Challenging]]")]
     async fn handle_game_challenging(&mut self) -> Result<()> {
-        if !self.config.challenger_enable {
-            tracing::info!("Challenger disabled, skipping challenging");
-            return Ok(())
-        }
-
         let candidates = {
             let state = self.state.lock().await;
             state
@@ -379,14 +374,9 @@ where
         }
 
         for game in candidates {
-            tracing::debug!(
-                index = %game.index,
-                address = %game.address,
-                parent_index = %game.parent_index,
-                "Challenging game"
-            );
-
-            if let Err(error) = self.submit_challenge_transaction(&game).await {
+            if let Err(error) =
+                self.submit_challenge_transaction(&game, self.config.challenger_enable).await
+            {
                 tracing::warn!(
                     game_index = %game.index,
                     game_address = ?game.address,
@@ -434,7 +424,10 @@ where
                         self.config.malicious_challenge_percentage
                     );
 
-                    if let Err(error) = self.submit_challenge_transaction(&game).await {
+                    if let Err(error) = self
+                        .submit_challenge_transaction(&game, self.config.challenger_enable)
+                        .await
+                    {
                         tracing::warn!(
                             game_index = %game.index,
                             game_address = ?game.address,
@@ -461,10 +454,25 @@ where
         Ok(())
     }
 
-    async fn submit_challenge_transaction(&self, game: &Game) -> Result<()> {
+    async fn submit_challenge_transaction(&self, game: &Game, enabled: bool) -> Result<()> {
         let contract = OPSuccinctFaultDisputeGame::new(game.address, self.l1_provider.clone());
         let transaction_request =
             contract.challenge().value(self.challenger_bond).into_transaction_request();
+
+        tracing::info!(
+            enabled=enabled,
+            game_index = %game.index,
+            game_address = ?game.address,
+            l2_block = %game.l2_block_number,
+            tx = ?transaction_request,
+            "Challenging game"
+        );
+
+        // If challenger is not enabled, just log and skip challenging
+        if !enabled {
+            return Ok(());
+        }
+
         let receipt = self
             .signer
             .send_transaction_request(self.config.l1_rpc.clone(), transaction_request)
