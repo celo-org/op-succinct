@@ -110,15 +110,15 @@ hana-host = { git = "https://github.com/celestiaorg/hana", rev = "1d272dd83263db
 hana-oracle = { git = "https://github.com/celestiaorg/hana", rev = "1d272dd83263dbcc2ad97daaac84b2e578a0b288" }
 
 # hokulea
-hokulea-compute-proof = { git = "https://github.com/Layr-Labs/hokulea", rev = "ede4e93969fa3e181093c8807576afb85c60cb0e" }
-hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", rev = "ede4e93969fa3e181093c8807576afb85c60cb0e" }
-hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", rev = "ede4e93969fa3e181093c8807576afb85c60cb0e" }
-hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", rev = "ede4e93969fa3e181093c8807576afb85c60cb0e" }
-hokulea-witgen = { git = "https://github.com/Layr-Labs/hokulea", rev = "ede4e93969fa3e181093c8807576afb85c60cb0e" }
-hokulea-zkvm-verification = { git = "https://github.com/Layr-Labs/hokulea", rev = "ede4e93969fa3e181093c8807576afb85c60cb0e" }
-canoe-sp1-cc-host = { git = "https://github.com/Layr-Labs/hokulea", rev = "ede4e93969fa3e181093c8807576afb85c60cb0e" }
-canoe-sp1-cc-verifier = { git = "https://github.com/Layr-Labs/hokulea", rev = "ede4e93969fa3e181093c8807576afb85c60cb0e" }
-canoe-verifier-address-fetcher = { git = "https://github.com/Layr-Labs/hokulea", rev = "ede4e93969fa3e181093c8807576afb85c60cb0e" }
+hokulea-compute-proof = { git = "https://github.com/Layr-Labs/hokulea", rev = "c07bb19" }
+hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", rev = "c07bb19" }
+hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", rev = "c07bb19" }
+hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", rev = "c07bb19" }
+hokulea-witgen = { git = "https://github.com/Layr-Labs/hokulea", rev = "c07bb19" }
+hokulea-zkvm-verification = { git = "https://github.com/Layr-Labs/hokulea", rev = "c07bb19" }
+canoe-sp1-cc-host = { git = "https://github.com/Layr-Labs/hokulea", rev = "c07bb19" }
+canoe-sp1-cc-verifier = { git = "https://github.com/Layr-Labs/hokulea", rev = "c07bb19" }
+canoe-verifier-address-fetcher = { git = "https://github.com/Layr-Labs/hokulea", rev = "c07bb19" }
 
 # op-succinct
 op-succinct-prove = { path = "scripts/prove" }
