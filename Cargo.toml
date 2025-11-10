@@ -235,6 +235,8 @@ sha3 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", package = "sh
 p256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-p256-13.2-sp1-5.0.0" }
 k256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-k256-13.4-sp1-5.0.0" }
 
+# Patch revm to our forked version of tag v97, which adds a couple of functions to hanlde modifying the journal state
+# see - https://github.com/celo-org/op-succinct/pull/56#issuecomment-3511756229
 revm = { git = "https://github.com/celo-org/revm", rev = "1531912", default-features = false }
 revm-primitives = { git = "https://github.com/celo-org/revm", rev = "1531912", default-features = false }
 revm-bytecode = { git = "https://github.com/celo-org/revm", rev = "1531912", default-features = false }
