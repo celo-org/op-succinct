@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{Address, U256};
 use alloy_provider::{Provider, ProviderBuilder};
-use anyhow::{Context, Ok, Result};
+use anyhow::{Context, Result};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use tokio::{sync::Mutex, time};
 
