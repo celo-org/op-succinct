@@ -4,15 +4,7 @@ A utility to run multiple `cost-estimator` instances in parallel for processing 
 
 ## Overview
 
-The `parallel-cost-estimator` divides a large block range into smaller chunks and processes them concurrently using multiple instances of the `cost-estimator` binary. This approach significantly speeds up the cost estimation process for large block ranges.
-
-## Features
-
-- **Configurable Concurrency**: Control how many `cost-estimator` instances run simultaneously
-- **Automatic Range Splitting**: Automatically divides the block range into manageable chunks
-- **Progress Tracking**: Real-time feedback on completed and failed ranges
-- **Fault Tolerance**: Continues processing remaining ranges even if some fail
-- **Resource Management**: Uses a worker pool pattern to avoid overwhelming system resources
+The `parallel-cost-estimator` divides a large block range into smaller chunks and processes them concurrently using multiple instances of the `cost-estimator` binary.
 
 ## Usage
 
@@ -22,7 +14,7 @@ The `parallel-cost-estimator` divides a large block range into smaller chunks an
 cargo run --release --bin parallel-cost-estimator -- \
   --from <START_BLOCK> \
   --to <END_BLOCK> \
-  --range <BLOCKS_PER_RANGE> \
+  --batch-size <BLOCKS_PER_BATCH> \
   --concurrency <NUM_PARALLEL_WORKERS>
 ```
 
@@ -30,268 +22,97 @@ cargo run --release --bin parallel-cost-estimator -- \
 
 #### Required Parameters
 
-- `--range <SIZE>`: Number of blocks in each processing range
-
-#### Semi-Optional Parameters
-
-- `--from <BLOCK_NUMBER>`: Starting block number (inclusive). If not provided, fetches latest finalized block from L2 RPC.
-- `--to <BLOCK_NUMBER>`: Ending block number (exclusive). If not provided, calculates as `(from - TWO_WEEKS_IN_BLOCKS)`.
-
-**Note:** If neither `--from` nor `--to` are provided, the script will:
-1. Fetch the latest finalized block from L2 RPC as `from`
-2. Calculate `to` as `from - TWO_WEEKS_IN_BLOCKS` (604,800 blocks for 2-second block time)
+- `--batch-size <SIZE>`: Number of blocks in each processing batch (default: 10)
 
 #### Optional Parameters
 
+- `--from <BLOCK_NUMBER>`: Starting block number (inclusive). If not provided, fetches latest finalized block from L2 RPC
+- `--to <BLOCK_NUMBER>`: Ending block number (exclusive). If not provided, calculates as `(from - days * 86400)`
+- `--days <NUM>`: Number of days to look back when calculating `to` (default: 14, assumes 1 second block time)
 - `--concurrency <NUM>`: Number of concurrent cost_estimator instances (default: 4)
-- `--batch-size <SIZE>`: Blocks per batch within each range (default: 10, passed to cost_estimator)
-- `--default-range <SIZE>`: Default range size (default: 5, passed to cost_estimator)
-- `--use-cache`: Enable cached witness generation
-- `--rolling`: Use rolling block range
-- `--prove`: Generate proofs
-- `--safe-db-fallback`: Fallback to timestamp-based L1 head estimation
 - `--reverse`: Process ranges in reverse order (highest blocks first)
-- `--log-only`: Skip writing CSV files and only log execution statistics
+- `--log-only`: Skip writing CSV files and only log execution statistics (default: true)
+- `--env-file <PATH>`: Path to environment file (default: .env)
 
 ### Examples
 
-#### Example 1: Process 1000 blocks with default settings
+#### Example 1: Auto-fetch latest 2 weeks of blocks
 
 ```bash
 cargo run --release --bin parallel-cost-estimator -- \
-  --from 1000000 \
-  --to 1001000 \
-  --range 100 \
+  --batch-size 100 \
   --concurrency 4
 ```
 
 This will:
-- Split blocks 1,000,000-1,001,000 into 10 ranges of 100 blocks each
-- Process 4 ranges concurrently
-- Each range will use batch-size of 10 (default)
+- Fetch the latest finalized block from L2 RPC as `from`
+- Calculate `to` as `from - (14 * 86400)` blocks (14 days)
+- Process with 4 concurrent workers
 
-#### Example 2: High concurrency with custom batch size
+#### Example 2: Custom time range (7 days)
+
+```bash
+cargo run --release --bin parallel-cost-estimator -- \
+  --days 7 \
+  --batch-size 100 \
+  --concurrency 8
+```
+
+This will process the last 7 days of blocks instead of the default 14 days.
+
+#### Example 3: Specific block range
 
 ```bash
 cargo run --release --bin parallel-cost-estimator -- \
   --from 1000000 \
-  --to 1010000 \
-  --range 500 \
-  --concurrency 8 \
-  --batch-size 50
-```
-
-This will:
-- Split blocks 1,000,000-1,010,000 into 20 ranges of 500 blocks each
-- Process 8 ranges concurrently
-- Each range processes 50 blocks per batch
-
-#### Example 3: With caching and proof generation
-
-```bash
-cargo run --release --bin parallel-cost-estimator -- \
-  --from 2000000 \
-  --to 2005000 \
-  --range 250 \
-  --concurrency 6 \
-  --use-cache \
-  --prove
-```
-
-#### Example 4: Process in reverse order (newest blocks first)
-
-```bash
-cargo run --release --bin parallel-cost-estimator -- \
-  --from 100 \
-  --to 300 \
-  --range 50 \
-  --concurrency 2 \
-  --reverse
-```
-
-This will:
-- Process ranges in reverse: [250-300, 200-249, 150-199, 100-149]
-- First 2 concurrent processes: range 250-300 and range 200-249
-- Useful for prioritizing recent block data
-
-#### Example 5: Log only mode (no CSV files)
-
-```bash
-cargo run --release --bin parallel-cost-estimator -- \
-  --from 1000 \
-  --to 2000 \
-  --range 100 \
-  --concurrency 4 \
-  --log-only
-```
-
-This will:
-- Process blocks 1000-2000 in ranges of 100
-- Output execution statistics to logs instead of CSV files
-- Useful for quick testing or when you don't need persistent reports
-- Saves disk space and reduces I/O overhead
-
-#### Example 6: Auto-fetch latest blocks (no from/to specified)
-
-```bash
-cargo run --release --bin parallel-cost-estimator -- \
-  --range 1000 \
-  --concurrency 8 \
-  --batch-size 50
-```
-
-This will:
-- Fetch the latest finalized block from L2 RPC as `from`
-- Calculate `to` as `from - 604,800` (2 weeks of blocks)
-- Process the last 2 weeks of blocks automatically
-- Useful for continuous monitoring or regular analysis
-
-#### Example 7: Specify only 'from', auto-calculate 'to'
-
-```bash
-cargo run --release --bin parallel-cost-estimator -- \
-  --from 2000000 \
-  --range 5000 \
+  --to 900000 \
+  --batch-size 50 \
   --concurrency 6
 ```
 
-This will:
-- Use 2,000,000 as the starting block
-- Calculate `to` as 2,000,000 - 604,800 = 1,395,200
-- Process blocks 2,000,000 down to 1,395,200
+This will process blocks 1,000,000 down to 900,000 with custom batch size.
 
-## How It Works
-
-1. **Range Splitting**: The script divides the `from-to` block range into chunks of `range` size
-2. **Worker Pool**: Spawns initial batch of `concurrency` number of cost_estimator processes
-3. **Dynamic Scheduling**: As each process completes, a new one is spawned with the next range
-4. **Progress Tracking**: Logs progress showing completed vs failed ranges
-5. **Completion**: Continues until all ranges are processed or an error occurs
-
-### Reverse Order Processing
-
-When using `--reverse`, ranges are processed from highest to lowest block numbers:
+#### Example 4: High concurrency for large ranges
 
 ```bash
-# Example: --from 100 --to 300 --range 50 --concurrency 2 --reverse
-
-Normal order:  [100-149, 150-199, 200-249, 250-300]
-Reverse order: [250-300, 200-249, 150-199, 100-149]
-
-Timeline:
-  t0: Process 1: 250-300 (started)
-      Process 2: 200-249 (started)
-  t1: Process 1: done → Process 1: 150-199 (started)
-  t2: Process 2: done → Process 2: 100-149 (started)
-  t3: All complete
+cargo run --release --bin parallel-cost-estimator -- \
+  --from 2000000 \
+  --to 800000 \
+  --batch-size 1000 \
+  --concurrency 16
 ```
 
-**Note on batch ordering within ranges**: Each `cost_estimator` process internally splits its range into batches and processes them in parallel using thread-level parallelism (rayon). The batches within a single range are executed concurrently, not sequentially, so there's no guaranteed order for batch processing within a range. The `--reverse` flag only affects the order in which ranges are assigned to worker processes.
-
-## Architecture
-
-The parallel cost estimator follows the same pattern as the `execution-verifier` in the celo-kona repository:
-
-```
-User Input (from, to, range, concurrency)
-    ↓
-Range Splitting (e.g., 1000-5000 with range=500 → [1000-1500, 1500-2000, ...])
-    ↓
-Worker Pool (spawns 'concurrency' number of workers)
-    ↓
-Dynamic Task Assignment (as workers finish, new tasks are assigned)
-    ↓
-Aggregated Results
-```
-
-## Performance Considerations
-
-### Choosing the Right Parameters
-
-- **concurrency**: 
-  - Set based on your system's CPU cores and memory
-  - Higher values = faster processing but more resource usage
-  - Recommended: 2-8 for most systems
-
-- **range**: 
-  - Larger ranges = fewer overhead but longer per-task execution
-  - Smaller ranges = better load balancing but more startup overhead
-  - Recommended: 100-1000 blocks depending on chain activity
-
-- **batch-size**: 
-  - Controls memory usage within each cost_estimator instance
-  - Smaller values = lower memory but more iterations
-  - Recommended: 10-50 blocks
-
-### Example Configurations
-
-**For Fast, Light Chains:**
-```bash
---range 1000 --concurrency 8 --batch-size 100
-```
-
-**For Heavy, Complex Chains:**
-```bash
---range 100 --concurrency 4 --batch-size 10
-```
-
-**For Memory-Constrained Systems:**
-```bash
---range 50 --concurrency 2 --batch-size 5
-```
+Processes 1.2 million blocks with high parallelism.
 
 ## Output
 
-The script will:
-1. Log the overall plan (number of ranges, configuration)
-2. Show progress as each range completes
-3. Display final statistics (completed, failed, total)
-4. Generate individual CSV reports in `execution-reports/<chain-id>/` for each range (unless `--log-only` is used)
-
-### CSV Output Mode (Default)
-
-Each cost_estimator instance produces its own report file:
-```
-execution-reports/<chain-id>/<start>-<end>-report.csv
-```
-
-Example CSV content:
-```csv
-batch_start,batch_end,total_instruction_count,oracle_verify_instruction_count,...
-1000,1100,45234123,1234567,...
-```
-
-### Log-Only Mode (`--log-only`)
-
-When using the `--log-only` flag:
-- **No CSV files are created**
-- Execution statistics are logged to console in real-time
-- Reduces disk I/O and saves storage space
-- Useful for testing, debugging, or when persistent reports aren't needed
-
-Example log output:
-```
-[INFO] Execution stats for blocks 1000 to 1100:
-ExecutionStats {
-    batch_start: 1000,
-    batch_end: 1100,
-    total_instruction_count: 45234123,
-    oracle_verify_instruction_count: 1234567,
-    ...
-}
-```
+The script logs:
+1. Configuration summary (ranges, concurrency)
+2. Progress for each completed range
+3. Errors for failed ranges
+4. **Panic information for ranges that panicked**
+5. Final statistics: completed, failed, panicked counts
+6. Lists of all completed, failed, and panicked ranges
 
 ## Error Handling
 
-- If a range fails, the error is logged but processing continues
-- Final summary shows how many ranges succeeded vs failed
-- Exit code is non-zero if any ranges failed
+The script tracks three categories:
+- **Completed**: Ranges that processed successfully
+- **Failed**: Ranges that failed with errors
+- **Panicked**: Ranges where the process panicked
+
+All three categories are logged with their specific block ranges at the end:
+```
+[INFO] Completed ranges: [(100, 200), (200, 300)]
+[INFO] Failed ranges: [(300, 400)]
+[INFO] Panicked ranges: [(400, 500)]
+```
+
+Processing continues even if some ranges fail or panic. The script exits with an error code if any failures or panics occurred.
 
 ## Building
 
 ### Native Build
-
-From the op-succinct root directory:
 
 ```bash
 cargo build --release --bin parallel-cost-estimator
@@ -299,56 +120,6 @@ cargo build --release --bin parallel-cost-estimator
 
 ### Docker Build
 
-The Dockerfile is located at `scripts/utils/Dockerfile.parallel-cost-estimator`.
-
-Build from the workspace root:
-
 ```bash
-# From op-succinct root directory
 docker build -f scripts/utils/Dockerfile.parallel-cost-estimator -t parallel-cost-estimator .
 ```
-
-## Testing
-
-To verify the script works with a small range:
-
-```bash
-cargo run --release --bin parallel-cost-estimator -- \
-  --from 100000 \
-  --to 100020 \
-  --range 5 \
-  --concurrency 2
-```
-
-This small test will process 4 ranges (100000-100004, 100005-100009, 100010-100014, 100015-100020) with 2 concurrent workers.
-
-## Troubleshooting
-
-### Issue: "cargo: command not found"
-**Solution**: Ensure Rust and Cargo are installed and in your PATH
-
-### Issue: Cost estimator processes failing
-**Solution**: 
-- Check your .env file is properly configured
-- Verify RPC endpoints are accessible
-- Try reducing concurrency or range size
-- Check individual error logs for specific issues
-
-### Issue: Out of memory errors
-**Solution**: 
-- Reduce `concurrency`
-- Reduce `batch-size`
-- Reduce `range`
-
-### Issue: Slow processing
-**Solution**: 
-- Increase `concurrency` (if system has resources)
-- Increase `batch-size`
-- Increase `range`
-- Enable `--use-cache` if running multiple times
-
-## See Also
-
-- Original `cost-estimator`: `scripts/utils/bin/cost_estimator.rs`
-- Similar pattern in celo-kona: `bin/execution-verifier/src/main.rs`
-
