@@ -31,7 +31,7 @@ jobs:
         with:
           images: ${{ inputs.artifact-registry }}
           tags: |
-            type=semver,pattern={{version}}
+            type=semver,pattern={{version}},match=celo/v(.*)
             type=edge
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha
