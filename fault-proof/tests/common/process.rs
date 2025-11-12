@@ -110,15 +110,13 @@ pub async fn start_challenger(
     game_type: u32,
     malicious_percentage: Option<f64>,
 ) -> Result<tokio::task::JoinHandle<Result<()>>> {
-    // Create signer directly from private key
-    let signer = Signer::new_local_signer(private_key)?;
+    let signer = SignerLock::new(op_succinct_signer_utils::Signer::new_local_signer(private_key)?);
 
-    // Create challenger config with test-specific settings
     let config = ChallengerConfig {
         l1_rpc: rpc_config.l1_rpc.clone(),
         l2_rpc: rpc_config.l2_rpc.clone(),
         factory_address: *factory_address,
-        fetch_interval: 2, // Check more frequently in tests
+        fetch_interval: 2,
         game_type,
         metrics_port: 9001,
         malicious_challenge_percentage: malicious_percentage.unwrap_or(0.0),
@@ -127,14 +125,6 @@ pub async fn start_challenger(
 
     let l1_provider = ProviderBuilder::default().connect_http(rpc_config.l1_rpc.clone());
     let factory = DisputeGameFactory::new(*factory_address, l1_provider.clone());
-    
-    // Initialize challenger with test configuration but do not run yet.
-    let challenger =
-        init_challenger(rpc_config, private_key, factory_address, game_type, malicious_percentage)
-            .await?;
 
-    Ok(tokio::spawn(async move {
-        let mut challenger = challenger;
-        challenger.run().instrument(tracing::info_span!("CHALLENGER")).await
-    }))
+    OPSuccinctChallenger::new(config, l1_provider, factory, signer).await
 }
