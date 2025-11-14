@@ -35,6 +35,8 @@ jobs:
             type=edge
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha
+            # pull request event
+            type=ref,event=pr
   build_push_container:
     needs: infer_image_metadata
     permissions:
