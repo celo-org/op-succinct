@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "aggregation"
-version = "3.3.3"
+version = "3.3.3-b"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -6212,22 +6212,22 @@ checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
 
 [[package]]
 name = "jiff"
-version = "0.2.15"
+version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be1f93b8b1eb69c77f24bbb0afdf66f54b632ee39af40ca21c4365a1d7347e49"
+checksum = "49cce2b81f2098e7e3efc35bc2e0a6b7abec9d34128283d7a26fa8f32a6dbb35"
 dependencies = [
  "jiff-static",
  "log",
  "portable-atomic",
  "portable-atomic-util",
- "serde",
+ "serde_core",
 ]
 
 [[package]]
 name = "jiff-static"
-version = "0.2.15"
+version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03343451ff899767262ec32146f6d559dd759fdadf42ff0e227c7c48f72594b4"
+checksum = "980af8b43c3ad5d8d349ace167ec8170839f753a42d233ba19e08afe1850fa69"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -8817,7 +8817,7 @@ dependencies = [
 
 [[package]]
 name = "op-succinct-bindings"
-version = "3.3.3"
+version = "3.3.3-b"
 dependencies = [
  "alloy",
  "alloy-sol-types",
@@ -8827,7 +8827,7 @@ dependencies = [
 
 [[package]]
 name = "op-succinct-build-utils"
-version = "3.3.3"
+version = "3.3.3-b"
 dependencies = [
  "cargo_metadata",
  "sp1-build",
@@ -8835,7 +8835,7 @@ dependencies = [
 
 [[package]]
 name = "op-succinct-celestia-client-utils"
-version = "3.3.3"
+version = "3.3.3-b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8856,7 +8856,7 @@ dependencies = [
 
 [[package]]
 name = "op-succinct-celestia-host-utils"
-version = "3.3.3"
+version = "3.3.3-b"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -8885,7 +8885,7 @@ dependencies = [
 
 [[package]]
 name = "op-succinct-client-utils"
-version = "3.3.3"
+version = "3.3.3-b"
 dependencies = [
  "alloy-celo-evm",
  "alloy-consensus",
@@ -8949,7 +8949,7 @@ dependencies = [
 
 [[package]]
 name = "op-succinct-eigenda-host-utils"
-version = "3.3.3"
+version = "3.3.3-b"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -8979,11 +8979,11 @@ dependencies = [
 
 [[package]]
 name = "op-succinct-elfs"
-version = "3.3.3"
+version = "3.3.3-b"
 
 [[package]]
 name = "op-succinct-ethereum-client-utils"
-version = "3.3.3"
+version = "3.3.3-b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9002,7 +9002,7 @@ dependencies = [
 
 [[package]]
 name = "op-succinct-ethereum-host-utils"
-version = "3.3.3"
+version = "3.3.3-b"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -9022,7 +9022,7 @@ dependencies = [
 
 [[package]]
 name = "op-succinct-fp"
-version = "3.3.3"
+version = "3.3.3-b"
 dependencies = [
  "alloy",
  "alloy-contract",
@@ -9069,7 +9069,7 @@ dependencies = [
 
 [[package]]
 name = "op-succinct-host-utils"
-version = "3.3.3"
+version = "3.3.3-b"
 dependencies = [
  "alloy-consensus",
  "alloy-contract",
@@ -9130,7 +9130,7 @@ dependencies = [
 
 [[package]]
 name = "op-succinct-proof-utils"
-version = "3.3.3"
+version = "3.3.3-b"
 dependencies = [
  "cfg-if",
  "op-succinct-celestia-host-utils",
@@ -9143,7 +9143,7 @@ dependencies = [
 
 [[package]]
 name = "op-succinct-prove"
-version = "3.3.3"
+version = "3.3.3-b"
 dependencies = [
  "alloy-primitives",
  "anyhow",
@@ -9168,7 +9168,7 @@ dependencies = [
 
 [[package]]
 name = "op-succinct-range-utils"
-version = "3.3.3"
+version = "3.3.3-b"
 dependencies = [
  "anyhow",
  "celo-genesis",
@@ -9184,7 +9184,7 @@ dependencies = [
 
 [[package]]
 name = "op-succinct-scripts"
-version = "3.3.3"
+version = "3.3.3-b"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -9215,7 +9215,7 @@ dependencies = [
 
 [[package]]
 name = "op-succinct-signer-utils"
-version = "3.3.3"
+version = "3.3.3-b"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -9237,7 +9237,7 @@ dependencies = [
 
 [[package]]
 name = "op-succinct-validity"
-version = "3.3.3"
+version = "3.3.3-b"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -10677,7 +10677,7 @@ dependencies = [
 
 [[package]]
 name = "range"
-version = "3.3.3"
+version = "3.3.3-b"
 dependencies = [
  "kona-proof",
  "op-succinct-client-utils",
@@ -10690,7 +10690,7 @@ dependencies = [
 
 [[package]]
 name = "range-celestia"
-version = "3.3.3"
+version = "3.3.3-b"
 dependencies = [
  "kona-proof",
  "op-succinct-celestia-client-utils",
