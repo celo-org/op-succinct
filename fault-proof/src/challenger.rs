@@ -65,7 +65,7 @@ where
     /// cached state, and then handles challenging, resolution, and bond-claiming tasks.
     pub async fn run(&mut self) -> Result<()> {
         tracing::info!("OP Succinct Lite Challenger running...");
-        if self.config.challenger_enable {
+        if self.config.disable_monitor_only {
             if self.config.malicious_challenge_percentage > 0.0 {
                 tracing::warn!(
                 "\x1b[33mMalicious challenging enabled: {}% of valid games will be challenged for testing\x1b[0m",
@@ -75,7 +75,7 @@ where
                 tracing::info!("Honest challenger mode (malicious challenging disabled)");
             }
         } else {
-            tracing::info!("Challenger disabled, no challenges will be submitted");
+            tracing::info!("Challenger started in monitor-only mode, potential challenges will get logged, but not submitted. Disable this behavior by setting DISABLE_MONITOR_ONLY=true");
         }
 
         let mut interval = time::interval(Duration::from_secs(self.config.fetch_interval));
@@ -134,7 +134,7 @@ where
         };
 
         if next_index >= latest_index {
-            tracing::info!("No games to fetch");
+            tracing::debug!("No games to fetch");
         } else {
             tracing::info!(
                 start=%next_index,
@@ -217,6 +217,16 @@ where
                                     should_attempt_to_resolve: false,
                                     should_attempt_to_claim_bond: false,
                                 });
+
+                                tracing::debug!(
+                                    game_index = %game.index,
+                                    ?status,
+                                    ?proposal_status,
+                                    should_attempt_to_challenge = true,
+                                    should_attempt_to_resolve = false,
+                                    should_attempt_to_claim_bond = false,
+                                    "Mark game to be challenged"
+                                );
                             }
                         } else if proposal_status == ProposalStatus::Challenged {
                             let is_parent_resolved =
@@ -232,6 +242,16 @@ where
                                     should_attempt_to_resolve: true,
                                     should_attempt_to_claim_bond: false,
                                 });
+
+                                tracing::debug!(
+                                    game_index = %game.index,
+                                    ?status,
+                                    ?proposal_status,
+                                    should_attempt_to_challenge = false,
+                                    should_attempt_to_resolve = true,
+                                    should_attempt_to_claim_bond = false,
+                                    "Mark game to be resolved"
+                                );
                             }
                         }
                     }
@@ -244,19 +264,47 @@ where
 
                         if is_finalized && credit == U256::ZERO {
                             actions.push(GameSyncAction::Remove(game.index));
+
+                            tracing::debug!(
+                                game_index = %game.index,
+                                ?status,
+                                ?proposal_status,
+                                is_finalized = is_finalized,
+                                "Remove the game from queue because challenger wins and no credit left"
+                            );
                         } else {
+                            let should_attempt_to_claim_bond = is_finalized && credit > U256::ZERO;
                             actions.push(GameSyncAction::Update {
                                 index: game.index,
                                 status,
                                 proposal_status,
                                 should_attempt_to_challenge: false,
                                 should_attempt_to_resolve: false,
-                                should_attempt_to_claim_bond: is_finalized && credit > U256::ZERO,
+                                should_attempt_to_claim_bond,
                             });
+
+                            tracing::debug!(
+                                game_index = %game.index,
+                                ?status,
+                                ?proposal_status,
+                                is_finalized = is_finalized,
+                                credit = %credit,
+                                should_attempt_to_challenge = false,
+                                should_attempt_to_resolve = false,
+                                should_attempt_to_claim_bond = should_attempt_to_claim_bond,
+                                "Mark game as ready to claim bond",
+                            );
                         }
                     }
                     GameStatus::DEFENDER_WINS => {
                         actions.push(GameSyncAction::Remove(game.index));
+
+                        tracing::debug!(
+                            game_index = %game.index,
+                            ?status,
+                            ?proposal_status,
+                            "Remove the game because defender wins"
+                        );
                     }
                     _ => unreachable!("Unexpected game status: {:?}", status),
                 }
@@ -375,7 +423,7 @@ where
 
         for game in candidates {
             if let Err(error) =
-                self.submit_challenge_transaction(&game, self.config.challenger_enable).await
+                self.submit_challenge_transaction(&game, self.config.disable_monitor_only).await
             {
                 tracing::warn!(
                     game_index = %game.index,
@@ -425,7 +473,7 @@ where
                     );
 
                     if let Err(error) = self
-                        .submit_challenge_transaction(&game, self.config.challenger_enable)
+                        .submit_challenge_transaction(&game, self.config.disable_monitor_only)
                         .await
                     {
                         tracing::warn!(
@@ -454,13 +502,17 @@ where
         Ok(())
     }
 
-    pub async fn submit_challenge_transaction(&self, game: &Game, enabled: bool) -> Result<()> {
+    pub async fn submit_challenge_transaction(
+        &self,
+        game: &Game,
+        submit_enabled: bool,
+    ) -> Result<()> {
         let contract = OPSuccinctFaultDisputeGame::new(game.address, self.l1_provider.clone());
         let transaction_request =
             contract.challenge().value(self.challenger_bond).into_transaction_request();
 
         tracing::info!(
-            enabled=enabled,
+            submit_challenge_tx=submit_enabled,
             game_index = %game.index,
             game_address = ?game.address,
             l2_block = %game.l2_block_number,
@@ -469,7 +521,8 @@ where
         );
 
         // If challenger is not enabled, just log and skip challenging
-        if !enabled {
+        if !submit_enabled {
+            tracing::info!("Monitor-only mode enabled, skip challenging");
             return Ok(());
         }
 
