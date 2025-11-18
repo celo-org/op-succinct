@@ -133,7 +133,7 @@ where
             return Ok(());
         };
 
-        if next_index >= latest_index {
+        if next_index > latest_index {
             tracing::debug!("No games to fetch");
         } else {
             tracing::info!(
@@ -415,7 +415,7 @@ where
                 .collect::<Vec<_>>()
         };
 
-        if !candidates.is_empty() {
+        if candidates.is_empty() {
             tracing::info!("No candidates to challenge");
         } else {
             tracing::info!(count = candidates.len(), "Begin challenging candidates");
@@ -520,9 +520,9 @@ where
             "Challenging game"
         );
 
-        // If challenger is not enabled, just log and skip challenging
+        // If monitor_only mode is enabled, just log and skip challenging
         if !submit_enabled {
-            tracing::info!("Monitor-only mode enabled, skip challenging");
+            tracing::info!("Monitor-only mode enabled, skipping challenge transaction submission. You can submit it manually on-chain if needed.");
             return Ok(());
         }
 
