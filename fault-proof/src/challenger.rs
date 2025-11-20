@@ -189,7 +189,7 @@ where
             let mut actions = Vec::with_capacity(games.len());
 
             for game in games {
-                tracing::info!(index=%game.index, address=%game.address, "Updating game status");
+                tracing::debug!(index=%game.index, address=%game.address, "Updating game status");
 
                 let contract =
                     OPSuccinctFaultDisputeGame::new(game.address, self.l1_provider.clone());
