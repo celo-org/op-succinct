@@ -5,6 +5,7 @@ use alloy_primitives::{Address, U256};
 use alloy_provider::{Provider, ProviderBuilder};
 use anyhow::{Context, Result};
 use rand::{rngs::StdRng, Rng, SeedableRng};
+use serde_json;
 use tokio::{sync::Mutex, time};
 
 use crate::{
@@ -129,7 +130,7 @@ where
         };
 
         let Some(latest_index) = self.factory.fetch_latest_game_index().await? else {
-            tracing::warn!("No games to fetch (factory returned None)");
+            tracing::debug!("No games to fetch (factory returned None)");
             return Ok(());
         };
 
@@ -147,7 +148,7 @@ where
         while next_index <= latest_index {
             self.fetch_game(next_index).await?;
 
-            tracing::info!(
+            tracing::debug!(
                 current=%next_index, latest=%latest_index, remaining=%latest_index.saturating_sub(next_index),
                 "Fetched game",
             );
@@ -510,13 +511,14 @@ where
         let contract = OPSuccinctFaultDisputeGame::new(game.address, self.l1_provider.clone());
         let transaction_request =
             contract.challenge().value(self.challenger_bond).into_transaction_request();
+        let json_request = serde_json::to_string(&transaction_request)?;
 
         tracing::info!(
             submit_challenge_tx=submit_enabled,
             game_index = %game.index,
             game_address = ?game.address,
             l2_block = %game.l2_block_number,
-            tx = ?transaction_request,
+            tx = %json_request,
             "Challenging game"
         );
 
