@@ -1,19 +1,14 @@
 use std::{env, fs, path::PathBuf, str::FromStr, sync::Arc};
 
-use alloy_eips::{BlockId, BlockNumberOrTag};
-use alloy_network::EthereumWallet;
+use alloy_eips::BlockNumberOrTag;
 use alloy_node_bindings::Anvil;
-use alloy_primitives::{address, Address, U256};
+use alloy_primitives::{Address, U256};
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_signer_local::PrivateKeySigner;
-use alloy_sol_types::SolValue;
 use alloy_transport_http::reqwest::Url;
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
-use fault_proof::{
-    contract::{DisputeGameFactory, OPSuccinctFaultDisputeGame, ProposalStatus},
-    FactoryTrait,
-};
+use fault_proof::contract::{DisputeGameFactory, OPSuccinctFaultDisputeGame, ProposalStatus};
 use op_succinct_client_utils::boot::BootInfoStruct;
 use op_succinct_elfs::AGGREGATION_ELF;
 use op_succinct_host_utils::{
@@ -24,7 +19,7 @@ use op_succinct_host_utils::{
     witness_generation::WitnessGenerator,
 };
 use op_succinct_proof_utils::{get_range_elf_embedded, initialize_host};
-use sp1_sdk::{utils, Prover, ProverClient};
+use sp1_sdk::{network::FulfillmentStrategy, utils, Prover, ProverClient};
 use tracing::info;
 
 #[derive(Parser, Debug)]
@@ -33,71 +28,50 @@ struct Args {
     /// The environment file path.
     #[arg(long, default_value = ".env.preflight")]
     env_file: PathBuf,
+
+    /// Index of the game to prove.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    index: u64,
 }
 
-/// Fetches the block number when the game implementation was set for the given game type.
-/// Queries the ImplementationSet event from the DisputeGameFactory contract.
-/// Uses chunked queries to avoid exceeding RPC provider's max block range limits.
-async fn get_implementation_set_block(
-    factory_address: Address,
-    provider: Arc<impl Provider + 'static>,
-    game_type: u32,
-) -> Result<u64> {
-    let factory = DisputeGameFactory::new(factory_address, provider.clone());
+#[derive(Debug, Clone)]
+struct Config {
+    /// The L1 RPC URL.
+    pub l1_rpc: Url,
 
-    // Get the latest block number
-    let latest_block = provider.get_block_number().await?;
+    /// The address of the factory contract.
+    pub factory_address: Address,
 
-    // Query in chunks to avoid exceeding max block range (100,000 blocks)
-    const CHUNK_SIZE: u64 = 100_000;
-    let mut end_block = latest_block;
+    /// Proof fulfillment strategy for range proofs.
+    pub range_proof_strategy: FulfillmentStrategy,
 
-    info!(
-        "Searching for ImplementationSet event for game type {} (latest block: {})",
-        game_type, latest_block
-    );
+    /// Proof fulfillment strategy for aggregation proofs.
+    pub agg_proof_strategy: FulfillmentStrategy,
 
-    loop {
-        // Calculate start block for this chunk, ensuring we don't go below 0
-        let start_block = end_block.saturating_sub(CHUNK_SIZE);
+    pub private_key: String,
 
-        // Query ImplementationSet events filtered by game type for this chunk
-        // Note: gameType is the second indexed parameter, so it's topic2
-        let filter = factory
-            .ImplementationSet_filter()
-            .topic2(U256::from(game_type))
-            .from_block(start_block)
-            .to_block(end_block);
+    /// Whether to expect NETWORK_PRIVATE_KEY to be an AWS KMS key ARN instead of a
+    /// plaintext private key.
+    pub use_kms_requester: bool,
+}
 
-        let logs = filter.query().await?;
-
-        // If we found any events, return the most recent one
-        if !logs.is_empty() {
-            let (_event, log) = logs.last().ok_or_else(|| {
-                anyhow!("No ImplementationSet event found for game type {}", game_type)
-            })?;
-
-            let block_number = log
-                .block_number
-                .ok_or_else(|| anyhow!("Block number not found in ImplementationSet event"))?;
-
-            info!(
-                "Found ImplementationSet event for game type {} at block {}",
-                game_type, block_number
-            );
-            return Ok(block_number);
-        }
-
-        // If we've reached block 0 and haven't found anything, error out
-        if start_block == 0 {
-            return Err(anyhow!(
-                "No ImplementationSet event found for game type {} in entire chain history",
-                game_type
-            ));
-        }
-
-        // Move to the next chunk (going backwards in time)
-        end_block = start_block.saturating_sub(1);
+impl Config {
+    pub fn from_env() -> Result<Self> {
+        Ok(Self {
+            l1_rpc: env::var("L1_RPC")?.parse().expect("L1_RPC not set"),
+            // l2_rpc: env::var("L2_RPC")?.parse().expect("L2_RPC not set"),
+            factory_address: env::var("FACTORY_ADDRESS")?.parse().expect("FACTORY_ADDRESS not set"),
+            range_proof_strategy: parse_fulfillment_strategy(
+                env::var("RANGE_PROOF_STRATEGY").unwrap_or("reserved".to_string()),
+            ),
+            agg_proof_strategy: parse_fulfillment_strategy(
+                env::var("AGG_PROOF_STRATEGY").unwrap_or("reserved".to_string()),
+            ),
+            private_key: env::var("PRIVATE_KEY")?.parse().expect("PRIVATE_KEY not set"),
+            use_kms_requester: env::var("USE_KMS_REQUESTER")
+                .unwrap_or("false".to_string())
+                .parse()?,
+        })
     }
 }
 
@@ -109,27 +83,26 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    println!("ok1");
-
     dotenv::from_path(&args.env_file)
         .context(format!("Environment file not found: {}", args.env_file.display()))?;
 
+    let config = Config::from_env()?;
+    let proposer_signer =
+        PrivateKeySigner::from_str(&config.private_key).context("Failed to parse private key")?;
+    let network_signer = get_network_signer(config.use_kms_requester).await?;
+    let network_mode =
+        determine_network_mode(config.range_proof_strategy, config.agg_proof_strategy).context(
+            "failed to determine network mode from range and agg fulfillment strategies",
+        )?;
+
     let data_fetcher = OPSuccinctDataFetcher::new_with_rollup_config().await?;
 
-    let factory = DisputeGameFactory::new(
-        env::var("FACTORY_ADDRESS")?.parse::<Address>().expect("FACTORY_ADDRESS must be set"),
-        data_fetcher.l1_provider.clone(),
-    );
-    info!("Factory at address: {}", factory.address());
+    let factory = DisputeGameFactory::new(config.factory_address, data_fetcher.l1_provider.clone());
 
-    let game_type = env::var("GAME_TYPE")?.parse::<u32>().expect("GAME_TYPE must be set");
+    let parent_game_address = factory.gameAtIndex(U256::from(args.index - 1)).call().await?.proxy;
+    let game_address = factory.gameAtIndex(U256::from(args.index)).call().await?.proxy;
 
-    let game_index = 950;
-
-    let parent_game_address = factory.gameAtIndex(U256::from(game_index - 1)).call().await?.proxy;
-    let game_address = factory.gameAtIndex(U256::from(game_index)).call().await?.proxy;
-
-    println!("game index: {}", game_index);
+    println!("game index: {}", args.index);
     println!("parent: {}", parent_game_address);
     println!("game: {}", game_address);
 
@@ -152,63 +125,12 @@ async fn main() -> Result<()> {
         .expect("failed to fetch L1 head block");
     let l1_head = l1_head_block.header;
 
-    // let anchor_l2_block_number = factory.get_anchor_l2_block_number(game_type).await?;
-    // info!("Anchor L2 block number: {}", anchor_l2_block_number);
-
-    // let l2_start_block = anchor_l2_block_number.to::<u64>();
-    // let l2_end_block = l2_start_block + 10;
-
-    // // Use finalized L1 block's hash as the L1 head hash since the factory
-    // // might have been deployed later than the safe L1 head of the L2 end block.
-    // let l1_head = {
-    //     let safe_l1_head = data_fetcher
-    //         .get_l1_head(l2_end_block, false)
-    //         .await
-    //         .context("failed to fetch L1 head (pre-check)")?;
-
-    //     let finalized_l1_header = data_fetcher
-    //         .get_l1_header(BlockId::finalized())
-    //         .await
-    //         .context("failed to fetch finalized L1 header")?;
-    //     info!("Finalized L1 block number: {}", finalized_l1_header.number);
-
-    //     // Fetch the block number when the implementation was set for this game type
-    //     // by querying the ImplementationSet event from the DisputeGameFactory contract.
-    //     let set_impl_block_number = get_implementation_set_block(
-    //         *factory.address(),
-    //         data_fetcher.l1_provider.clone(),
-    //         game_type,
-    //     )
-    //     .await?;
-
-    //     let min_head_number = safe_l1_head.1.max(set_impl_block_number + 1);
-
-    //     if min_head_number > finalized_l1_header.number {
-    //         anyhow::bail!(
-    //             "Chosen L1 head {} exceeds finalized head {}",
-    //             min_head_number,
-    //             finalized_l1_header.number
-    //         );
-    //     }
-
-    //     min_head_number
-    // };
-
-    // let l1_head = data_fetcher
-    //     .get_l1_header(BlockId::Number(BlockNumberOrTag::Number(l1_head)))
-    //     .await
-    //     .context("failed to fetch chosen L1 head")?;
-
-    // let l1_head_hash = l1_head.hash_slow();
-    // info!("L1 head number: {:?}", l1_head.number);
-    // info!("L1 head hash: {:?}", l1_head_hash);
-
     // 2. Generate the range proof.
-    let l2_start_block_u64 = l2_start_block.to::<u64>();
-    let l2_end_block_u64 = l2_end_block.to::<u64>();
+    let l2_start_block = l2_start_block.to::<u64>();
+    let l2_end_block = l2_end_block.to::<u64>();
     let host = initialize_host(Arc::new(data_fetcher.clone()));
     let host_args =
-        host.fetch(l2_start_block_u64, l2_end_block_u64, Some(l1_head_hash.into()), false).await?;
+        host.fetch(l2_start_block, l2_end_block, Some(l1_head_hash.into()), false).await?;
 
     info!("Generating range proof witness data...");
     let witness_data = host.run(&host_args).await?;
@@ -219,15 +141,6 @@ async fn main() -> Result<()> {
     info!("Range proof stdin generated successfully");
 
     // Initialize the network prover.
-    let network_signer = get_network_signer(
-        env::var("USE_KMS_REQUESTER")?.parse::<bool>().expect("USE_KMS_REQUESTER must be set"),
-    )
-    .await?;
-    let network_mode = determine_network_mode(
-        parse_fulfillment_strategy(env::var("RANGE_PROOF_STRATEGY")?),
-        parse_fulfillment_strategy(env::var("AGG_PROOF_STRATEGY")?),
-    )
-    .context("failed to determine network mode from range and agg fulfillment strategies")?;
     let network_prover =
         ProverClient::builder().network_for(network_mode).signer(network_signer).build();
     info!("Initialized network prover successfully");
@@ -251,20 +164,6 @@ async fn main() -> Result<()> {
     let boot_info: BootInfoStruct = range_proof.public_values.read();
     assert_eq!(boot_info.l1Head, l1_head_hash, "L1 head hash mismatch");
 
-    // Initialize the network prover.
-    let network_signer = get_network_signer(
-        env::var("USE_KMS_REQUESTER")?.parse::<bool>().expect("USE_KMS_REQUESTER must be set"),
-    )
-    .await?;
-    let network_mode = determine_network_mode(
-        parse_fulfillment_strategy(env::var("RANGE_PROOF_STRATEGY")?),
-        parse_fulfillment_strategy(env::var("AGG_PROOF_STRATEGY")?),
-    )
-    .context("failed to determine network mode from range and agg fulfillment strategies")?;
-    let network_prover =
-        ProverClient::builder().network_for(network_mode).signer(network_signer).build();
-    info!("Initialized network prover successfully");
-
     let (_, range_vk) = network_prover.setup(get_range_elf_embedded());
 
     let agg_proof_stdin = get_agg_proof_stdin(
@@ -273,8 +172,7 @@ async fn main() -> Result<()> {
         vec![l1_head.clone().into()],
         &range_vk,
         boot_info.l1Head,
-        // TODO: here
-        address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"),
+        proposer_signer.address(),
     )
     .expect("failed to get agg proof stdin");
 
@@ -294,50 +192,16 @@ async fn main() -> Result<()> {
     let l1_head_number =
         data_fetcher.l1_provider.get_block_by_hash(boot_info.l1Head).await?.unwrap().header.number;
 
-    let anvil = Anvil::new()
-        .fork(env::var("L1_RPC").expect("L1_RPC must be set"))
-        .fork_block_number(l1_head_number)
-        .args(["--no-mining"]);
+    let anvil =
+        Anvil::new().fork(config.l1_rpc).fork_block_number(l1_head_number).args(["--no-mining"]);
     let anvil_instance = anvil.spawn();
     let endpoint = anvil_instance.endpoint();
     info!("Anvil chain started forked from L1 block number: {} at: {}", l1_head_number, endpoint);
 
     // 5. Run the preflight check.
-    let wallet = PrivateKeySigner::from_str(
-        // TODO: here
-        "0xdc3d26778416d26dc87ea0d093a25ca305bdb268fe13a3e2e5ac352e7b7b7902", /* private key of anvil account 0 */
-    )?;
-    let provider_with_signer = ProviderBuilder::new()
-        .wallet(EthereumWallet::from(wallet))
-        .connect_http(Url::parse(&endpoint)?);
-
-    let factory = DisputeGameFactory::new(*factory.address(), provider_with_signer.clone());
-
-    let game_type = env::var("GAME_TYPE")?.parse::<u32>().expect("GAME_TYPE must be set");
-    let init_bond = factory.initBonds(game_type).call().await?;
-    let parent_index = u32::MAX;
-    let extra_data = (U256::from(l2_end_block), parent_index).abi_encode_packed();
-
-    let tx = factory
-        .create(game_type, boot_info.l2PostRoot, extra_data.into())
-        .value(init_bond)
-        .send()
-        .await?;
-
+    let provider_with_signer =
+        ProviderBuilder::new().wallet(proposer_signer).connect_http(Url::parse(&endpoint)?);
     let client = provider_with_signer.client();
-    let _: String = client.request("evm_mine", Vec::<serde_json::Value>::new()).await?;
-
-    let block = provider_with_signer.get_block_by_number(BlockNumberOrTag::Latest).await?;
-    info!("Mined block: {}", block.unwrap().header.number);
-
-    let receipt = tx.get_receipt().await?;
-    info!("Transaction receipt: {:?}", receipt);
-
-    let new_game_count = factory.gameCount().call().await?;
-    let game_index = new_game_count - U256::from(1);
-    let game_info = factory.gameAtIndex(game_index).call().await?;
-    let game_address = game_info.proxy;
-    info!("Game address: {}", game_address);
 
     let game = OPSuccinctFaultDisputeGame::new(game_address, provider_with_signer.clone());
 
