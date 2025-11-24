@@ -48,6 +48,7 @@ struct Config {
     /// Proof fulfillment strategy for aggregation proofs.
     pub agg_proof_strategy: FulfillmentStrategy,
 
+    /// Proposer private key
     pub private_key: String,
 
     /// Whether to expect NETWORK_PRIVATE_KEY to be an AWS KMS key ARN instead of a
@@ -59,7 +60,6 @@ impl Config {
     pub fn from_env() -> Result<Self> {
         Ok(Self {
             l1_rpc: env::var("L1_RPC")?.parse().expect("L1_RPC not set"),
-            // l2_rpc: env::var("L2_RPC")?.parse().expect("L2_RPC not set"),
             factory_address: env::var("FACTORY_ADDRESS")?.parse().expect("FACTORY_ADDRESS not set"),
             range_proof_strategy: parse_fulfillment_strategy(
                 env::var("RANGE_PROOF_STRATEGY").unwrap_or("reserved".to_string()),
@@ -102,21 +102,13 @@ async fn main() -> Result<()> {
     let parent_game_address = factory.gameAtIndex(U256::from(args.index - 1)).call().await?.proxy;
     let game_address = factory.gameAtIndex(U256::from(args.index)).call().await?.proxy;
 
-    println!("game index: {}", args.index);
-    println!("parent: {}", parent_game_address);
-    println!("game: {}", game_address);
-
     let parent_game =
         OPSuccinctFaultDisputeGame::new(parent_game_address, data_fetcher.l1_provider.clone());
     let game = OPSuccinctFaultDisputeGame::new(game_address, data_fetcher.l1_provider.clone());
 
     let l1_head_hash = game.l1Head().call().await?.0;
-    let l2_start_block = parent_game.l2BlockNumber().call().await?;
-    let l2_end_block = game.l2BlockNumber().call().await?;
-
-    println!("l1_head_hash: {:?}", l1_head_hash);
-    println!("l2_start_block: {}", l2_start_block);
-    println!("l2_end_block: {}", l2_end_block);
+    let l2_start_block = parent_game.l2BlockNumber().call().await?.to::<u64>();
+    let l2_end_block = game.l2BlockNumber().call().await?.to::<u64>();
 
     let l1_head_block = data_fetcher
         .l1_provider
@@ -126,8 +118,6 @@ async fn main() -> Result<()> {
     let l1_head = l1_head_block.header;
 
     // 2. Generate the range proof.
-    let l2_start_block = l2_start_block.to::<u64>();
-    let l2_end_block = l2_end_block.to::<u64>();
     let host = initialize_host(Arc::new(data_fetcher.clone()));
     let host_args =
         host.fetch(l2_start_block, l2_end_block, Some(l1_head_hash.into()), false).await?;
@@ -205,7 +195,6 @@ async fn main() -> Result<()> {
 
     let game = OPSuccinctFaultDisputeGame::new(game_address, provider_with_signer.clone());
 
-    // Debug: Check what the game expects
     let game_l1_head = game.l1Head().call().await?;
     info!("Game's L1 head: {:?}", game_l1_head);
     info!("Proof's L1 head (boot_info.l1Head): {:?}", boot_info.l1Head);
