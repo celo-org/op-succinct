@@ -79,16 +79,9 @@ deploy-fdg-contracts env_file=".env" *features='':
     just _deploy-fdg-contracts {{env_file}}
 
 # Deploy contracts without fetching config
-_deploy-fdg-contracts env_file=".env" custom_config_file="" *features='':
+_deploy-fdg-contracts env_file=".env" custom_config_file="":
     #!/usr/bin/env bash
     set -euo pipefail
-
-    if [ -z "{{features}}" ]; then
-        RUST_LOG=info cargo run --bin fetch-fault-dispute-game-config --release -- --env-file {{env_file}}
-    else
-        echo "Fetching fault dispute game config with features: {{features}}"
-        RUST_LOG=info cargo run --bin fetch-fault-dispute-game-config --release --features {{features}} -- --env-file {{env_file}}
-    fi
     
     # Load environment variables from project root
     source {{env_file}}
@@ -301,6 +294,32 @@ deploy-dispute-game-factory env_file=".env":
         --private-key $PRIVATE_KEY \
         --broadcast \
         $VERIFY
+
+# Upgrade the OPSuccinct Fault Dispute Game implementation.
+upgrade-fault-dispute-game env_file="fault-proof/.env.upgrade":
+    #!/usr/bin/env bash
+    set -aeuo pipefail
+
+    # Load environment variables
+    source {{env_file}}
+
+    # cd into contracts directory.
+    cd contracts
+
+    # Install dependencies.
+    forge install
+
+    # Run the forge upgrade script.
+    if [ "${DRY_RUN}" = "false" ]; then
+        forge script script/fp/UpgradeOPSuccinctFDG.s.sol:UpgradeOPSuccinctFDG \
+            --rpc-url $L1_RPC \
+            --private-key $PRIVATE_KEY \
+            --etherscan-api-key $ETHERSCAN_API_KEY \
+            --broadcast
+    else
+        forge script UpgradeOPSuccinctFDG --sig "getUpgradeCalldata()" \
+            --private-key $PRIVATE_KEY
+    fi
 
 # Add a new OpSuccinctConfig to the L2 Output Oracle
 add-config config_name env_file=".env" *features='':

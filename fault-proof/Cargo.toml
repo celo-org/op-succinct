@@ -23,6 +23,7 @@ path = "bin/challenger.rs"
 # local
 op-succinct-client-utils.workspace = true
 op-succinct-elfs.workspace = true
+op-succinct-ethereum-host-utils.workspace = true
 op-succinct-host-utils.workspace = true
 op-succinct-proof-utils.workspace = true
 op-succinct-signer-utils.workspace = true
@@ -68,6 +69,7 @@ strum = { workspace = true, features = ["derive"] }
 strum_macros.workspace = true
 tikv-jemallocator = "0.6.0"
 rustls = "0.23.23"
+serde_json.workspace = true
 
 [dev-dependencies]
 alloy-signer-local.workspace = true
