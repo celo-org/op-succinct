@@ -2,7 +2,7 @@ use std::{env, fs, path::PathBuf, str::FromStr, sync::Arc};
 
 use alloy_eips::BlockNumberOrTag;
 use alloy_node_bindings::Anvil;
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{hex::ToHexExt, Address, U256};
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_signer_local::PrivateKeySigner;
 use alloy_transport_http::reqwest::Url;
@@ -106,9 +106,29 @@ async fn main() -> Result<()> {
         OPSuccinctFaultDisputeGame::new(parent_game_address, data_fetcher.l1_provider.clone());
     let game = OPSuccinctFaultDisputeGame::new(game_address, data_fetcher.l1_provider.clone());
 
+    let parent_game_l2_block_number = parent_game.l2BlockNumber().call().await?;
+    let game_l2_block_number = game.l2BlockNumber().call().await?;
+    let starting_block_number = game.startingBlockNumber().call().await?;
+    info!(
+        "game index={}, game={}, parent game={} game range=[{},{}], starting={}",
+        args.index,
+        game_address,
+        parent_game_address,
+        parent_game_l2_block_number,
+        game_l2_block_number,
+        starting_block_number
+    );
+
     let l1_head_hash = game.l1Head().call().await?.0;
     let l2_start_block = parent_game.l2BlockNumber().call().await?.to::<u64>();
     let l2_end_block = game.l2BlockNumber().call().await?.to::<u64>();
+
+    info!(
+        "l1_head_hash={}, l2_start_block={}, l2_end_block={}",
+        l1_head_hash.encode_hex(),
+        l2_start_block,
+        l2_end_block
+    );
 
     let l1_head_block = data_fetcher
         .l1_provider
@@ -152,9 +172,34 @@ async fn main() -> Result<()> {
 
     // 3. Generate the aggregation proof.
     let boot_info: BootInfoStruct = range_proof.public_values.read();
-    assert_eq!(boot_info.l1Head, l1_head_hash, "L1 head hash mismatch");
+
+    let game_l1_head = game.l1Head().call().await?;
+    info!("Game's L1 head: {:?}", game_l1_head);
+    info!("Proof's L1 head (boot_info.l1Head): {:?}", boot_info.l1Head);
+
+    if game_l1_head != boot_info.l1Head {
+        return Err(anyhow!(
+            "L1 head mismatch! Game expects {:?} but proof contains {:?}",
+            game_l1_head,
+            boot_info.l1Head
+        ));
+    }
+
+    let game_root_claim = game.rootClaim().call().await?;
+    let game_rollup_config_hash = game.rollupConfigHash().call().await?;
+    let game_range_v_key = game.rangeVkeyCommitment().call().await?;
+    let game_range_aggregation_v_key = game.aggregationVkey().call().await?;
+
+    info!("Boot Info L2PreRoot: {:?}", boot_info.l2PreRoot);
+    info!("Boot Info L2PostRoot: {:?}", boot_info.l2PostRoot);
+    info!("Game Root Claim: {:?}", game_root_claim);
+    info!("Boot Info Rollup Config Hash: {:?}", boot_info.rollupConfigHash);
+    info!("Game Rollup Config Hash     : {:?}", game_rollup_config_hash);
 
     let (_, range_vk) = network_prover.setup(get_range_elf_embedded());
+
+    info!("Boot Info Range V Key : {:?}", range_vk.vk);
+    info!("Game Range V Key      : {:?}", game_range_v_key);
 
     let agg_proof_stdin = get_agg_proof_stdin(
         vec![range_proof.proof],
@@ -166,7 +211,10 @@ async fn main() -> Result<()> {
     )
     .expect("failed to get agg proof stdin");
 
-    let (agg_pk, _) = network_prover.setup(AGGREGATION_ELF);
+    let (agg_pk, agg_vk) = network_prover.setup(AGGREGATION_ELF);
+    info!("Boot Info Aggregation V Key : {:?}", agg_vk.vk);
+    info!("Game Aggregation V Key      : {:?}", game_range_aggregation_v_key);
+
     let agg_proof = network_prover.prove(&agg_pk, &agg_proof_stdin).plonk().run().unwrap();
 
     let agg_proof_dir =
@@ -194,18 +242,6 @@ async fn main() -> Result<()> {
     let client = provider_with_signer.client();
 
     let game = OPSuccinctFaultDisputeGame::new(game_address, provider_with_signer.clone());
-
-    let game_l1_head = game.l1Head().call().await?;
-    info!("Game's L1 head: {:?}", game_l1_head);
-    info!("Proof's L1 head (boot_info.l1Head): {:?}", boot_info.l1Head);
-
-    if game_l1_head != boot_info.l1Head {
-        return Err(anyhow!(
-            "L1 head mismatch! Game expects {:?} but proof contains {:?}",
-            game_l1_head,
-            boot_info.l1Head
-        ));
-    }
 
     let tx = game.prove(agg_proof.bytes().into()).send().await?;
 

@@ -56,11 +56,19 @@ sol! {
         /// @notice The L2 block number for which this game is proposing an output root.
         function l2BlockNumber() public pure returns (uint256 l2BlockNumber_);
 
+        function startingBlockNumber() public pure returns (uint256 l2BlockNumber_);
+
         /// @notice Getter for the root claim.
         function rootClaim() public pure returns (Claim rootClaim_);
 
         /// @notice Getter for the parent hash of the L1 block when the dispute game was created.
         function l1Head() public pure returns (Hash l1Head_);
+
+        function rollupConfigHash() public pure returns (Hash rollupConfigHash_);
+
+        function aggregationVkey() public pure returns (Hash aggregationVkey_);
+
+        function rangeVkeyCommitment() public pure returns (Hash rangeVkeyCommitment_);
 
         /// @notice Getter for the status of the game.
         function status() public view returns (GameStatus status_);
