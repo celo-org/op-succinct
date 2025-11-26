@@ -1,6 +1,7 @@
 use std::{env, fs, path::PathBuf, str::FromStr, sync::Arc};
 
 use alloy_eips::BlockNumberOrTag;
+use alloy_network::EthereumWallet;
 use alloy_node_bindings::Anvil;
 use alloy_primitives::{hex::ToHexExt, Address, U256};
 use alloy_provider::{Provider, ProviderBuilder};
@@ -19,7 +20,9 @@ use op_succinct_host_utils::{
     witness_generation::WitnessGenerator,
 };
 use op_succinct_proof_utils::{get_range_elf_embedded, initialize_host};
-use sp1_sdk::{network::FulfillmentStrategy, utils, Prover, ProverClient};
+use sp1_sdk::{
+    network::FulfillmentStrategy, utils, HashableKey, Prover, ProverClient, SP1ProofMode,
+};
 use tracing::info;
 
 #[derive(Parser, Debug)]
@@ -48,6 +51,8 @@ struct Config {
     /// Proof fulfillment strategy for aggregation proofs.
     pub agg_proof_strategy: FulfillmentStrategy,
 
+    pub agg_proof_mode: String,
+
     /// Proposer private key
     pub private_key: String,
 
@@ -67,6 +72,10 @@ impl Config {
             agg_proof_strategy: parse_fulfillment_strategy(
                 env::var("AGG_PROOF_STRATEGY").unwrap_or("reserved".to_string()),
             ),
+            agg_proof_mode: env::var("AGG_PROOF_MODE")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "plonk".to_string()),
             private_key: env::var("PRIVATE_KEY")?.parse().expect("PRIVATE_KEY not set"),
             use_kms_requester: env::var("USE_KMS_REQUESTER")
                 .unwrap_or("false".to_string())
@@ -87,13 +96,18 @@ async fn main() -> Result<()> {
         .context(format!("Environment file not found: {}", args.env_file.display()))?;
 
     let config = Config::from_env()?;
-    let proposer_signer =
-        PrivateKeySigner::from_str(&config.private_key).context("Failed to parse private key")?;
+    info!("config: {:?}", config.clone());
+
+    let wallet =
+        PrivateKeySigner::from_str(&config.private_key).context("failed to parse private key")?;
+
     let network_signer = get_network_signer(config.use_kms_requester).await?;
     let network_mode =
         determine_network_mode(config.range_proof_strategy, config.agg_proof_strategy).context(
             "failed to determine network mode from range and agg fulfillment strategies",
         )?;
+    info!("Range proof strategy: {:?}", config.range_proof_strategy);
+    info!("Aggregation proof strategy: {:?}", config.agg_proof_strategy);
 
     let data_fetcher = OPSuccinctDataFetcher::new_with_rollup_config().await?;
 
@@ -119,7 +133,7 @@ async fn main() -> Result<()> {
         starting_block_number
     );
 
-    let l1_head_hash = game.l1Head().call().await?.0;
+    let l1_head_hash: [u8; 32] = game.l1Head().call().await?.0;
     let l2_start_block = parent_game.l2BlockNumber().call().await?.to::<u64>();
     let l2_end_block = game.l2BlockNumber().call().await?.to::<u64>();
 
@@ -152,12 +166,16 @@ async fn main() -> Result<()> {
 
     // Initialize the network prover.
     let network_prover =
-        ProverClient::builder().network_for(network_mode).signer(network_signer).build();
+        ProverClient::builder().network_for(network_mode).signer(network_signer.clone()).build();
     info!("Initialized network prover successfully");
 
     let (range_pk, _range_vk) = network_prover.setup(get_range_elf_embedded());
-    let mut range_proof =
-        network_prover.prove(&range_pk, &range_proof_stdin).compressed().run().unwrap();
+    let mut range_proof = network_prover
+        .prove(&range_pk, &range_proof_stdin)
+        .compressed()
+        .strategy(config.range_proof_strategy)
+        .run()
+        .unwrap();
 
     // Save the proof to the proof directory corresponding to the chain ID.
     let range_proof_dir =
@@ -196,9 +214,13 @@ async fn main() -> Result<()> {
     info!("Boot Info Rollup Config Hash: {:?}", boot_info.rollupConfigHash);
     info!("Game Rollup Config Hash     : {:?}", game_rollup_config_hash);
 
+    let network_prover =
+        ProverClient::builder().network_for(network_mode).signer(network_signer.clone()).build();
+    info!("Initialized network prover successfully");
+
     let (_, range_vk) = network_prover.setup(get_range_elf_embedded());
 
-    info!("Boot Info Range V Key : {:?}", range_vk.vk);
+    info!("Boot Info Range V Key : {:?}", range_vk.vk.bytes32());
     info!("Game Range V Key      : {:?}", game_range_v_key);
 
     let agg_proof_stdin = get_agg_proof_stdin(
@@ -207,15 +229,32 @@ async fn main() -> Result<()> {
         vec![l1_head.clone().into()],
         &range_vk,
         boot_info.l1Head,
-        proposer_signer.address(),
+        wallet.address(),
     )
-    .expect("failed to get agg proof stdin");
+    .context("failed to get agg proof stdin")?;
+
+    let agg_proof_mode = match config.agg_proof_mode.to_lowercase().as_str() {
+        "groth16" => SP1ProofMode::Groth16,
+        "plonk" => SP1ProofMode::Plonk,
+        other => {
+            return Err(anyhow!(
+                "Invalid AGG_PROOF_MODE '{}'. Expected one of: plonk, groth16",
+                other
+            ))
+        }
+    };
+    info!("Aggregation proof mode: {:?}", agg_proof_mode);
 
     let (agg_pk, agg_vk) = network_prover.setup(AGGREGATION_ELF);
-    info!("Boot Info Aggregation V Key : {:?}", agg_vk.vk);
+    info!("Boot Info Aggregation V Key : {:?}", agg_vk.vk.bytes32());
     info!("Game Aggregation V Key      : {:?}", game_range_aggregation_v_key);
 
-    let agg_proof = network_prover.prove(&agg_pk, &agg_proof_stdin).plonk().run().unwrap();
+    let agg_proof = network_prover
+        .prove(&agg_pk, &agg_proof_stdin)
+        .mode(agg_proof_mode)
+        .strategy(config.agg_proof_strategy)
+        .run()
+        .unwrap();
 
     let agg_proof_dir =
         format!("data/{}/proofs/agg", data_fetcher.get_l2_chain_id().await.unwrap());
@@ -227,8 +266,14 @@ async fn main() -> Result<()> {
     info!("Agg proof saved to {agg_proof_dir}/agg.bin");
 
     // 4. Spin up anvil.
-    let l1_head_number =
-        data_fetcher.l1_provider.get_block_by_hash(boot_info.l1Head).await?.unwrap().header.number;
+    let l1_head_number = data_fetcher
+        .l1_provider
+        .get_block_by_hash(boot_info.l1Head)
+        .await?
+        .unwrap()
+        .header
+        .number +
+        1;
 
     let anvil =
         Anvil::new().fork(config.l1_rpc).fork_block_number(l1_head_number).args(["--no-mining"]);
@@ -237,14 +282,15 @@ async fn main() -> Result<()> {
     info!("Anvil chain started forked from L1 block number: {} at: {}", l1_head_number, endpoint);
 
     // 5. Run the preflight check.
-    let provider_with_signer =
-        ProviderBuilder::new().wallet(proposer_signer).connect_http(Url::parse(&endpoint)?);
-    let client = provider_with_signer.client();
+    let provider_with_signer = ProviderBuilder::new()
+        .wallet(EthereumWallet::from(wallet))
+        .connect_http(Url::parse(&endpoint)?);
 
     let game = OPSuccinctFaultDisputeGame::new(game_address, provider_with_signer.clone());
 
     let tx = game.prove(agg_proof.bytes().into()).send().await?;
 
+    let client = provider_with_signer.client();
     let _: String = client.request("evm_mine", Vec::<serde_json::Value>::new()).await?;
 
     let block = provider_with_signer.get_block_by_number(BlockNumberOrTag::Latest).await?;
