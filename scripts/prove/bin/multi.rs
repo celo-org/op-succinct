@@ -3,15 +3,14 @@ use std::{env, fs, sync::Arc, time::Instant};
 use anyhow::{Context, Result};
 use clap::Parser;
 use op_succinct_host_utils::{
-    block_range::get_validated_block_range, fetcher::OPSuccinctDataFetcher, host::OPSuccinctHost,
+    block_range::get_validated_block_range, fetcher::OPSuccinctDataFetcher, get_range_proof_stdin,
     network::parse_fulfillment_strategy, stats::ExecutionStats,
-    witness_generation::WitnessGenerator,
 };
 use op_succinct_proof_utils::{get_range_elf_embedded, initialize_host};
 use op_succinct_prove::{execute_multi, DEFAULT_RANGE};
 use op_succinct_scripts::HostExecutorArgs;
 use sp1_sdk::{utils, Prover, ProverClient};
-use tracing::{debug, info};
+use tracing::info;
 
 /// Execute the OP Succinct program for multiple blocks.
 #[tokio::main]
@@ -39,16 +38,17 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    let host_args = host.fetch(l2_start_block, l2_end_block, None, args.safe_db_fallback).await?;
-
-    debug!("Host args: {:?}", host_args);
-
     let start_time = Instant::now();
-    let witness_data = host.run(&host_args).await?;
+    let sp1_stdin = get_range_proof_stdin(
+        host.as_ref(),
+        l2_start_block,
+        l2_end_block,
+        None,
+        args.safe_db_fallback,
+    )
+    .await?;
     let witness_generation_duration = start_time.elapsed();
 
-    // Get the stdin for the block.
-    let sp1_stdin = host.witness_generator().get_sp1_stdin(witness_data)?;
     let stdin_bytes = bincode::serialize(&sp1_stdin).unwrap();
     let stdin_len = stdin_bytes.len();
     info!("Generated SP1 stdin for blocks {l2_start_block} to {l2_end_block}, number: {:?}, size: {stdin_len} bytes", l2_end_block - l2_start_block);
