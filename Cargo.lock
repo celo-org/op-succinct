@@ -9043,6 +9043,7 @@ dependencies = [
  "celo-alloy-rpc-types",
  "clap",
  "dotenv",
+ "futures",
  "hex",
  "op-alloy-network",
  "op-alloy-rpc-types",
