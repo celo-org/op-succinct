@@ -47,6 +47,10 @@ path = "bin/parallel_cost_estimator.rs"
 name = "preflight"
 path = "bin/preflight.rs"
 
+[[bin]]
+name = "prove-dryrun"
+path = "bin/prove_dryrun.rs"
+
 [dependencies]
 
 # workspace
