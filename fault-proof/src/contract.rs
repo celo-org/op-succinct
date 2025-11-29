@@ -12,6 +12,9 @@ sol! {
         /// @notice Emitted when a new dispute game is created.
         event DisputeGameCreated(address indexed disputeProxy, GameType indexed gameType, Claim indexed rootClaim);
 
+        /// @notice Emitted when a new game implementation added to the factory
+        event ImplementationSet(address indexed impl, GameType indexed gameType);
+
         /// @notice `gameImpls` is a mapping that maps `GameType`s to their respective
         ///         `IDisputeGame` implementations.
         mapping(GameType => IDisputeGame) public gameImpls;
@@ -64,6 +67,15 @@ sol! {
 
         /// @notice Getter for the parent hash of the L1 block when the dispute game was created.
         function l1Head() public pure returns (Hash l1Head_);
+
+        /// @notice Returns the rollup config hash.
+        function rollupConfigHash() public pure returns (Hash rollupConfigHash_);
+
+        /// @notice Returns the aggregation vkey.
+        function aggregationVkey() public pure returns (Hash aggregationVkey_);
+
+        /// @notice Returns the range vkey commitment.
+        function rangeVkeyCommitment() public pure returns (Hash rangeVkeyCommitment_);
 
         /// @notice Getter for the status of the game.
         function status() public view returns (GameStatus status_);

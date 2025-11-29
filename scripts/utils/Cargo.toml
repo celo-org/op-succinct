@@ -43,9 +43,20 @@ path = "bin/gen_sp1_test_artifacts.rs"
 name = "parallel-cost-estimator"
 path = "bin/parallel_cost_estimator.rs"
 
+[[bin]]
+name = "prove-dryrun"
+path = "bin/prove_dryrun.rs"
+
 [dependencies]
 
 # workspace
+alloy-network.workspace = true
+alloy-node-bindings.workspace = true
+alloy-provider = { workspace = true, features = ["reqwest"] }
+alloy-transport-http = { workspace = true, features = [
+    "reqwest",
+    "reqwest-native-tls",
+] }
 alloy-primitives.workspace = true
 alloy-sol-types.workspace = true
 alloy-signer-local.workspace = true
@@ -63,6 +74,7 @@ futures.workspace = true
 rayon = "1.10.0"
 serde_json.workspace = true
 env_logger = "0.11"
+tracing.workspace = true
 
 # local
 op-succinct-host-utils.workspace = true
