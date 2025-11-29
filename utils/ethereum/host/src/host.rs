@@ -52,8 +52,21 @@ impl OPSuccinctHost for SingleChainOPSuccinctHost {
         fetcher: &OPSuccinctDataFetcher,
         _: u64,
     ) -> Result<Option<u64>> {
-        let finalized_l2_block_number = fetcher.get_l2_header(BlockId::finalized()).await?;
-        Ok(Some(finalized_l2_block_number.number))
+        // Use safe head instead of finalized for devnet/testing scenarios where
+        // altDA finalization may not be working properly.
+        // Controlled by USE_SAFE_HEAD_FOR_PROPOSALS env var.
+        let use_safe_head = std::env::var("USE_SAFE_HEAD_FOR_PROPOSALS")
+            .map(|v| v.to_lowercase() == "true" || v == "1")
+            .unwrap_or(false);
+
+        let block_id = if use_safe_head {
+            BlockId::safe()
+        } else {
+            BlockId::finalized()
+        };
+
+        let l2_block_number = fetcher.get_l2_header(block_id).await?;
+        Ok(Some(l2_block_number.number))
     }
 
     async fn calculate_safe_l1_head(

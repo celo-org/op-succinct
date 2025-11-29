@@ -313,8 +313,21 @@ impl OPSuccinctDataFetcher {
     async fn fetch_and_save_rollup_config(
         rpc_config: &RPCConfig,
     ) -> Result<(CeloRollupConfig, PathBuf)> {
-        let rollup_config: CeloRollupConfig =
+        // Fetch raw JSON first to handle unknown fields (e.g., Espresso's batch_authenticator_address)
+        let mut raw_config: Value =
             Self::fetch_rpc_data(&rpc_config.l2_node_rpc, "optimism_rollupConfig", vec![]).await?;
+
+        // Strip unknown fields that are not part of the standard rollup config
+        // This allows compatibility with Espresso and other forks that add custom fields
+        if let Some(obj) = raw_config.as_object_mut() {
+            // Remove Espresso-specific fields that CeloRollupConfig doesn't recognize
+            obj.remove("batch_authenticator_address");
+            obj.remove("caff_node_config");
+        }
+
+        // Deserialize the cleaned config
+        let rollup_config: CeloRollupConfig = serde_json::from_value(raw_config.clone())
+            .with_context(|| format!("Failed to parse rollup config: {:?}", raw_config))?;
 
         // Create configs directory if it doesn't exist
         let rollup_config_dir = PathBuf::from("configs/L2");
