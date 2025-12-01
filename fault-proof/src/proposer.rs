@@ -16,7 +16,7 @@ use op_succinct_client_utils::boot::BootInfoStruct;
 use op_succinct_elfs::AGGREGATION_ELF;
 use op_succinct_host_utils::{
     fetcher::OPSuccinctDataFetcher,
-    get_agg_proof_stdin, get_range_proof_stdin,
+    get_agg_proof_stdin, get_range_proof_stdin, get_split_range_agg_proof_input,
     host::OPSuccinctHost,
     metrics::MetricsGauge,
     network::{determine_network_mode, get_network_signer},
@@ -470,94 +470,25 @@ where
         let l1_head_hash = game.l1Head().call().await?.0;
         tracing::debug!("L1 head hash: {:?}", hex::encode(l1_head_hash));
 
-        let ranges = self.split_range(start_block, end_block);
-        let num_ranges = ranges.len();
+        let (agg_proof_stdin, total_instruction_cycles, total_sp1_gas) =
+            get_split_range_agg_proof_input(
+                self.host.clone(),
+                Some(l1_head_hash.into()),
+                self.config.safe_db_fallback,
+                &|sp1_stdin| {
+                    let this = self.clone();
+                    async move { this.prove_range_game(&sp1_stdin).await }
+                },
+                start_block,
+                end_block,
+                self.config.range_segments.to_usize(),
+                &self.prover.range_vk,
+                self.signer.address(),
+                self.fetcher.clone(),
+            )
+            .await?;
 
-        // Pre-allocate and initialize so index writes are safe.
-        let mut proofs = vec![None; num_ranges];
-        let mut boot_infos = vec![None; num_ranges];
-
-        let mut total_instruction_cycles: u64 = 0;
-        let mut total_sp1_gas: u64 = 0;
-
-        use futures::stream::{FuturesUnordered, StreamExt};
-        let mut tasks: FuturesUnordered<_> = ranges
-            .into_iter()
-            .enumerate()
-            .map(|(idx, (start, end))| {
-                let this = self.clone();
-                async move {
-                    // Propagate errors instead of unwrap().
-                    let sp1_stdin = get_range_proof_stdin(
-                        self.host.as_ref(),
-                        start,
-                        end,
-                        Some(l1_head_hash.into()),
-                        self.config.safe_db_fallback,
-                    )
-                    .await?;
-
-                    let (range_proof, inst_cycles, sp1_gas) =
-                        this.prove_range_game(&sp1_stdin).await?;
-
-                    tracing::info!("Preparing Stdin for Agg Proof");
-
-                    let proof = range_proof.proof.clone();
-                    let mut public_values = range_proof.public_values.clone();
-                    let boot_info: BootInfoStruct = public_values.read();
-
-                    Ok::<_, anyhow::Error>((idx, proof, boot_info, inst_cycles, sp1_gas))
-                }
-            })
-            .collect();
-
-        while let Some(result) = tasks.next().await {
-            let (idx, proof, boot_info, inst_cycles, sp1_gas) = result?;
-
-            total_instruction_cycles = total_instruction_cycles
-                .checked_add(inst_cycles)
-                .ok_or_else(|| anyhow::anyhow!("Instruction cycles overflow"))?;
-
-            total_sp1_gas = total_sp1_gas
-                .checked_add(sp1_gas)
-                .ok_or_else(|| anyhow::anyhow!("SP1 gas overflow"))?;
-
-            proofs[idx] = Some(proof);
-            boot_infos[idx] = Some(boot_info);
-        }
-
-        let proofs: Vec<_> =
-            proofs.into_iter().map(|p| p.expect("missing proof for range")).collect();
-
-        let boot_infos: Vec<_> =
-            boot_infos.into_iter().map(|b| b.expect("missing boot info for range")).collect();
-
-        let latest_l1_head = boot_infos.last().context("No boot infos generated")?.l1Head;
-
-        let headers = match fetcher.get_header_preimages(&boot_infos, latest_l1_head).await {
-            Ok(headers) => headers,
-            Err(e) => {
-                tracing::error!("Failed to get header preimages: {}", e);
-                return Err(anyhow::anyhow!("Failed to get header preimages: {}", e));
-            }
-        };
-
-        let sp1_stdin = match get_agg_proof_stdin(
-            proofs,
-            boot_infos,
-            headers,
-            &self.prover.range_vk,
-            latest_l1_head,
-            self.signer.address(),
-        ) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("Failed to get agg proof stdin: {}", e);
-                return Err(anyhow::anyhow!("Failed to get agg proof stdin: {}", e));
-            }
-        };
-
-        let tx_hash = self.aggregate_and_submit(&game, &sp1_stdin).await?;
+        let tx_hash = self.aggregate_and_submit(&game, &agg_proof_stdin).await?;
 
         Ok((tx_hash, total_instruction_cycles, total_sp1_gas))
     }
