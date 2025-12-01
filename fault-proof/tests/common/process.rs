@@ -28,6 +28,7 @@ pub async fn init_proposer(
 
     // Create proposer config with test-specific settings
     let config = fault_proof::config::ProposerConfig {
+        range_segments: fault_proof::config::RangeSegments::Four,
         l1_rpc: rpc_config.l1_rpc.clone(),
         l2_rpc: rpc_config.l2_rpc.clone(),
         factory_address: *factory_address,
