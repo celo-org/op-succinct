@@ -27,49 +27,50 @@ op-succinct-ethereum-host-utils.workspace = true
 op-succinct-host-utils.workspace = true
 op-succinct-proof-utils.workspace = true
 op-succinct-signer-utils.workspace = true
-
-# sp1
 sp1-sdk.workspace = true
-
-# alloy
 alloy-contract.workspace = true
 alloy-eips.workspace = true
 alloy-network.workspace = true
 alloy-primitives.workspace = true
-alloy-provider = { workspace = true, features = ["reqwest"] }
 alloy-rpc-types-eth.workspace = true
 alloy-rpc-types-trace.workspace = true
 alloy-sol-macro.workspace = true
 alloy-sol-types.workspace = true
+op-alloy-network.workspace = true
+op-alloy-rpc-types.workspace = true
+celo-alloy-network.workspace = true
+celo-alloy-rpc-types.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+dotenv.workspace = true
+futures.workspace = true
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+hex.workspace = true
+strum_macros.workspace = true
+serde_json.workspace = true
+
+# sp1
+
+# alloy
+alloy-provider = { workspace = true, features = ["reqwest"] }
 alloy-transport-http = { workspace = true, features = [
     "reqwest",
     "reqwest-native-tls",
 ] }
 
 # op-alloy
-op-alloy-network.workspace = true
-op-alloy-rpc-types.workspace = true
 
 # celo-alloy
-celo-alloy-network.workspace = true
-celo-alloy-rpc-types.workspace = true
 
 # general
-anyhow.workspace = true
-async-trait.workspace = true
 clap = { workspace = true, features = ["derive"] }
-dotenv.workspace = true
 rand = "0.9"
-serde.workspace = true
-tokio.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-tracing.workspace = true
-hex.workspace = true
 strum = { workspace = true, features = ["derive"] }
-strum_macros.workspace = true
 tikv-jemallocator = "0.6.0"
 rustls = "0.23.23"
-serde_json.workspace = true
 
 [dev-dependencies]
 alloy-signer-local.workspace = true
@@ -79,6 +80,7 @@ op-succinct-bindings.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 alloy-rpc-types-trace.workspace = true
+rstest = "0.26"
 which = "4.4"
 
 [features]
