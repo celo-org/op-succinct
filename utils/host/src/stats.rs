@@ -129,6 +129,99 @@ impl ExecutionStats {
             total_execution_time_sec,
         }
     }
+
+    /// Merge multiple `ExecutionStats` into one combined stats.
+    ///
+    /// This is useful when splitting a range into sub-ranges and executing them concurrently.
+    /// The merged stats will have:
+    /// - `batch_start`: minimum across all stats
+    /// - `batch_end`: maximum across all stats
+    /// - Additive fields (cycles, gas, transactions, fees): summed
+    /// - Derived per-unit fields: recalculated from the merged totals
+    /// - Time fields: taken from the provided wall-clock times (not summed from sub-stats)
+    pub fn merge(
+        stats: &[ExecutionStats],
+        witness_generation_time_sec: u64,
+        total_execution_time_sec: u64,
+    ) -> Self {
+        if stats.is_empty() {
+            return Self::default();
+        }
+
+        if stats.len() == 1 {
+            let mut merged = stats[0].clone();
+            merged.witness_generation_time_sec = witness_generation_time_sec;
+            merged.total_execution_time_sec = total_execution_time_sec;
+            return merged;
+        }
+
+        // Aggregate additive fields
+        let total_instruction_count: u64 = stats.iter().map(|s| s.total_instruction_count).sum();
+        let total_sp1_gas: u64 = stats.iter().map(|s| s.total_sp1_gas).sum();
+        let oracle_verify_instruction_count: u64 =
+            stats.iter().map(|s| s.oracle_verify_instruction_count).sum();
+        let derivation_instruction_count: u64 =
+            stats.iter().map(|s| s.derivation_instruction_count).sum();
+        let block_execution_instruction_count: u64 =
+            stats.iter().map(|s| s.block_execution_instruction_count).sum();
+        let blob_verification_instruction_count: u64 =
+            stats.iter().map(|s| s.blob_verification_instruction_count).sum();
+        let nb_blocks: u64 = stats.iter().map(|s| s.nb_blocks).sum();
+        let nb_transactions: u64 = stats.iter().map(|s| s.nb_transactions).sum();
+        let eth_gas_used: u64 = stats.iter().map(|s| s.eth_gas_used).sum();
+        let l1_fees: u128 = stats.iter().map(|s| s.l1_fees).sum();
+        let total_tx_fees: u128 = stats.iter().map(|s| s.total_tx_fees).sum();
+        let bn_pair_cycles: u64 = stats.iter().map(|s| s.bn_pair_cycles).sum();
+        let bn_add_cycles: u64 = stats.iter().map(|s| s.bn_add_cycles).sum();
+        let bn_mul_cycles: u64 = stats.iter().map(|s| s.bn_mul_cycles).sum();
+        let kzg_eval_cycles: u64 = stats.iter().map(|s| s.kzg_eval_cycles).sum();
+        let ec_recover_cycles: u64 = stats.iter().map(|s| s.ec_recover_cycles).sum();
+        let p256_verify_cycles: u64 = stats.iter().map(|s| s.p256_verify_cycles).sum();
+
+        // Range fields - take min/max
+        let batch_start = stats.iter().map(|s| s.batch_start).min().unwrap_or(0);
+        let batch_end = stats.iter().map(|s| s.batch_end).max().unwrap_or(0);
+        let l1_head = stats.iter().map(|s| s.l1_head).max().unwrap_or(0);
+
+        // Recalculate derived per-unit fields
+        let cycles_per_block = if nb_blocks > 0 { total_instruction_count / nb_blocks } else { 0 };
+        let cycles_per_transaction =
+            if nb_transactions > 0 { total_instruction_count / nb_transactions } else { 0 };
+        let transactions_per_block = if nb_blocks > 0 { nb_transactions / nb_blocks } else { 0 };
+        let gas_used_per_block = if nb_blocks > 0 { eth_gas_used / nb_blocks } else { 0 };
+        let gas_used_per_transaction =
+            if nb_transactions > 0 { eth_gas_used / nb_transactions } else { 0 };
+
+        Self {
+            l1_head,
+            batch_start,
+            batch_end,
+            witness_generation_time_sec,
+            total_execution_time_sec,
+            total_instruction_count,
+            oracle_verify_instruction_count,
+            derivation_instruction_count,
+            block_execution_instruction_count,
+            blob_verification_instruction_count,
+            total_sp1_gas,
+            nb_blocks,
+            nb_transactions,
+            eth_gas_used,
+            l1_fees,
+            total_tx_fees,
+            cycles_per_block,
+            cycles_per_transaction,
+            transactions_per_block,
+            gas_used_per_block,
+            gas_used_per_transaction,
+            bn_pair_cycles,
+            bn_add_cycles,
+            bn_mul_cycles,
+            kzg_eval_cycles,
+            ec_recover_cycles,
+            p256_verify_cycles,
+        }
+    }
 }
 
 /// A [ExecutionStats] that can be displayed as Markdown.
