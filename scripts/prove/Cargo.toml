@@ -19,6 +19,7 @@ path = "bin/agg.rs"
 
 # workspace
 tokio.workspace = true
+futures.workspace = true
 clap.workspace = true
 cargo_metadata.workspace = true
 anyhow.workspace = true

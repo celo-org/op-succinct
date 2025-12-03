@@ -37,6 +37,14 @@ pub struct HostExecutorArgs {
     /// Skip writing CSV files and only log execution statistics.
     #[arg(long)]
     pub log_only: bool,
+    /// Number of sub-ranges to split the block range into (1-16). When greater than 1,
+    /// witness generation and execution/proving will be performed concurrently for each sub-range.
+    #[arg(long, default_value = "1")]
+    pub split_count: u8,
+    /// Maximum number of concurrent operations when split_count > 1.
+    /// Defaults to the split_count value if not specified.
+    #[arg(long)]
+    pub max_concurrent: Option<usize>,
 }
 
 #[derive(Debug, Clone, Parser)]
