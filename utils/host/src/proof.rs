@@ -1,9 +1,10 @@
+use crate::{host::OPSuccinctHost, witness_generation::WitnessGenerator};
 use alloy_consensus::Header;
 use alloy_primitives::{Address, B256};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use op_succinct_client_utils::{boot::BootInfoStruct, types::AggregationInputs};
 use sp1_sdk::{HashableKey, SP1Proof, SP1Stdin};
-
+use std::sync::Arc;
 /// Get the stdin for the aggregation proof.
 pub fn get_agg_proof_stdin(
     proofs: Vec<SP1Proof>,
@@ -33,4 +34,29 @@ pub fn get_agg_proof_stdin(
     stdin.write_vec(headers_bytes);
 
     Ok(stdin)
+}
+
+pub async fn get_range_proof_stdin<T: OPSuccinctHost + Send + Sync + 'static>(
+    host: &Arc<T>,
+    start_block: u64,
+    end_block: u64,
+    l1_head_hash: B256,
+    safe_db_fallback: bool,
+) -> Result<SP1Stdin> {
+    let host_args = host
+        .fetch(start_block, end_block, Some(l1_head_hash), safe_db_fallback)
+        .await
+        .context("Failed to get host CLI args")?;
+
+    let witness_data = host.run(&host_args).await?;
+
+    let sp1_stdin = match host.witness_generator().get_sp1_stdin(witness_data) {
+        Ok(stdin) => stdin,
+        Err(e) => {
+            tracing::error!("Failed to get proof stdin: {}", e);
+            return Err(anyhow::anyhow!("Failed to get proof stdin: {}", e));
+        }
+    };
+
+    Ok(sp1_stdin)
 }

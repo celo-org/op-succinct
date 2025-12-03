@@ -8,7 +8,7 @@ use std::{
 };
 
 use alloy_eips::BlockNumberOrTag;
-use alloy_primitives::{Address, TxHash, B256, U256};
+use alloy_primitives::{Address, TxHash, U256};
 use alloy_provider::{Provider, ProviderBuilder, RootProvider};
 use alloy_sol_types::{SolEvent, SolValue};
 use anyhow::{bail, Context, Result};
@@ -17,11 +17,10 @@ use op_succinct_client_utils::boot::BootInfoStruct;
 use op_succinct_elfs::AGGREGATION_ELF;
 use op_succinct_host_utils::{
     fetcher::OPSuccinctDataFetcher,
-    get_agg_proof_stdin,
+    get_agg_proof_stdin, get_range_proof_stdin,
     host::OPSuccinctHost,
     metrics::MetricsGauge,
     network::{determine_network_mode, get_network_signer},
-    witness_generation::WitnessGenerator,
 };
 use op_succinct_proof_utils::get_range_elf_embedded;
 use op_succinct_signer_utils::SignerLock;
@@ -483,7 +482,14 @@ where
             let this = self.clone();
             async move {
                 tracing::info!("Generating Range Proof for blocks {start} to {end}");
-                let sp1_stdin = this.range_proof_stdin(start, end, l1_head_hash.into()).await?;
+                let sp1_stdin = get_range_proof_stdin(
+                    &this.host,
+                    start,
+                    end,
+                    l1_head_hash.into(),
+                    self.config.safe_db_fallback,
+                )
+                .await?;
                 let (range_proof, inst_cycles, sp1_gas) =
                     this.range_proof_request(&sp1_stdin).await?;
                 Ok::<_, anyhow::Error>((idx, range_proof, inst_cycles, sp1_gas))
@@ -560,31 +566,6 @@ where
         let tx_hash = self.agg_proof_request(&game, &sp1_stdin).await?;
 
         Ok((tx_hash, total_instruction_cycles, total_sp1_gas))
-    }
-
-    async fn range_proof_stdin(
-        &self,
-        start_block: u64,
-        end_block: u64,
-        l1_head_hash: B256,
-    ) -> Result<SP1Stdin> {
-        let host_args = self
-            .host
-            .fetch(start_block, end_block, Some(l1_head_hash), self.config.safe_db_fallback)
-            .await
-            .context("Failed to get host CLI args")?;
-
-        let witness_data = self.host.run(&host_args).await?;
-
-        let sp1_stdin = match self.host.witness_generator().get_sp1_stdin(witness_data) {
-            Ok(stdin) => stdin,
-            Err(e) => {
-                tracing::error!("Failed to get proof stdin: {}", e);
-                return Err(anyhow::anyhow!("Failed to get proof stdin: {}", e));
-            }
-        };
-
-        Ok(sp1_stdin)
     }
 
     async fn range_proof_request(
