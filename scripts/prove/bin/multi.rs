@@ -4,12 +4,12 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use op_succinct_host_utils::{
     block_range::get_validated_block_range, fetcher::OPSuccinctDataFetcher, get_range_proof_stdin,
-    network::parse_fulfillment_strategy, stats::ExecutionStats,
+    get_split_range_agg_proof_input, network::parse_fulfillment_strategy, stats::ExecutionStats,
 };
 use op_succinct_proof_utils::{get_range_elf_embedded, initialize_host};
 use op_succinct_prove::{execute_multi, DEFAULT_RANGE};
 use op_succinct_scripts::HostExecutorArgs;
-use sp1_sdk::{utils, Prover, ProverClient};
+use sp1_sdk::{utils, Prover, ProverClient, SP1ProofWithPublicValues};
 use tracing::info;
 
 /// Execute the OP Succinct program for multiple blocks.
@@ -35,6 +35,28 @@ async fn main() -> Result<()> {
         args.start,
         args.end,
         DEFAULT_RANGE,
+    )
+    .await?;
+
+    let (sp1_stdin, total_instruction_cycles, total_sp1_gas) = get_split_range_agg_proof_input(
+        host,
+        None,
+        args.safe_db_fallback,
+        &|sp1_stdin| async move {
+            let proof = SP1ProofWithPublicValues::create_mock_proof(
+                &self.prover.range_pk,
+                public_values,
+                SP1ProofMode::Compressed,
+                SP1_CIRCUIT_VERSION,
+            );
+            Ok((proof, 0, 0))
+        },
+        l2_start_block,
+        l2_end_block,
+        args.segments,
+        range_vk,
+        signer_address,
+        fetcher,
     )
     .await?;
 
@@ -78,33 +100,6 @@ async fn main() -> Result<()> {
             .expect("saving proof failed");
     } else {
         let l2_chain_id = data_fetcher.get_l2_chain_id().await?;
-
-        let (block_data, report, execution_duration) =
-            execute_multi(&data_fetcher, sp1_stdin, l2_start_block, l2_end_block).await?;
-
-        let stats = ExecutionStats::new(
-            0,
-            &block_data,
-            &report,
-            witness_generation_duration.as_secs(),
-            execution_duration.as_secs(),
-        );
-
-        println!("Execution Stats: \n{stats:?}");
-
-        // Create the report directory if it doesn't exist.
-        let report_dir = format!("execution-reports/multi/{l2_chain_id}");
-        if !std::path::Path::new(&report_dir).exists() {
-            fs::create_dir_all(&report_dir)?;
-        }
-
-        let report_path =
-            format!("execution-reports/multi/{l2_chain_id}/{l2_start_block}-{l2_end_block}.csv");
-
-        // Write to CSV.
-        let mut csv_writer = csv::Writer::from_path(report_path)?;
-        csv_writer.serialize(&stats)?;
-        csv_writer.flush()?;
     }
 
     Ok(())
