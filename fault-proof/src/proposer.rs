@@ -1583,9 +1583,9 @@ impl From<U256> for Cursor {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::RangeSplitCount;
     use anyhow::{bail, Result};
     use futures::stream::{self, StreamExt, TryStreamExt};
+    use op_succinct_host_utils::block_range::RangeSplitCount;
     use rstest::rstest;
     use std::time::Duration;
 

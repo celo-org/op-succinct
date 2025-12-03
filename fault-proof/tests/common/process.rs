@@ -5,12 +5,11 @@ use alloy_primitives::Address;
 use alloy_provider::ProviderBuilder;
 use anyhow::Result;
 use fault_proof::{
-    challenger::OPSuccinctChallenger,
-    config::{ChallengerConfig, RangeSplitCount},
-    contract::DisputeGameFactory,
+    challenger::OPSuccinctChallenger, config::ChallengerConfig, contract::DisputeGameFactory,
     proposer::OPSuccinctProposer,
 };
 use op_succinct_host_utils::{
+    block_range::RangeSplitCount,
     fetcher::{OPSuccinctDataFetcher, RPCConfig},
     host::OPSuccinctHost,
 };
