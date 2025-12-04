@@ -83,7 +83,20 @@ async fn main() -> Result<()> {
         async move {
             info!("Generating witness for sub-range {} to {}", start, end);
             let host_args = host.fetch(start, end, None, args.safe_db_fallback).await?;
-            let witness_data = host.run(&host_args).await?;
+            info!("host_args: {:?}", host_args);
+
+            // Run witness generation in spawn_blocking because it uses blocking pipe I/O
+            // internally (via NativeChannel). Running multiple of these concurrently on the
+            // async runtime can exhaust worker threads and cause deadlock.
+            let host_clone = host.clone();
+            let witness_data = tokio::task::spawn_blocking(move || {
+                let rt = tokio::runtime::Handle::current();
+                rt.block_on(async move { host_clone.run(&host_args).await })
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Witness generation task failed: {}", e))??;
+
+            info!("got ma witness data");
             let sp1_stdin = host.witness_generator().get_sp1_stdin(witness_data)?;
 
             let stdin_bytes = bincode::serialize(&sp1_stdin).unwrap();
