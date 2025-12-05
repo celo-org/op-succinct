@@ -133,6 +133,7 @@ async fn main() -> Result<()> {
                 let proof = network_prover
                     .prove(&pk, &data.sp1_stdin)
                     .compressed()
+                    .skip_simulation(true)
                     .strategy(strategy)
                     .run_async()
                     .await
