@@ -247,110 +247,104 @@ async fn main() -> Result<()> {
 
         info!("Running processes: {}/{}", state.running_processes.len(), args.max_concurrent);
 
-        // Get current game count
-        let current_game_count = factory.gameCount().call().await?.to::<u64>();
+        if state.can_spawn_new(args.max_concurrent) {
+            // Get current game count
+            let current_game_count = factory.gameCount().call().await?.to::<u64>();
 
-        // Check for new games
-        let start_index = state.next_game_index;
-        if current_game_count > start_index {
-            state.next_game_index = current_game_count;
-            for game_index in start_index..current_game_count {
-                // Get game info
-                let game_info = match factory.gameAtIndex(U256::from(game_index)).call().await {
-                    Ok(info) => info,
-                    Err(e) => {
-                        error!("Failed to get game at index {}: {}", game_index, e);
-                        continue;
-                    }
-                };
+            // Check for new games
+            let start_index = state.next_game_index;
+            if current_game_count > start_index {
+                state.next_game_index = current_game_count;
+                for game_index in start_index..current_game_count {
+                    // Get game info
+                    let game_info = match factory.gameAtIndex(U256::from(game_index)).call().await {
+                        Ok(info) => info,
+                        Err(e) => {
+                            error!("Failed to get game at index {}: {}", game_index, e);
+                            continue;
+                        }
+                    };
 
-                let game_type = game_info.gameType;
-                let game_address = game_info.proxy;
-                // Check if it's the game type we're monitoring
-                if game_type != GAME_TYPE {
-                    info!(
-                        "Skipping game {} at index {} (type {} != {})",
-                        game_address, game_index, game_type, GAME_TYPE
-                    );
-                    continue;
-                }
-
-                // Check if we've already processed this game
-                if state.processed_games.contains(&game_address) {
-                    info!("Already processed game {}, skipping", game_address);
-                    continue;
-                }
-
-                info!(
-                    "Found new game of type {} at index {}: {}",
-                    game_type, game_index, game_address
-                );
-
-                // Get the game contract
-                let game = OPSuccinctFaultDisputeGame::new(game_address, l1_provider.clone());
-
-                // Get the L2 block number for this game
-                let l2_block_number = match game.l2BlockNumber().call().await {
-                    Ok(block) => block.to::<u64>(),
-                    Err(e) => {
-                        error!("Failed to get L2 block number for game {}: {}", game_address, e);
-                        continue;
-                    }
-                };
-
-                // Get the start block from the game contract
-                let start_block = match game.startingBlockNumber().call().await {
-                    Ok(block) => block.to::<u64>(),
-                    Err(e) => {
-                        warn!(
-                            "Failed to get starting block number for game {}: {}",
-                            game_address, e
-                        );
-                        0
-                    }
-                };
-                let end_block = l2_block_number;
-
-                info!("Game {} covers L2 blocks {} to {}", game_address, start_block, end_block);
-
-                // Wait until we can spawn a new process
-                while !state.can_spawn_new(args.max_concurrent) {
-                    info!(
-                        "Max concurrent processes reached ({}), waiting for one to finish...",
-                        args.max_concurrent
-                    );
-                    sleep(poll_interval).await;
-                    state.cleanup_finished_processes();
-                }
-
-                let mut log_file =
-                    PathBuf::from(format!("cost-estimator-{}-{}.log", game_index, game_address));
-                log_file = args.logs_dir.join(log_file);
-                // Spawn the cost estimator process
-                match spawn_cost_estimator(
-                    &args.cost_estimator_binary_path,
-                    &args.env_file,
-                    &log_file,
-                    start_block,
-                    end_block,
-                    end_block - start_block,
-                ) {
-                    Ok(child) => {
+                    let game_type = game_info.gameType;
+                    let game_address = game_info.proxy;
+                    // Check if it's the game type we're monitoring
+                    if game_type != GAME_TYPE {
                         info!(
-                            "Started cost estimator {} for game {} (blocks {}-{})",
-                            game_index, game_address, start_block, end_block
+                            "Skipping game {} at index {} (type {} != {})",
+                            game_address, game_index, game_type, GAME_TYPE
                         );
-
-                        state
-                            .running_processes
-                            .insert(game_index, RunningEstimator { process: child, log_file });
-                        state.processed_games.insert(game_address);
+                        continue;
                     }
-                    Err(e) => {
-                        error!("Failed to spawn cost estimator for game {}: {}", game_address, e);
+
+                    // Check if we've already processed this game
+                    if state.processed_games.contains(&game_address) {
+                        info!("Already processed game {}, skipping", game_address);
+                        continue;
+                    }
+
+                    info!(
+                        "Found new game of type {} at index {}: {}",
+                        game_type, game_index, game_address
+                    );
+
+                    // Get the game contract
+                    let game = OPSuccinctFaultDisputeGame::new(game_address, l1_provider.clone());
+
+                    // Get the L2 block number for this game
+                    let l2_block_number = match game.l2BlockNumber().call().await {
+                        Ok(block) => block.to::<u64>(),
+                        Err(e) => {
+                            error!("Failed to get L2 block number for game {}: {}", game_address, e);
+                            continue;
+                        }
+                    };
+
+                    // Get the start block from the game contract
+                    let start_block = match game.startingBlockNumber().call().await {
+                        Ok(block) => block.to::<u64>(),
+                        Err(e) => {
+                            warn!(
+                                "Failed to get starting block number for game {}: {}",
+                                game_address, e
+                            );
+                            0
+                        }
+                    };
+                    let end_block = l2_block_number;
+
+                    info!("Game {} covers L2 blocks {} to {}", game_address, start_block, end_block);
+
+                    let mut log_file =
+                        PathBuf::from(format!("cost-estimator-{}-{}.log", game_index, game_address));
+                    log_file = args.logs_dir.join(log_file);
+                    // Spawn the cost estimator process
+                    match spawn_cost_estimator(
+                        &args.cost_estimator_binary_path,
+                        &args.env_file,
+                        &log_file,
+                        start_block,
+                        end_block,
+                        end_block - start_block,
+                    ) {
+                        Ok(child) => {
+                            info!(
+                                "Started cost estimator {} for game {} (blocks {}-{})",
+                                game_index, game_address, start_block, end_block
+                            );
+
+                            state
+                                .running_processes
+                                .insert(game_index, RunningEstimator { process: child, log_file });
+                            state.processed_games.insert(game_address);
+                        }
+                        Err(e) => {
+                            error!("Failed to spawn cost estimator for game {}: {}", game_address, e);
+                        }
                     }
                 }
             }
+        } else {
+            info!("Max concurrent processes reached, waiting for one to finish...");
         }
 
         // Wait before next poll
