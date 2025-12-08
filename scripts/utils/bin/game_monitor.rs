@@ -8,16 +8,17 @@ use fault_proof::contract::{
 use log::{error, info, warn};
 use std::{
     collections::{HashMap, HashSet},
-    env, fs,
-    fs::File,
+    env, fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::time::sleep;
 
 const GAME_TYPE: u32 = 42;
+// How long should we let a cost estimator run before killing it?
+const VALID_ESTIMATOR_DURATION_IN_SECONDS: u64 = 60 * 60 * 3; // 3 hours
 
 /// Arguments for the game monitor.
 #[derive(Debug, Clone, Parser)]
@@ -65,6 +66,7 @@ pub struct GameMonitorArgs {
 
 /// Represents a running cost estimator process for a game.
 struct RunningEstimator {
+    started_at: Instant,
     process: Child,
     log_file: PathBuf,
 }
@@ -108,7 +110,12 @@ impl MonitorState {
                     finished.push(*id);
                 }
                 Ok(None) => {
-                    // Still running
+                    let duration = Instant::now().duration_since(estimator.started_at);
+                    if duration.as_secs() > VALID_ESTIMATOR_DURATION_IN_SECONDS {
+                        error!("Cost estimator {} is still running for more than 3 hours, log file: {}. Killing it", id, estimator.log_file.display());
+                        let _ = estimator.process.kill();
+                        finished.push(*id);
+                    }
                 }
                 Err(e) => {
                     error!("Error checking process {}: {}", id, e);
@@ -334,7 +341,11 @@ async fn main() -> Result<()> {
 
                             state
                                 .running_processes
-                                .insert(game_index, RunningEstimator { process: child, log_file });
+                                .insert(game_index, RunningEstimator { 
+                                    started_at: Instant::now(), 
+                                    process: child, 
+                                    log_file 
+                                });
                             state.processed_games.insert(game_address);
                         }
                         Err(e) => {
