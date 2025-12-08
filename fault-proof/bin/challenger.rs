@@ -13,7 +13,7 @@ use op_succinct_host_utils::{
     metrics::{init_metrics, MetricsGauge},
     setup_logger,
 };
-use op_succinct_signer_utils::Signer;
+use op_succinct_signer_utils::SignerLock;
 use tikv_jemallocator::Jemalloc;
 
 #[global_allocator]
@@ -27,13 +27,15 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    rustls::crypto::ring::default_provider().install_default().unwrap();
+
     let args = Args::parse();
     dotenv::from_filename(args.env_file).ok();
 
     setup_logger();
 
     let challenger_config = ChallengerConfig::from_env()?;
-    let challenger_signer = Signer::from_env().await?;
+    let challenger_signer = SignerLock::from_env().await?;
 
     let l1_provider = ProviderBuilder::default()
         .connect_http(env::var("L1_RPC").unwrap().parse::<Url>().unwrap());
