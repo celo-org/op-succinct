@@ -145,6 +145,8 @@ async fn main() -> Result<()> {
                     .prove(&pk, &data.sp1_stdin)
                     .compressed()
                     .skip_simulation(true)
+                    .cycle_limit(1000000000000)
+                    .gas_limit(1000000000000)
                     .strategy(strategy)
                     .run_async()
                     .await
