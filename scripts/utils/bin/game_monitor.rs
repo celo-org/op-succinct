@@ -8,7 +8,8 @@ use fault_proof::contract::{
 use log::{error, info, warn};
 use std::{
     collections::{HashMap, HashSet},
-    env, fs::{self, File},
+    env,
+    fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -264,7 +265,8 @@ async fn main() -> Result<()> {
             if current_game_count > start_index {
                 let game_index = start_index + 1;
                 state.next_game_index = game_index;
-                should_wait = !(game_index < current_game_count); // If the next game index is less than the current game count, we can span spin up a new process without waiting
+                should_wait = !(game_index < current_game_count); // If the next game index is less than the current game count, we can span spin up a
+                                                                  // new process without waiting
 
                 // Get game info
                 let game_info = match factory.gameAtIndex(U256::from(game_index)).call().await {
@@ -342,13 +344,14 @@ async fn main() -> Result<()> {
                             game_index, game_address, start_block, end_block
                         );
 
-                        state
-                            .running_processes
-                            .insert(game_index, RunningEstimator { 
-                                started_at: Instant::now(), 
-                                process: child, 
-                                log_file 
-                            });
+                        state.running_processes.insert(
+                            game_index,
+                            RunningEstimator {
+                                started_at: Instant::now(),
+                                process: child,
+                                log_file,
+                            },
+                        );
                         state.processed_games.insert(game_address);
                     }
                     Err(e) => {
