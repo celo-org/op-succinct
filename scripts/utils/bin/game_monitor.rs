@@ -265,8 +265,7 @@ async fn main() -> Result<()> {
             if current_game_count > start_index {
                 let game_index = start_index + 1;
                 state.next_game_index = game_index;
-                should_wait = !(game_index < current_game_count); // If the next game index is less than the current game count, we can span spin up a
-                                                                  // new process without waiting
+                should_wait = game_index >= current_game_count; // If the next game index is greater than or equal to the current game count, we need to wait for new games
 
                 // Get game info
                 let game_info = match factory.gameAtIndex(U256::from(game_index)).call().await {
