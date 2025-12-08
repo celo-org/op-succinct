@@ -255,18 +255,13 @@ async fn main() -> Result<()> {
 
         info!("Running processes: {}/{}", state.running_processes.len(), args.max_concurrent);
 
-        let mut should_wait = true;
+        // Get current game count
+        let current_game_count = factory.gameCount().call().await?.to::<u64>();
         if state.can_spawn_new(args.max_concurrent) {
-            // Get current game count
-            let current_game_count = factory.gameCount().call().await?.to::<u64>();
-
             // Check for new games
-            let start_index = state.next_game_index;
-            if current_game_count > start_index {
-                let game_index = start_index + 1;
-                state.next_game_index = game_index;
-                should_wait = game_index >= current_game_count; // If the next game index is greater than or equal to the current game count, we need to wait for new games
-
+            let game_index = state.next_game_index;
+            if current_game_count > game_index {
+                state.next_game_index = game_index + 1;
                 // Get game info
                 let game_info = match factory.gameAtIndex(U256::from(game_index)).call().await {
                     Ok(info) => info,
@@ -362,9 +357,9 @@ async fn main() -> Result<()> {
             info!("Max concurrent processes reached, waiting for one to finish...");
         }
 
-        // We won't wait only if we have more games to process
-        if should_wait {
-            // Wait before next poll if we can span without waiting
+        // If the next game index is greater than or equal to the current game count, we
+        // need to wait for new games
+        if state.next_game_index >= current_game_count {
             sleep(poll_interval).await;
         }
     }
