@@ -15,6 +15,8 @@ use op_succinct_proof_utils::{get_range_elf_embedded, initialize_host};
 use op_succinct_prove::DEFAULT_RANGE;
 use op_succinct_scripts::HostExecutorArgs;
 use sp1_sdk::{utils, ExecutionReport, Prover, ProverClient, SP1Stdin};
+use std::time::Duration;
+use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::info;
 
 /// Data needed for executing/proving a sub-range.
@@ -159,8 +161,9 @@ async fn main() -> Result<()> {
                 Ok::<_, anyhow::Error>(())
             }
         });
-
-        let prove_stream = stream::iter(prove_tasks);
+        // We throttle the stream execution to 1 per second to ensure correct nonce ordering for
+        // requests to the network.
+        let prove_stream = tokio_stream::iter(prove_tasks).throttle(Duration::from_secs(1));
         prove_stream.buffer_unordered(max_concurrent).try_collect::<Vec<_>>().await?;
 
         info!("All {} proofs generated and saved successfully", num_ranges);

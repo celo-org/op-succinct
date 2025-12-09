@@ -23,6 +23,7 @@ path = "bin/agg.rs"
 
 # workspace
 tokio.workspace = true
+tokio-stream = "0.1.17"
 futures.workspace = true
 clap.workspace = true
 cargo_metadata.workspace = true
