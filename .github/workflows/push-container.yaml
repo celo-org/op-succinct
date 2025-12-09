@@ -26,13 +26,15 @@ jobs:
       labels: ${{ steps.meta.outputs.labels }}
     steps:
       - uses: actions/checkout@v4
-      # By default for PRs checkout will checkout the pr and merge it into the
-      # default branch and then use that ephemeral commit to build with. This
-      # is highly confusing when building docker images since the tags don't
-      # relate to any accessible commits. The fix is to ensure we use the head
-      # commit sha.
+        # By default for PRs checkout will checkout the pr and merge it into
+        # the default branch and then use that ephemeral commit to build with.
+        # This is highly confusing when building docker images since the tags
+        # don't relate to any accessible commits. The fix is to ensure we use
+        # the head commit sha. See -
+        # https://github.com/actions/checkout?tab=readme-ov-file#checkout-pull-request-head-commit-instead-of-merge-commit
+        # And as a backup when not in a PR context we use the github.sha.
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - id: meta
         uses: docker/metadata-action@v5
         with:
