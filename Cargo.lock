@@ -9148,7 +9148,13 @@ dependencies = [
 name = "op-succinct-prove"
 version = "3.3.3-b"
 dependencies = [
+ "alloy-contract",
+ "alloy-network",
  "alloy-primitives",
+ "alloy-provider",
+ "alloy-sol-macro",
+ "alloy-sol-types",
+ "alloy-transport-http",
  "anyhow",
  "bincode",
  "cargo_metadata",

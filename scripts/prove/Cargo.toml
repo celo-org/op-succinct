@@ -12,6 +12,10 @@ name = "multi"
 path = "bin/multi.rs"
 
 [[bin]]
+name = "multi-and-agg"
+path = "bin/multi-and-agg.rs"
+
+[[bin]]
 name = "agg"
 path = "bin/agg.rs"
 
@@ -37,6 +41,12 @@ op-succinct-elfs.workspace = true
 
 # alloy
 alloy-primitives.workspace = true
+alloy-sol-macro.workspace = true
+alloy-transport-http.workspace = true
+alloy-provider.workspace = true
+alloy-sol-types.workspace = true
+alloy-contract.workspace = true
+alloy-network.workspace = true
 
 # sp1
 sp1-sdk.workspace = true
