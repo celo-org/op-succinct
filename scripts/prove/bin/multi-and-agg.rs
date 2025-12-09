@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
     let network_prover = Arc::new(ProverClient::builder().network().build());
     let (range_pk, range_vk) = network_prover.setup(get_range_elf_embedded());
 
-    let tasks = ranges.iter().enumerate().map(|(idx, (start, end))| {
+    let tasks = ranges.into_iter().enumerate().map(|(idx, (start, end))| {
         let network_prover = network_prover.clone();
         let range_pk = range_pk.clone();
         // async move {
