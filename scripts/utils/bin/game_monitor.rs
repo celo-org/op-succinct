@@ -254,7 +254,6 @@ async fn main() -> Result<()> {
         state.cleanup_finished_processes();
 
         info!("Running processes: {}/{}", state.running_processes.len(), args.max_concurrent);
-
         // Get current game count
         let current_game_count = factory.gameCount().call().await?.to::<u64>();
         if state.can_spawn_new(args.max_concurrent) {
@@ -357,9 +356,10 @@ async fn main() -> Result<()> {
             info!("Max concurrent processes reached, waiting for one to finish...");
         }
 
-        // If the next game index is greater than or equal to the current game count, we
-        // need to wait for new games
-        if state.next_game_index >= current_game_count {
+        // If there are no more games to process or we don't have any capacity to spawn a new
+        // process then wait.
+        if state.next_game_index >= current_game_count || !state.can_spawn_new(args.max_concurrent)
+        {
             sleep(poll_interval).await;
         }
     }
