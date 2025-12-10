@@ -187,24 +187,60 @@ impl Signer {
     }
 }
 
+/// Gas configuration for L1 transactions.
+#[derive(Clone, Debug, Default)]
+pub struct GasConfig {
+    /// Optional max fee per gas in wei. If not set, uses provider estimation.
+    pub max_fee_per_gas: Option<u128>,
+    /// Optional max priority fee (tip) per gas in wei. If not set, uses provider estimation.
+    pub max_priority_fee_per_gas: Option<u128>,
+}
+
+impl GasConfig {
+    /// Creates a new GasConfig from environment variables.
+    pub fn from_env() -> Self {
+        Self {
+            max_fee_per_gas: std::env::var("MAX_FEE_PER_GAS")
+                .ok()
+                .and_then(|s| s.parse().ok()),
+            max_priority_fee_per_gas: std::env::var("MAX_PRIORITY_FEE_PER_GAS")
+                .ok()
+                .and_then(|s| s.parse().ok()),
+        }
+    }
+}
+
 /// Wrapper around Signer that provides thread-safe transaction sending.
 /// Transactions are serialized via a Mutex to prevent nonce conflicts.
 #[derive(Clone, Debug)]
 pub struct SignerLock {
     inner: Arc<Mutex<Signer>>,
     cached_address: Address,
+    gas_config: GasConfig,
 }
 
 impl SignerLock {
     /// Creates a new SignerLock wrapping the given Signer.
     pub fn new(signer: Signer) -> Self {
         let cached_address = signer.address();
-        SignerLock { inner: Arc::new(Mutex::new(signer)), cached_address }
+        SignerLock {
+            inner: Arc::new(Mutex::new(signer)),
+            cached_address,
+            gas_config: GasConfig::default(),
+        }
+    }
+
+    /// Creates a new SignerLock with custom gas configuration.
+    pub fn new_with_gas_config(signer: Signer, gas_config: GasConfig) -> Self {
+        let cached_address = signer.address();
+        SignerLock { inner: Arc::new(Mutex::new(signer)), cached_address, gas_config }
     }
 
     /// Creates a SignerLock from environment variables.
     pub async fn from_env() -> Result<Self> {
-        Ok(SignerLock::new(Signer::from_env().await?))
+        let signer = Signer::from_env().await?;
+        let gas_config = GasConfig::from_env();
+        Ok(SignerLock::new_with_gas_config(signer, gas_config))
     }
 
     /// Returns the address of the signer without acquiring a lock.
@@ -212,13 +248,27 @@ impl SignerLock {
         self.cached_address
     }
 
+    /// Returns the gas configuration.
+    pub fn gas_config(&self) -> &GasConfig {
+        &self.gas_config
+    }
+
     /// Sends a transaction request, signed by the configured signer.
     /// Transactions are serialized via a Mutex to prevent nonce conflicts.
+    /// Applies gas configuration if set.
     pub async fn send_transaction_request(
         &self,
         l1_rpc: Url,
-        transaction_request: TransactionRequest,
+        mut transaction_request: TransactionRequest,
     ) -> Result<TransactionReceipt> {
+        // Apply gas config if set
+        if let Some(max_fee) = self.gas_config.max_fee_per_gas {
+            transaction_request = transaction_request.max_fee_per_gas(max_fee);
+        }
+        if let Some(priority_fee) = self.gas_config.max_priority_fee_per_gas {
+            transaction_request = transaction_request.max_priority_fee_per_gas(priority_fee);
+        }
+
         let signer = self.inner.lock().await;
         signer.send_transaction_request(l1_rpc, transaction_request).await
     }
@@ -289,4 +339,79 @@ mod tests {
             .unwrap();
         println!("Signed transaction receipt: {receipt:?}");
     }
+
+    #[test]
+    fn test_gas_config_default() {
+        let config = GasConfig::default();
+        assert_eq!(config.max_fee_per_gas, None);
+        assert_eq!(config.max_priority_fee_per_gas, None);
+    }
+
+    #[test]
+    fn test_gas_config_struct_construction() {
+        // Test direct struct construction (doesn't rely on env vars)
+        let config = GasConfig {
+            max_fee_per_gas: Some(100_000_000_000u128),
+            max_priority_fee_per_gas: Some(2_000_000_000u128),
+        };
+        assert_eq!(config.max_fee_per_gas, Some(100_000_000_000u128));
+        assert_eq!(config.max_priority_fee_per_gas, Some(2_000_000_000u128));
+
+        // Test partial values
+        let config_partial = GasConfig {
+            max_fee_per_gas: Some(50_000_000_000u128),
+            max_priority_fee_per_gas: None,
+        };
+        assert_eq!(config_partial.max_fee_per_gas, Some(50_000_000_000u128));
+        assert_eq!(config_partial.max_priority_fee_per_gas, None);
+    }
+
+    #[test]
+    fn test_signer_lock_new_has_default_gas_config() {
+        let signer = Signer::new_local_signer(
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+        )
+        .unwrap();
+        let signer_lock = SignerLock::new(signer);
+
+        assert_eq!(signer_lock.gas_config().max_fee_per_gas, None);
+        assert_eq!(signer_lock.gas_config().max_priority_fee_per_gas, None);
+    }
+
+    #[test]
+    fn test_signer_lock_new_with_gas_config() {
+        let signer = Signer::new_local_signer(
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+        )
+        .unwrap();
+        let gas_config = GasConfig {
+            max_fee_per_gas: Some(100_000_000_000u128),
+            max_priority_fee_per_gas: Some(2_000_000_000u128),
+        };
+        let signer_lock = SignerLock::new_with_gas_config(signer, gas_config);
+
+        assert_eq!(signer_lock.gas_config().max_fee_per_gas, Some(100_000_000_000u128));
+        assert_eq!(signer_lock.gas_config().max_priority_fee_per_gas, Some(2_000_000_000u128));
+    }
+
+    #[test]
+    fn test_signer_lock_address_cached() {
+        let signer = Signer::new_local_signer(
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+        )
+        .unwrap();
+        let expected_address = signer.address();
+        let signer_lock = SignerLock::new(signer);
+
+        // Address should be cached and accessible without lock
+        assert_eq!(signer_lock.address(), expected_address);
+    }
+
+    // Note: Tests that modify environment variables should be run with --test-threads=1
+    // to avoid race conditions. Example:
+    // cargo test -p op-succinct-signer-utils -- --test-threads=1
+    //
+    // To test GasConfig::from_env() manually:
+    // MAX_FEE_PER_GAS=100000000000 MAX_PRIORITY_FEE_PER_GAS=2000000000 \
+    //   cargo test -p op-succinct-signer-utils test_gas_config -- --test-threads=1
 }
