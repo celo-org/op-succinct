@@ -1,7 +1,11 @@
-use std::{str::FromStr, sync::Arc};
+use std::{
+    str::FromStr,
+    sync::Arc,
+    time::Instant,
+};
 
 use alloy_consensus::TxEnvelope;
-use alloy_eips::Decodable2718;
+use alloy_eips::{BlockNumberOrTag, Decodable2718};
 use alloy_network::{Ethereum, EthereumWallet, TransactionBuilder};
 use alloy_primitives::{Address, Bytes, TxKind};
 use alloy_provider::{Provider, ProviderBuilder, Web3Signer};
@@ -14,7 +18,10 @@ use anyhow::{Context, Result};
 use gcloud_sdk::{
     google::cloud::kms::v1::key_management_service_client::KeyManagementServiceClient, GoogleApi,
 };
-use tokio::{sync::Mutex, time::Duration};
+use tokio::{
+    sync::{Mutex, RwLock},
+    time::Duration,
+};
 
 pub const NUM_CONFIRMATIONS: u64 = 3;
 pub const TIMEOUT_SECONDS: u64 = 60;
@@ -242,37 +249,430 @@ impl GasConfig {
     }
 }
 
+/// Configuration for adaptive gas pricing strategy.
+///
+/// This config controls how gas prices are calculated when network gas prices
+/// exceed a threshold. When gas is above the threshold, the filler uses
+/// historical average baseFee (from `eth_feeHistory`) multiplied by a factor,
+/// with gradual increases after a timeout.
+#[derive(Clone, Debug)]
+pub struct AdaptiveGasConfig {
+    /// Threshold above which to apply historical smoothing (wei).
+    /// Default: 3 gwei (3_000_000_000 wei)
+    pub gas_price_threshold: u128,
+    /// Number of blocks for history (~900 for 3 hours at 12s/block).
+    /// Default: 900
+    pub history_blocks: u64,
+    /// Multiplier for historical average (e.g., 1.1 = 110%).
+    /// Default: 1.1
+    pub price_multiplier: f64,
+    /// Timeout in minutes before gradual increase starts.
+    /// Default: 30
+    pub fallback_timeout_minutes: u64,
+    /// Percentage increase per timeout period.
+    /// Default: 10
+    pub fallback_increase_percent: u64,
+}
+
+impl Default for AdaptiveGasConfig {
+    fn default() -> Self {
+        Self {
+            gas_price_threshold: 3_000_000_000,   // 3 gwei
+            history_blocks: 900,                   // ~3 hours at 12s/block
+            price_multiplier: 1.1,                 // 110%
+            fallback_timeout_minutes: 30,
+            fallback_increase_percent: 10,
+        }
+    }
+}
+
+impl AdaptiveGasConfig {
+    /// Creates a new AdaptiveGasConfig from environment variables.
+    ///
+    /// All values are optional and fall back to defaults if not set.
+    /// Returns an error if an environment variable is set but contains an invalid value.
+    pub fn from_env() -> Result<Self> {
+        let mut config = Self::default();
+
+        if let Some(threshold) = Self::parse_env_var_u128("GAS_PRICE_THRESHOLD")? {
+            config.gas_price_threshold = threshold;
+        }
+        if let Some(blocks) = Self::parse_env_var_u64("GAS_HISTORY_BLOCKS")? {
+            config.history_blocks = blocks;
+        }
+        if let Some(multiplier) = Self::parse_env_var_f64("GAS_PRICE_MULTIPLIER")? {
+            if multiplier <= 0.0 {
+                anyhow::bail!("GAS_PRICE_MULTIPLIER must be positive, got: {}", multiplier);
+            }
+            config.price_multiplier = multiplier;
+        }
+        if let Some(timeout) = Self::parse_env_var_u64("GAS_FALLBACK_TIMEOUT_MINUTES")? {
+            config.fallback_timeout_minutes = timeout;
+        }
+        if let Some(percent) = Self::parse_env_var_u64("GAS_FALLBACK_INCREASE_PERCENT")? {
+            config.fallback_increase_percent = percent;
+        }
+
+        Ok(config)
+    }
+
+    fn parse_env_var_u128(var_name: &str) -> Result<Option<u128>> {
+        match std::env::var(var_name) {
+            Ok(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    return Ok(None);
+                }
+                trimmed.parse::<u128>().map(Some).with_context(|| {
+                    format!(
+                        "Failed to parse {} environment variable: '{}'. \
+                         Value must be a valid integer in wei.",
+                        var_name, value
+                    )
+                })
+            }
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(os_str)) => {
+                anyhow::bail!(
+                    "{} environment variable contains invalid unicode: {:?}",
+                    var_name,
+                    os_str
+                )
+            }
+        }
+    }
+
+    fn parse_env_var_u64(var_name: &str) -> Result<Option<u64>> {
+        match std::env::var(var_name) {
+            Ok(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    return Ok(None);
+                }
+                trimmed.parse::<u64>().map(Some).with_context(|| {
+                    format!(
+                        "Failed to parse {} environment variable: '{}'. \
+                         Value must be a valid positive integer.",
+                        var_name, value
+                    )
+                })
+            }
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(os_str)) => {
+                anyhow::bail!(
+                    "{} environment variable contains invalid unicode: {:?}",
+                    var_name,
+                    os_str
+                )
+            }
+        }
+    }
+
+    fn parse_env_var_f64(var_name: &str) -> Result<Option<f64>> {
+        match std::env::var(var_name) {
+            Ok(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    return Ok(None);
+                }
+                trimmed.parse::<f64>().map(Some).with_context(|| {
+                    format!(
+                        "Failed to parse {} environment variable: '{}'. \
+                         Value must be a valid decimal number (e.g., 1.1).",
+                        var_name, value
+                    )
+                })
+            }
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(os_str)) => {
+                anyhow::bail!(
+                    "{} environment variable contains invalid unicode: {:?}",
+                    var_name,
+                    os_str
+                )
+            }
+        }
+    }
+}
+
+/// Calculated gas prices from the adaptive gas oracle.
+#[derive(Clone, Debug)]
+pub struct GasPriceEstimate {
+    /// The calculated max fee per gas in wei.
+    pub max_fee_per_gas: u128,
+    /// The calculated max priority fee per gas in wei.
+    pub max_priority_fee_per_gas: u128,
+}
+
+/// An adaptive gas pricing utility that calculates optimal gas prices.
+///
+/// When gas prices are below the threshold, uses normal provider estimation.
+/// When gas prices exceed the threshold, uses historical average baseFee
+/// (fetched via `eth_feeHistory`) multiplied by a configurable factor.
+///
+/// If transactions remain pending for too long (timeout), the oracle
+/// gradually increases gas prices to eventually get transactions through.
+#[derive(Clone, Debug)]
+pub struct AdaptiveGasOracle {
+    config: AdaptiveGasConfig,
+    /// When high-gas mode started (for timeout tracking).
+    /// None means gas is currently below threshold.
+    high_gas_start: Arc<RwLock<Option<Instant>>>,
+}
+
+impl AdaptiveGasOracle {
+    /// Creates a new AdaptiveGasOracle with the given configuration.
+    pub fn new(config: AdaptiveGasConfig) -> Self {
+        Self {
+            config,
+            high_gas_start: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// Creates a new AdaptiveGasOracle with default configuration.
+    pub fn with_defaults() -> Self {
+        Self::new(AdaptiveGasConfig::default())
+    }
+
+    /// Creates a new AdaptiveGasOracle from environment variables.
+    pub fn from_env() -> Result<Self> {
+        Ok(Self::new(AdaptiveGasConfig::from_env()?))
+    }
+
+    /// Returns the configuration.
+    pub fn config(&self) -> &AdaptiveGasConfig {
+        &self.config
+    }
+
+    /// Resets the high-gas timer (called when gas drops below threshold).
+    async fn reset_high_gas_timer(&self) {
+        let mut guard = self.high_gas_start.write().await;
+        *guard = None;
+    }
+
+    /// Starts the high-gas timer if not already started.
+    async fn start_high_gas_timer(&self) {
+        let mut guard = self.high_gas_start.write().await;
+        if guard.is_none() {
+            *guard = Some(Instant::now());
+        }
+    }
+
+    /// Calculates the timeout increase factor.
+    ///
+    /// Returns `Some(factor)` if we've been waiting longer than the timeout,
+    /// where factor increases by `fallback_increase_percent` for each timeout period.
+    /// Returns `None` if we haven't hit the timeout yet.
+    pub async fn get_timeout_increase_factor(&self) -> Option<f64> {
+        let guard = self.high_gas_start.read().await;
+        let start = (*guard)?;
+        let elapsed = start.elapsed();
+        let timeout_duration = Duration::from_secs(self.config.fallback_timeout_minutes * 60);
+
+        if elapsed < timeout_duration {
+            return None;
+        }
+
+        // Calculate how many timeout periods have passed
+        let periods = elapsed.as_secs() / timeout_duration.as_secs();
+        let increase_per_period = self.config.fallback_increase_percent as f64 / 100.0;
+
+        // Compound increase: (1 + increase)^periods
+        Some((1.0 + increase_per_period).powi(periods as i32))
+    }
+
+    /// Gets the recommended gas prices for a transaction.
+    ///
+    /// This method fetches current gas prices and historical fee data to
+    /// calculate optimal gas prices based on the configured strategy.
+    pub async fn get_gas_prices<P>(&self, provider: &P) -> Result<GasPriceEstimate>
+    where
+        P: Provider<Ethereum>,
+    {
+        // Get current gas price to compare against threshold
+        let current_gas = provider
+            .get_gas_price()
+            .await
+            .context("Failed to get current gas price")?;
+
+        if current_gas <= self.config.gas_price_threshold {
+            // Below threshold - reset timer, use current estimation
+            self.reset_high_gas_timer().await;
+
+            // Use EIP-1559 fee estimation
+            let fees = provider
+                .estimate_eip1559_fees()
+                .await
+                .context("Failed to estimate EIP-1559 fees")?;
+            return Ok(GasPriceEstimate {
+                max_fee_per_gas: fees.max_fee_per_gas,
+                max_priority_fee_per_gas: fees.max_priority_fee_per_gas,
+            });
+        }
+
+        // Above threshold - use historical average
+        self.start_high_gas_timer().await;
+
+        // Single RPC call to get all historical data
+        let fee_history = provider
+            .get_fee_history(
+                self.config.history_blocks,
+                BlockNumberOrTag::Latest,
+                &[50.0], // median priority fee
+            )
+            .await
+            .context("Failed to get fee history")?;
+
+        // Calculate average baseFee
+        let base_fees: Vec<u128> = fee_history.base_fee_per_gas.to_vec();
+        let avg_base_fee = if base_fees.is_empty() {
+            current_gas // fallback to current if no history
+        } else {
+            base_fees.iter().sum::<u128>() / base_fees.len() as u128
+        };
+
+        // Calculate average priority fee from rewards
+        let priority_fees: Vec<u128> = fee_history
+            .reward
+            .iter()
+            .flatten()
+            .flatten()
+            .copied()
+            .collect();
+        let avg_priority_fee = if priority_fees.is_empty() {
+            1_000_000_000u128 // 1 gwei default if no data
+        } else {
+            priority_fees.iter().sum::<u128>() / priority_fees.len() as u128
+        };
+
+        // Apply multiplier
+        let mut max_fee = (avg_base_fee as f64 * self.config.price_multiplier) as u128;
+        let mut priority_fee = (avg_priority_fee as f64 * self.config.price_multiplier) as u128;
+
+        // Apply timeout increase if waiting too long
+        if let Some(factor) = self.get_timeout_increase_factor().await {
+            max_fee = (max_fee as f64 * factor) as u128;
+            priority_fee = (priority_fee as f64 * factor) as u128;
+        }
+
+        Ok(GasPriceEstimate {
+            max_fee_per_gas: max_fee,
+            max_priority_fee_per_gas: priority_fee,
+        })
+    }
+
+    /// Applies the gas estimate to a transaction request.
+    pub fn apply_to_transaction(
+        &self,
+        mut tx: TransactionRequest,
+        estimate: &GasPriceEstimate,
+    ) -> TransactionRequest {
+        tx = tx.max_fee_per_gas(estimate.max_fee_per_gas);
+        tx = tx.max_priority_fee_per_gas(estimate.max_priority_fee_per_gas);
+        tx
+    }
+}
+
+/// Gas pricing strategy for transactions.
+#[derive(Clone, Debug)]
+pub enum GasPricingStrategy {
+    /// No gas pricing override - use provider defaults.
+    Default,
+    /// Static gas prices (legacy behavior).
+    Static(GasConfig),
+    /// Adaptive gas pricing based on network conditions.
+    Adaptive(AdaptiveGasOracle),
+}
+
+impl GasPricingStrategy {
+    /// Creates a gas pricing strategy from environment variables.
+    ///
+    /// The strategy is determined by which environment variables are set:
+    /// - If `GAS_PRICE_THRESHOLD` or other adaptive config vars are set, uses Adaptive
+    /// - If `MAX_FEE_PER_GAS` or `MAX_PRIORITY_FEE_PER_GAS` are set, uses Static
+    /// - Otherwise, uses Default (provider estimation)
+    pub fn from_env() -> Result<Self> {
+        // Check if any adaptive gas config vars are set
+        let has_adaptive_config = std::env::var("GAS_PRICE_THRESHOLD").is_ok()
+            || std::env::var("GAS_HISTORY_BLOCKS").is_ok()
+            || std::env::var("GAS_PRICE_MULTIPLIER").is_ok()
+            || std::env::var("GAS_FALLBACK_TIMEOUT_MINUTES").is_ok()
+            || std::env::var("GAS_FALLBACK_INCREASE_PERCENT").is_ok();
+
+        if has_adaptive_config {
+            return Ok(Self::Adaptive(AdaptiveGasOracle::from_env()?));
+        }
+
+        // Check if static gas config is set
+        let gas_config = GasConfig::from_env()?;
+        if gas_config.max_fee_per_gas.is_some() || gas_config.max_priority_fee_per_gas.is_some() {
+            return Ok(Self::Static(gas_config));
+        }
+
+        Ok(Self::Default)
+    }
+}
+
 /// Wrapper around Signer that provides thread-safe transaction sending.
 /// Transactions are serialized via a Mutex to prevent nonce conflicts.
 #[derive(Clone, Debug)]
 pub struct SignerLock {
     inner: Arc<Mutex<Signer>>,
     cached_address: Address,
-    gas_config: GasConfig,
+    gas_strategy: GasPricingStrategy,
 }
 
 impl SignerLock {
-    /// Creates a new SignerLock wrapping the given Signer.
+    /// Creates a new SignerLock wrapping the given Signer with default gas pricing.
     pub fn new(signer: Signer) -> Self {
         let cached_address = signer.address();
         SignerLock {
             inner: Arc::new(Mutex::new(signer)),
             cached_address,
-            gas_config: GasConfig::default(),
+            gas_strategy: GasPricingStrategy::Default,
         }
     }
 
-    /// Creates a new SignerLock with custom gas configuration.
+    /// Creates a new SignerLock with static gas configuration (legacy).
     pub fn new_with_gas_config(signer: Signer, gas_config: GasConfig) -> Self {
         let cached_address = signer.address();
-        SignerLock { inner: Arc::new(Mutex::new(signer)), cached_address, gas_config }
+        SignerLock {
+            inner: Arc::new(Mutex::new(signer)),
+            cached_address,
+            gas_strategy: GasPricingStrategy::Static(gas_config),
+        }
+    }
+
+    /// Creates a new SignerLock with adaptive gas pricing.
+    pub fn new_with_adaptive_gas(signer: Signer, oracle: AdaptiveGasOracle) -> Self {
+        let cached_address = signer.address();
+        SignerLock {
+            inner: Arc::new(Mutex::new(signer)),
+            cached_address,
+            gas_strategy: GasPricingStrategy::Adaptive(oracle),
+        }
+    }
+
+    /// Creates a new SignerLock with a custom gas pricing strategy.
+    pub fn new_with_strategy(signer: Signer, gas_strategy: GasPricingStrategy) -> Self {
+        let cached_address = signer.address();
+        SignerLock {
+            inner: Arc::new(Mutex::new(signer)),
+            cached_address,
+            gas_strategy,
+        }
     }
 
     /// Creates a SignerLock from environment variables.
+    ///
+    /// Detects the gas pricing strategy from environment:
+    /// - Adaptive if `GAS_PRICE_THRESHOLD` etc. are set
+    /// - Static if `MAX_FEE_PER_GAS` etc. are set
+    /// - Default otherwise
     pub async fn from_env() -> Result<Self> {
         let signer = Signer::from_env().await?;
-        let gas_config = GasConfig::from_env()?;
-        Ok(SignerLock::new_with_gas_config(signer, gas_config))
+        let gas_strategy = GasPricingStrategy::from_env()?;
+        Ok(SignerLock::new_with_strategy(signer, gas_strategy))
     }
 
     /// Returns the address of the signer without acquiring a lock.
@@ -280,25 +680,61 @@ impl SignerLock {
         self.cached_address
     }
 
-    /// Returns the gas configuration.
-    pub fn gas_config(&self) -> &GasConfig {
-        &self.gas_config
+    /// Returns the gas pricing strategy.
+    pub fn gas_strategy(&self) -> &GasPricingStrategy {
+        &self.gas_strategy
+    }
+
+    /// Returns the static gas configuration if using static pricing.
+    /// Returns None if using adaptive or default pricing.
+    pub fn gas_config(&self) -> Option<&GasConfig> {
+        match &self.gas_strategy {
+            GasPricingStrategy::Static(config) => Some(config),
+            _ => None,
+        }
+    }
+
+    /// Returns the adaptive gas oracle if using adaptive pricing.
+    /// Returns None if using static or default pricing.
+    pub fn gas_oracle(&self) -> Option<&AdaptiveGasOracle> {
+        match &self.gas_strategy {
+            GasPricingStrategy::Adaptive(oracle) => Some(oracle),
+            _ => None,
+        }
     }
 
     /// Sends a transaction request, signed by the configured signer.
     /// Transactions are serialized via a Mutex to prevent nonce conflicts.
-    /// Applies gas configuration if set.
+    /// Applies gas pricing strategy based on configuration.
     pub async fn send_transaction_request(
         &self,
         l1_rpc: Url,
         mut transaction_request: TransactionRequest,
     ) -> Result<TransactionReceipt> {
-        // Apply gas config if set
-        if let Some(max_fee) = self.gas_config.max_fee_per_gas {
-            transaction_request = transaction_request.max_fee_per_gas(max_fee);
-        }
-        if let Some(priority_fee) = self.gas_config.max_priority_fee_per_gas {
-            transaction_request = transaction_request.max_priority_fee_per_gas(priority_fee);
+        // Apply gas pricing strategy
+        match &self.gas_strategy {
+            GasPricingStrategy::Default => {
+                // No modification - let provider estimate
+            }
+            GasPricingStrategy::Static(config) => {
+                // Apply static gas prices if set
+                if let Some(max_fee) = config.max_fee_per_gas {
+                    transaction_request = transaction_request.max_fee_per_gas(max_fee);
+                }
+                if let Some(priority_fee) = config.max_priority_fee_per_gas {
+                    transaction_request = transaction_request.max_priority_fee_per_gas(priority_fee);
+                }
+            }
+            GasPricingStrategy::Adaptive(oracle) => {
+                // Create a provider to query gas prices
+                let provider = ProviderBuilder::new()
+                    .network::<Ethereum>()
+                    .connect_http(l1_rpc.clone());
+
+                // Get adaptive gas prices
+                let estimate = oracle.get_gas_prices(&provider).await?;
+                transaction_request = oracle.apply_to_transaction(transaction_request, &estimate);
+            }
         }
 
         let signer = self.inner.lock().await;
@@ -397,15 +833,17 @@ mod tests {
     }
 
     #[test]
-    fn test_signer_lock_new_has_default_gas_config() {
+    fn test_signer_lock_new_has_default_strategy() {
         let signer = Signer::new_local_signer(
             "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
         )
         .unwrap();
         let signer_lock = SignerLock::new(signer);
 
-        assert_eq!(signer_lock.gas_config().max_fee_per_gas, None);
-        assert_eq!(signer_lock.gas_config().max_priority_fee_per_gas, None);
+        // Default strategy means no static gas_config
+        assert!(signer_lock.gas_config().is_none());
+        assert!(signer_lock.gas_oracle().is_none());
+        assert!(matches!(signer_lock.gas_strategy(), GasPricingStrategy::Default));
     }
 
     #[test]
@@ -420,8 +858,24 @@ mod tests {
         };
         let signer_lock = SignerLock::new_with_gas_config(signer, gas_config);
 
-        assert_eq!(signer_lock.gas_config().max_fee_per_gas, Some(100_000_000_000u128));
-        assert_eq!(signer_lock.gas_config().max_priority_fee_per_gas, Some(2_000_000_000u128));
+        let config = signer_lock.gas_config().expect("Should have static config");
+        assert_eq!(config.max_fee_per_gas, Some(100_000_000_000u128));
+        assert_eq!(config.max_priority_fee_per_gas, Some(2_000_000_000u128));
+        assert!(matches!(signer_lock.gas_strategy(), GasPricingStrategy::Static(_)));
+    }
+
+    #[test]
+    fn test_signer_lock_new_with_adaptive_gas() {
+        let signer = Signer::new_local_signer(
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+        )
+        .unwrap();
+        let oracle = AdaptiveGasOracle::with_defaults();
+        let signer_lock = SignerLock::new_with_adaptive_gas(signer, oracle);
+
+        assert!(signer_lock.gas_oracle().is_some());
+        assert!(signer_lock.gas_config().is_none());
+        assert!(matches!(signer_lock.gas_strategy(), GasPricingStrategy::Adaptive(_)));
     }
 
     #[test]
@@ -435,6 +889,69 @@ mod tests {
 
         // Address should be cached and accessible without lock
         assert_eq!(signer_lock.address(), expected_address);
+    }
+
+    #[test]
+    fn test_adaptive_gas_config_default() {
+        let config = AdaptiveGasConfig::default();
+        assert_eq!(config.gas_price_threshold, 3_000_000_000); // 3 gwei
+        assert_eq!(config.history_blocks, 900);
+        assert!((config.price_multiplier - 1.1).abs() < f64::EPSILON);
+        assert_eq!(config.fallback_timeout_minutes, 30);
+        assert_eq!(config.fallback_increase_percent, 10);
+    }
+
+    #[test]
+    fn test_adaptive_gas_oracle_creation() {
+        let config = AdaptiveGasConfig {
+            gas_price_threshold: 5_000_000_000,
+            history_blocks: 1000,
+            price_multiplier: 1.2,
+            fallback_timeout_minutes: 45,
+            fallback_increase_percent: 15,
+        };
+        let oracle = AdaptiveGasOracle::new(config.clone());
+
+        assert_eq!(oracle.config().gas_price_threshold, 5_000_000_000);
+        assert_eq!(oracle.config().history_blocks, 1000);
+        assert!((oracle.config().price_multiplier - 1.2).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_gas_price_estimate_struct() {
+        let estimate = GasPriceEstimate {
+            max_fee_per_gas: 100_000_000_000u128,
+            max_priority_fee_per_gas: 2_000_000_000u128,
+        };
+        assert_eq!(estimate.max_fee_per_gas, 100_000_000_000u128);
+        assert_eq!(estimate.max_priority_fee_per_gas, 2_000_000_000u128);
+    }
+
+    #[test]
+    fn test_apply_to_transaction() {
+        let oracle = AdaptiveGasOracle::with_defaults();
+        let estimate = GasPriceEstimate {
+            max_fee_per_gas: 50_000_000_000u128,
+            max_priority_fee_per_gas: 1_000_000_000u128,
+        };
+        let tx = TransactionRequest::default();
+        let tx = oracle.apply_to_transaction(tx, &estimate);
+
+        assert_eq!(tx.max_fee_per_gas, Some(50_000_000_000u128));
+        assert_eq!(tx.max_priority_fee_per_gas, Some(1_000_000_000u128));
+    }
+
+    #[tokio::test]
+    async fn test_timeout_increase_factor_before_timeout() {
+        let config = AdaptiveGasConfig {
+            fallback_timeout_minutes: 30,
+            fallback_increase_percent: 10,
+            ..Default::default()
+        };
+        let oracle = AdaptiveGasOracle::new(config);
+
+        // Timer not started - no increase
+        assert!(oracle.get_timeout_increase_factor().await.is_none());
     }
 
     // Note: Tests that modify environment variables should be run with --test-threads=1
@@ -593,6 +1110,180 @@ mod tests {
                 let result = GasConfig::from_env();
                 assert!(result.is_err());
             });
+        }
+    }
+
+    mod adaptive_gas_config_env_tests {
+        use super::*;
+        use std::sync::Mutex;
+
+        static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+        fn with_env_vars<F, T>(vars: &[(&str, Option<&str>)], f: F) -> T
+        where
+            F: FnOnce() -> T,
+        {
+            let _lock = ENV_MUTEX.lock().unwrap();
+
+            // SAFETY: We hold a mutex to ensure single-threaded access
+            let saved: Vec<_> = vars
+                .iter()
+                .map(|(key, value)| {
+                    let saved = std::env::var(key).ok();
+                    match value {
+                        Some(v) => unsafe { std::env::set_var(key, v) },
+                        None => unsafe { std::env::remove_var(key) },
+                    }
+                    (*key, saved)
+                })
+                .collect();
+
+            let result = f();
+
+            for (key, saved) in saved {
+                match saved {
+                    Some(v) => unsafe { std::env::set_var(key, v) },
+                    None => unsafe { std::env::remove_var(key) },
+                }
+            }
+
+            result
+        }
+
+        fn clear_all_gas_env_vars() -> Vec<(&'static str, Option<String>)> {
+            let vars = [
+                "GAS_PRICE_THRESHOLD",
+                "GAS_HISTORY_BLOCKS",
+                "GAS_PRICE_MULTIPLIER",
+                "GAS_FALLBACK_TIMEOUT_MINUTES",
+                "GAS_FALLBACK_INCREASE_PERCENT",
+                "MAX_FEE_PER_GAS",
+                "MAX_PRIORITY_FEE_PER_GAS",
+            ];
+            vars.iter()
+                .map(|&key| {
+                    let saved = std::env::var(key).ok();
+                    unsafe { std::env::remove_var(key) };
+                    (key, saved)
+                })
+                .collect()
+        }
+
+        fn restore_env_vars(saved: Vec<(&'static str, Option<String>)>) {
+            for (key, value) in saved {
+                match value {
+                    Some(v) => unsafe { std::env::set_var(key, v) },
+                    None => unsafe { std::env::remove_var(key) },
+                }
+            }
+        }
+
+        #[test]
+        fn test_adaptive_config_from_env_defaults() {
+            let _lock = ENV_MUTEX.lock().unwrap();
+            let saved = clear_all_gas_env_vars();
+
+            let config = AdaptiveGasConfig::from_env().unwrap();
+            assert_eq!(config.gas_price_threshold, 3_000_000_000);
+            assert_eq!(config.history_blocks, 900);
+            assert!((config.price_multiplier - 1.1).abs() < f64::EPSILON);
+            assert_eq!(config.fallback_timeout_minutes, 30);
+            assert_eq!(config.fallback_increase_percent, 10);
+
+            restore_env_vars(saved);
+        }
+
+        #[test]
+        fn test_adaptive_config_from_env_custom_values() {
+            with_env_vars(
+                &[
+                    ("GAS_PRICE_THRESHOLD", Some("5000000000")),
+                    ("GAS_HISTORY_BLOCKS", Some("1800")),
+                    ("GAS_PRICE_MULTIPLIER", Some("1.5")),
+                    ("GAS_FALLBACK_TIMEOUT_MINUTES", Some("60")),
+                    ("GAS_FALLBACK_INCREASE_PERCENT", Some("20")),
+                ],
+                || {
+                    let config = AdaptiveGasConfig::from_env().unwrap();
+                    assert_eq!(config.gas_price_threshold, 5_000_000_000);
+                    assert_eq!(config.history_blocks, 1800);
+                    assert!((config.price_multiplier - 1.5).abs() < f64::EPSILON);
+                    assert_eq!(config.fallback_timeout_minutes, 60);
+                    assert_eq!(config.fallback_increase_percent, 20);
+                },
+            );
+        }
+
+        #[test]
+        fn test_adaptive_config_rejects_invalid_multiplier() {
+            with_env_vars(&[("GAS_PRICE_MULTIPLIER", Some("-1.0"))], || {
+                let result = AdaptiveGasConfig::from_env();
+                assert!(result.is_err());
+                let err_msg = result.unwrap_err().to_string();
+                assert!(err_msg.contains("positive"));
+            });
+        }
+
+        #[test]
+        fn test_adaptive_config_rejects_zero_multiplier() {
+            with_env_vars(&[("GAS_PRICE_MULTIPLIER", Some("0"))], || {
+                let result = AdaptiveGasConfig::from_env();
+                assert!(result.is_err());
+            });
+        }
+
+        #[test]
+        fn test_gas_pricing_strategy_from_env_default() {
+            let _lock = ENV_MUTEX.lock().unwrap();
+            let saved = clear_all_gas_env_vars();
+
+            let strategy = GasPricingStrategy::from_env().unwrap();
+            assert!(matches!(strategy, GasPricingStrategy::Default));
+
+            restore_env_vars(saved);
+        }
+
+        #[test]
+        fn test_gas_pricing_strategy_from_env_static() {
+            with_env_vars(
+                &[
+                    ("GAS_PRICE_THRESHOLD", None),
+                    ("MAX_FEE_PER_GAS", Some("100000000000")),
+                ],
+                || {
+                    let strategy = GasPricingStrategy::from_env().unwrap();
+                    assert!(matches!(strategy, GasPricingStrategy::Static(_)));
+                },
+            );
+        }
+
+        #[test]
+        fn test_gas_pricing_strategy_from_env_adaptive() {
+            with_env_vars(
+                &[
+                    ("GAS_PRICE_THRESHOLD", Some("5000000000")),
+                    ("MAX_FEE_PER_GAS", None),
+                ],
+                || {
+                    let strategy = GasPricingStrategy::from_env().unwrap();
+                    assert!(matches!(strategy, GasPricingStrategy::Adaptive(_)));
+                },
+            );
+        }
+
+        #[test]
+        fn test_gas_pricing_strategy_adaptive_takes_precedence() {
+            // When both adaptive and static configs are set, adaptive wins
+            with_env_vars(
+                &[
+                    ("GAS_PRICE_THRESHOLD", Some("5000000000")),
+                    ("MAX_FEE_PER_GAS", Some("100000000000")),
+                ],
+                || {
+                    let strategy = GasPricingStrategy::from_env().unwrap();
+                    assert!(matches!(strategy, GasPricingStrategy::Adaptive(_)));
+                },
+            );
         }
     }
 }
