@@ -58,15 +58,15 @@ contract DeployOPSuccinctFDG is Script, Utils {
         FDGConfig memory config = readFDGJson("opsuccinctfdgconfig.json");
 
         // Deploy contracts
-        DeployedContracts memory contracts = deployContracts(config);
+        DeployedContracts memory deployedContracts = deployContracts(config);
 
         // Configure and activate contracts
         if (config.configureContracts) {
-            configure(contracts, config);
+            configure(deployedContracts, config);
 
             // Activate contracts
             if (config.activateContracts) {
-                activate(contracts, config);
+                activate(deployedContracts, config);
             } else {
                 console.log("Skipped contracts activation. Ensure to activate contracts manually!");
             }
@@ -77,12 +77,12 @@ contract DeployOPSuccinctFDG is Script, Utils {
         vm.stopBroadcast();
 
         return (
-            contracts.factoryProxy,
-            contracts.gameImplementation,
-            contracts.sp1Verifier,
-            contracts.anchorStateRegistry,
-            contracts.accessManager,
-            contracts.optimismPortal2
+            deployedContracts.factoryProxy,
+            deployedContracts.gameImplementation,
+            deployedContracts.sp1Verifier,
+            deployedContracts.anchorStateRegistry,
+            deployedContracts.accessManager,
+            deployedContracts.optimismPortal2
         );
     }
 
@@ -108,6 +108,11 @@ contract DeployOPSuccinctFDG is Script, Utils {
         OPSuccinctFaultDisputeGame gameImpl =
             deployGameImplementation(config, factory, sp1Config, registry, accessManager);
 
+        // Log deployed addresses.
+        console.log("Factory Proxy:", address(factoryProxy));
+        console.log("Game Implementation:", address(gameImpl));
+        console.log("SP1 Verifier:", sp1Config.verifierAddress);
+
         // Create deployed contracts struct
         DeployedContracts memory deployedContracts = DeployedContracts({
             factoryProxy: address(factoryProxy),
@@ -121,23 +126,25 @@ contract DeployOPSuccinctFDG is Script, Utils {
         return deployedContracts;
     }
 
-    /// @dev msg.sender should have owner role of factory
+    /// @custom:dev msg.sender should have owner role of factory
+
     function configure(DeployedContracts memory contracts, FDGConfig memory config) internal {
         GameType gameType = GameType.wrap(config.gameType);
         DisputeGameFactory factory = DisputeGameFactory(contracts.factoryProxy);
 
         // Set initial bond and implementation in factory
-        /// @dev: Requires factory owner role
+        /// @custom:dev: Requires factory owner role
         factory.setInitBond(gameType, config.initialBondWei);
         factory.setImplementation(gameType, IDisputeGame(contracts.gameImplementation));
     }
 
-    /// @dev msg.sender should have guardian role of optimism portal
+    /// @custom:dev msg.sender should have guardian role of optimism portal
+
     function activate(DeployedContracts memory contracts, FDGConfig memory config) internal {
         GameType gameType = GameType.wrap(config.gameType);
 
         // Set respected game type
-        /// @dev: Requires portal guardian role
+        /// @custom:dev: Requires portal guardian role
         IOptimismPortal2(payable(contracts.optimismPortal2)).setRespectedGameType(gameType);
     }
 
@@ -216,10 +223,7 @@ contract DeployOPSuccinctFDG is Script, Utils {
         return registry;
     }
 
-    function deployOrGetOptimismPortal2(FDGConfig memory config, GameType gameType)
-        internal
-        returns (address payable)
-    {
+    function deployOrGetOptimismPortal2(FDGConfig memory config, GameType gameType) internal returns (address payable) {
         address payable portalAddress;
         if (config.optimismPortal2Address != address(0)) {
             portalAddress = payable(config.optimismPortal2Address);

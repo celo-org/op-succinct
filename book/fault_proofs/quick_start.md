@@ -2,11 +2,21 @@
 
 This guide provides the fastest path to try out OP Succinct fault dispute games by deploying contracts and running a proposer to create games.
 
+```admonish note
+If your integration involves alternative data availability solutions like
+Celestia or EigenDA, you may need to configure additional environment variables.
+Refer to the [`Experimental Features`](./experimental/experimental.md) section
+for the required setup steps.
+```
+
 ## Prerequisites
 
 - [Foundry](https://book.getfoundry.sh/getting-started/installation)
 - [Rust](https://www.rust-lang.org/tools/install) (latest stable version)
-- L1 and L2 archive node RPC endpoints. L2 node should be configured with SafeDB enabled. See [SafeDB Configuration](./best_practices.md#safe-db-configuration) for more details.
+- [just](https://github.com/casey/just)
+- L1 and L2 archive node RPC endpoints
+  - L2 node should be configured with SafeDB enabled. 
+  - See [SafeDB Configuration](./best_practices.md#safe-db-configuration) for more details.
 - ETH on L1 for:
   - Contract deployment
   - Game bonds (configurable in factory)
@@ -28,7 +38,6 @@ This guide provides the fastest path to try out OP Succinct fault dispute games 
     ```env
     # example .env file
     L1_RPC=<YOUR_L1_RPC_URL>
-    L1_BEACON_RPC=<L1_BEACON_RPC_URL>
     L2_RPC=<YOUR_L2_RPC_URL>
     L2_NODE_RPC=<YOUR_L2_NODE_RPC_URL>
     PRIVATE_KEY=<YOUR_PRIVATE_KEY>
@@ -40,12 +49,26 @@ This guide provides the fastest path to try out OP Succinct fault dispute games 
     MAX_PROVE_DURATION=86400
 
     # Optional
+
+    # Not needed by default, but could be required for integrations that access consensus-layer data.
+    L1_BEACON_RPC=<L1_BEACON_RPC_URL>
+
     # Warning: Setting PERMISSIONLESS_MODE=true allows anyone to propose and challenge games. Ensure this behavior is intended for your deployment.
     # For a permissioned setup, set this to false and configure PROPOSER_ADDRESSES and CHALLENGER_ADDRESSES.
     PERMISSIONLESS_MODE=true
 
     # For testing, use mock verifier
     OP_SUCCINCT_MOCK=true
+    ```
+
+    ```admonish info
+    Obtaining a Test Private Key
+
+    - Anvil (local devnet): Run `anvil` and use one of the pre-funded accounts printed on startup. Copy the Private Key value for any account. Only use these on your local Anvil network.
+
+    - Foundry (generate a fresh key): Run `cast wallet new` to generate a human-readable output. Save the private key and fund it on your test network.
+
+    ⚠️ **Caution:** Never use test keys on mainnet or with real assets.
     ```
 
 3. Deploy an SP1 mock verifier:
@@ -69,13 +92,18 @@ Save the output addresses, particularly the `FACTORY_ADDRESS` output as "Factory
     ```env
     # Required Configuration
     L1_RPC=<YOUR_L1_RPC_URL>
-    L1_BEACON_RPC=<L1_BEACON_RPC_URL>
     L2_RPC=<YOUR_L2_RPC_URL>
     L2_NODE_RPC=<YOUR_L2_NODE_RPC_URL>
     FACTORY_ADDRESS=<FACTORY_ADDRESS_FROM_DEPLOYMENT>
     GAME_TYPE=42
     PRIVATE_KEY=<YOUR_PRIVATE_KEY>
     MOCK_MODE=true # Set to true for mock mode
+    ```
+
+    ```admonish note
+    If your integration requires access to consensus-layer data, set the
+    `L1_BEACON_RPC` (L1 Beacon Node). This is optional and not required by
+    default.
     ```
 
 2. Run the proposer:

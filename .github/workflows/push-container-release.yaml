@@ -1,0 +1,26 @@
+name: Push container images for release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  push_container_proposer_release:
+    name: Build and push proposer release image
+    uses: ./.github/workflows/push-container.yaml
+    with:
+      file: fault-proof/Dockerfile.proposer.celo
+      artifact-registry: us-west1-docker.pkg.dev/devopsre/celo-blockchain-public/op-succinct-proposer
+      service-account: op-succinct-gh@devopsre.iam.gserviceaccount.com
+      workload-id-provider: projects/1094498259535/locations/global/workloadIdentityPools/gh-op-succinct-release/providers/github-by-repos
+      concurrency-group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-proposer-release
+
+  push_container_challenger_release:
+    name: Build and push challenger release image
+    uses: ./.github/workflows/push-container.yaml
+    with:
+      file: fault-proof/Dockerfile.challenger.celo
+      artifact-registry: us-west1-docker.pkg.dev/devopsre/celo-blockchain-public/op-succinct-challenger
+      service-account: op-succinct-gh@devopsre.iam.gserviceaccount.com
+      workload-id-provider: projects/1094498259535/locations/global/workloadIdentityPools/gh-op-succinct-release/providers/github-by-repos
+      concurrency-group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-challenger-release

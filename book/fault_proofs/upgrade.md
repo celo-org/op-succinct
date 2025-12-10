@@ -10,7 +10,7 @@ The upgrade script performs the following actions:
 
 ### Required Environment Variables
 
-Create a `.env` file in the contracts directory with the following variables:
+Create a `.env.upgrade` file in the `fault-proof` directory with the following variables:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
@@ -24,13 +24,13 @@ Create a `.env` file in the contracts directory with the following variables:
 | `RANGE_VKEY_COMMITMENT` | Commitment to range verification key | `0x...` |
 | `ANCHOR_STATE_REGISTRY` | Address of the AnchorStateRegistry | `0x...` |
 | `ACCESS_MANAGER` | Address of the AccessManager | `0x...` |
+| `ETHERSCAN_API_KEY` | Etherscan API key for verifying the deployed contracts. |
 
 ### Getting the Rollup Config Hash, Aggregation Verification Key, and Range Verification Key Commitment
 
 First, create a `.env` file in the root directory with the following variables:
 ```bash
 L1_RPC=<L1_RPC_URL>
-L1_BEACON_RPC=<L1_BEACON_RPC_URL>
 L2_RPC=<L2_RPC_URL>
 L2_NODE_RPC=<L2_NODE_RPC_URL>
 ```
@@ -39,6 +39,12 @@ You can get the aggregation program verification key, range program verification
 
 ```bash
 cargo run --bin config --release -- --env-file <PATH_TO_ENV_FILE>
+```
+
+```admonish note
+If your integration involves alternative DA solutions like Celestia or EigenDA,
+ensure you enable the respective feature flag. For example, add `--features
+celestia` or `--features eigenda` to the command for proper configuration.
 ```
 
 ### Optional Environment Variables
@@ -53,12 +59,12 @@ Use `cast --to-wei <value> eth` to convert the value to wei to avoid mistakes.
 
 Dry run the upgrade command in the root directory of the project:
 ```bash
-DRY_RUN=true just -f fault-proof/justfile --dotenv-filename contracts/.env upgrade-fault-dispute-game
+DRY_RUN=true just upgrade-fault-dispute-game
 ```
 
 Run the upgrade command in the root directory of the project:
 ```bash
-DRY_RUN=false just -f fault-proof/justfile --dotenv-filename contracts/.env upgrade-fault-dispute-game
+DRY_RUN=false just upgrade-fault-dispute-game
 ```
 
 ## Verification

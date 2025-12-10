@@ -1,17 +1,20 @@
+use std::{fmt::Debug, sync::Arc};
+
 use alloy_celo_evm::CeloEvmFactory;
 use alloy_primitives::Sealed;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use celo_driver::CeloDriver;
 use celo_genesis::CeloRollupConfig;
-use celo_proof::{executor::CeloExecutor, CeloOracleL2ChainProvider};
+use celo_proof::{executor::CeloExecutor, CeloBootInfo, CeloOracleL2ChainProvider};
 use celo_protocol::CeloToOpProviderAdapter;
-use kona_derive::traits::{
+use kona_derive::{
     BlobProvider, ChainProvider, DataAvailabilityProvider, L2ChainProvider, Pipeline,
     SignalReceiver,
 };
 use kona_driver::{DriverPipeline, PipelineCursor};
 use kona_executor::TrieDBProvider;
+use kona_genesis::L1ChainConfig;
 use kona_preimage::CommsClient;
 use kona_proof::{
     l1::{OracleL1ChainProvider, OraclePipeline},
@@ -20,10 +23,12 @@ use kona_proof::{
     BootInfo, FlushableCache,
 };
 use spin::RwLock;
-use std::{fmt::Debug, sync::Arc};
 use tracing::info;
 
-use crate::client::{advance_to_target, fetch_safe_head_hash};
+use crate::{
+    client::{advance_to_target, fetch_safe_head_hash},
+    precompiles::CustomCrypto,
+};
 
 // Gets the inputs for constructing the derivation pipeline.
 pub async fn get_inputs_for_pipeline<O>(
@@ -39,13 +44,14 @@ where
     //                          PROLOGUE                          //
     ////////////////////////////////////////////////////////////////
 
-    let boot = match BootInfo::load(oracle.as_ref()).await {
+    let celo_boot = match CeloBootInfo::load(oracle.as_ref()).await {
         Ok(boot) => boot,
         Err(e) => {
             return Err(anyhow!("Failed to load boot info: {:?}", e));
         }
     };
 
+    let boot = celo_boot.op_boot_info;
     let boot_clone = boot.clone();
 
     let rollup_config = Arc::new(boot.rollup_config);
@@ -96,9 +102,11 @@ pub trait WitnessExecutor {
     type DA: DataAvailabilityProvider + Send + Sync + Debug + Clone;
 
     // Constructs the derivation pipeline.
+    #[allow(clippy::too_many_arguments)]
     async fn create_pipeline(
         &self,
         rollup_config: Arc<CeloRollupConfig>,
+        l1_config: Arc<L1ChainConfig>,
         cursor: Arc<RwLock<PipelineCursor>>,
         oracle: Arc<Self::O>,
         beacon: Self::B,
@@ -120,6 +128,9 @@ pub trait WitnessExecutor {
         DP: DriverPipeline<P> + Send + Sync + Debug,
         P: Pipeline + SignalReceiver + Send + Sync + Debug,
     {
+        // Install custom crypto provider for KZG point evaluation precompile
+        revm::precompile::install_crypto(CustomCrypto::default());
+
         let boot_clone = boot.clone();
 
         // Wrap RollupConfig with CeloRollupConfig

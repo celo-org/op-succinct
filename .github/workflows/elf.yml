@@ -5,11 +5,9 @@ name: ELF
 on:
   pull_request:
     branches:
-      - main
       - develop
   push:
     branches:
-      - main
       - develop
   workflow_dispatch:
 
@@ -22,10 +20,23 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.ref }}
+      - name: Free disk space
+        run: |
+          echo "Before cleanup:"
+          df -h /
+
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY" || true
+          docker system prune -af || true
+
+          echo "After cleanup:"
+          df -h /
       - name: Install SP1 toolchain
         run: |
           curl -L https://sp1.succinct.xyz | bash
-          ~/.sp1/bin/sp1up 
+          ~/.sp1/bin/sp1up
           ~/.sp1/bin/cargo-prove prove --version
           source ~/.bashrc
       - name: Setup Docker Buildx
@@ -34,12 +45,12 @@ jobs:
         run: |
           # Build the binaries
           cd programs/range/ethereum
-          ~/.sp1/bin/cargo-prove prove build --elf-name range-elf-bump --docker --tag v5.2.1 --output-directory ../../../elf
-          ~/.sp1/bin/cargo-prove prove build --elf-name range-elf-embedded --docker --tag v5.2.1 --output-directory ../../../elf --features embedded
+          ~/.sp1/bin/cargo-prove prove build --elf-name range-elf-bump --docker --tag v5.2.2 --output-directory ../../../elf
+          ~/.sp1/bin/cargo-prove prove build --elf-name range-elf-embedded --docker --tag v5.2.2 --output-directory ../../../elf --features embedded
           cd ../eigenda
-          ~/.sp1/bin/cargo-prove prove build --elf-name eigenda-range-elf-embedded --docker --tag v5.2.1 --output-directory ../../../elf --features embedded
+          ~/.sp1/bin/cargo-prove prove build --elf-name eigenda-range-elf-embedded --docker --tag v5.2.2 --output-directory ../../../elf --features embedded
           cd ../../aggregation
-          ~/.sp1/bin/cargo-prove prove build --elf-name aggregation-elf --docker --tag v5.2.1 --output-directory ../../elf
+          ~/.sp1/bin/cargo-prove prove build --elf-name aggregation-elf --docker --tag v5.2.2 --output-directory ../../elf
           cd ../../
 
           # Check for any changes in the elf directory
