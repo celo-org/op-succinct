@@ -198,14 +198,46 @@ pub struct GasConfig {
 
 impl GasConfig {
     /// Creates a new GasConfig from environment variables.
-    pub fn from_env() -> Self {
-        Self {
-            max_fee_per_gas: std::env::var("MAX_FEE_PER_GAS")
-                .ok()
-                .and_then(|s| s.parse().ok()),
-            max_priority_fee_per_gas: std::env::var("MAX_PRIORITY_FEE_PER_GAS")
-                .ok()
-                .and_then(|s| s.parse().ok()),
+    ///
+    /// Returns an error if an environment variable is set but contains an invalid value.
+    /// The values must be valid u128 integers representing wei (not gwei or other units).
+    pub fn from_env() -> Result<Self> {
+        let max_fee_per_gas = Self::parse_env_var("MAX_FEE_PER_GAS")?;
+        let max_priority_fee_per_gas = Self::parse_env_var("MAX_PRIORITY_FEE_PER_GAS")?;
+
+        Ok(Self { max_fee_per_gas, max_priority_fee_per_gas })
+    }
+
+    /// Parses an environment variable as an optional u128.
+    ///
+    /// Returns:
+    /// - `Ok(None)` if the environment variable is not set
+    /// - `Ok(Some(value))` if the environment variable is set and can be parsed
+    /// - `Err` if the environment variable is set but cannot be parsed as u128
+    fn parse_env_var(var_name: &str) -> Result<Option<u128>> {
+        match std::env::var(var_name) {
+            Ok(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    return Ok(None);
+                }
+                trimmed.parse::<u128>().map(Some).with_context(|| {
+                    format!(
+                        "Failed to parse {} environment variable: '{}'. \
+                         Value must be a valid integer in wei (not gwei or other units). \
+                         Example: MAX_FEE_PER_GAS=100000000000 for 100 gwei",
+                        var_name, value
+                    )
+                })
+            }
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(os_str)) => {
+                anyhow::bail!(
+                    "{} environment variable contains invalid unicode: {:?}",
+                    var_name,
+                    os_str
+                )
+            }
         }
     }
 }
@@ -239,7 +271,7 @@ impl SignerLock {
     /// Creates a SignerLock from environment variables.
     pub async fn from_env() -> Result<Self> {
         let signer = Signer::from_env().await?;
-        let gas_config = GasConfig::from_env();
+        let gas_config = GasConfig::from_env()?;
         Ok(SignerLock::new_with_gas_config(signer, gas_config))
     }
 
@@ -358,10 +390,8 @@ mod tests {
         assert_eq!(config.max_priority_fee_per_gas, Some(2_000_000_000u128));
 
         // Test partial values
-        let config_partial = GasConfig {
-            max_fee_per_gas: Some(50_000_000_000u128),
-            max_priority_fee_per_gas: None,
-        };
+        let config_partial =
+            GasConfig { max_fee_per_gas: Some(50_000_000_000u128), max_priority_fee_per_gas: None };
         assert_eq!(config_partial.max_fee_per_gas, Some(50_000_000_000u128));
         assert_eq!(config_partial.max_priority_fee_per_gas, None);
     }
@@ -410,8 +440,159 @@ mod tests {
     // Note: Tests that modify environment variables should be run with --test-threads=1
     // to avoid race conditions. Example:
     // cargo test -p op-succinct-signer-utils -- --test-threads=1
-    //
-    // To test GasConfig::from_env() manually:
-    // MAX_FEE_PER_GAS=100000000000 MAX_PRIORITY_FEE_PER_GAS=2000000000 \
-    //   cargo test -p op-succinct-signer-utils test_gas_config -- --test-threads=1
+
+    mod gas_config_env_tests {
+        use super::*;
+        use std::sync::Mutex;
+
+        // Use a mutex to serialize env var tests
+        static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+        fn with_env_vars<F, T>(vars: &[(&str, Option<&str>)], f: F) -> T
+        where
+            F: FnOnce() -> T,
+        {
+            let _lock = ENV_MUTEX.lock().unwrap();
+
+            // Save and set env vars
+            // SAFETY: We hold a mutex to ensure single-threaded access to env vars in tests
+            let saved: Vec<_> = vars
+                .iter()
+                .map(|(key, value)| {
+                    let saved = std::env::var(key).ok();
+                    match value {
+                        Some(v) => unsafe { std::env::set_var(key, v) },
+                        None => unsafe { std::env::remove_var(key) },
+                    }
+                    (*key, saved)
+                })
+                .collect();
+
+            let result = f();
+
+            // Restore env vars
+            // SAFETY: We hold a mutex to ensure single-threaded access to env vars in tests
+            for (key, saved) in saved {
+                match saved {
+                    Some(v) => unsafe { std::env::set_var(key, v) },
+                    None => unsafe { std::env::remove_var(key) },
+                }
+            }
+
+            result
+        }
+
+        #[test]
+        fn test_from_env_with_valid_values() {
+            with_env_vars(
+                &[
+                    ("MAX_FEE_PER_GAS", Some("100000000000")),
+                    ("MAX_PRIORITY_FEE_PER_GAS", Some("2000000000")),
+                ],
+                || {
+                    let config = GasConfig::from_env().unwrap();
+                    assert_eq!(config.max_fee_per_gas, Some(100_000_000_000u128));
+                    assert_eq!(config.max_priority_fee_per_gas, Some(2_000_000_000u128));
+                },
+            );
+        }
+
+        #[test]
+        fn test_from_env_with_no_vars_set() {
+            with_env_vars(&[("MAX_FEE_PER_GAS", None), ("MAX_PRIORITY_FEE_PER_GAS", None)], || {
+                let config = GasConfig::from_env().unwrap();
+                assert_eq!(config.max_fee_per_gas, None);
+                assert_eq!(config.max_priority_fee_per_gas, None);
+            });
+        }
+
+        #[test]
+        fn test_from_env_with_partial_values() {
+            with_env_vars(
+                &[("MAX_FEE_PER_GAS", Some("50000000000")), ("MAX_PRIORITY_FEE_PER_GAS", None)],
+                || {
+                    let config = GasConfig::from_env().unwrap();
+                    assert_eq!(config.max_fee_per_gas, Some(50_000_000_000u128));
+                    assert_eq!(config.max_priority_fee_per_gas, None);
+                },
+            );
+        }
+
+        #[test]
+        fn test_from_env_trims_whitespace() {
+            with_env_vars(
+                &[
+                    ("MAX_FEE_PER_GAS", Some("  100000000000  ")),
+                    ("MAX_PRIORITY_FEE_PER_GAS", Some("\t2000000000\n")),
+                ],
+                || {
+                    let config = GasConfig::from_env().unwrap();
+                    assert_eq!(config.max_fee_per_gas, Some(100_000_000_000u128));
+                    assert_eq!(config.max_priority_fee_per_gas, Some(2_000_000_000u128));
+                },
+            );
+        }
+
+        #[test]
+        fn test_from_env_empty_string_is_none() {
+            with_env_vars(
+                &[("MAX_FEE_PER_GAS", Some("")), ("MAX_PRIORITY_FEE_PER_GAS", Some("  "))],
+                || {
+                    let config = GasConfig::from_env().unwrap();
+                    assert_eq!(config.max_fee_per_gas, None);
+                    assert_eq!(config.max_priority_fee_per_gas, None);
+                },
+            );
+        }
+
+        #[test]
+        fn test_from_env_rejects_invalid_max_fee() {
+            with_env_vars(&[("MAX_FEE_PER_GAS", Some("100gwei"))], || {
+                let result = GasConfig::from_env();
+                assert!(result.is_err());
+                let err_msg = result.unwrap_err().to_string();
+                assert!(err_msg.contains("MAX_FEE_PER_GAS"));
+                assert!(err_msg.contains("100gwei"));
+                assert!(err_msg.contains("wei"));
+            });
+        }
+
+        #[test]
+        fn test_from_env_rejects_invalid_priority_fee() {
+            with_env_vars(
+                &[("MAX_FEE_PER_GAS", None), ("MAX_PRIORITY_FEE_PER_GAS", Some("2 gwei"))],
+                || {
+                    let result = GasConfig::from_env();
+                    assert!(result.is_err());
+                    let err_msg = result.unwrap_err().to_string();
+                    assert!(err_msg.contains("MAX_PRIORITY_FEE_PER_GAS"));
+                    assert!(err_msg.contains("2 gwei"));
+                },
+            );
+        }
+
+        #[test]
+        fn test_from_env_rejects_negative_values() {
+            with_env_vars(&[("MAX_FEE_PER_GAS", Some("-100"))], || {
+                let result = GasConfig::from_env();
+                assert!(result.is_err());
+            });
+        }
+
+        #[test]
+        fn test_from_env_rejects_floating_point() {
+            with_env_vars(&[("MAX_FEE_PER_GAS", Some("100.5"))], || {
+                let result = GasConfig::from_env();
+                assert!(result.is_err());
+            });
+        }
+
+        #[test]
+        fn test_from_env_rejects_hex_values() {
+            with_env_vars(&[("MAX_FEE_PER_GAS", Some("0x174876e800"))], || {
+                let result = GasConfig::from_env();
+                assert!(result.is_err());
+            });
+        }
+    }
 }
