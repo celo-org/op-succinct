@@ -1,8 +1,4 @@
-use std::{
-    str::FromStr,
-    sync::Arc,
-    time::Instant,
-};
+use std::{str::FromStr, sync::Arc, time::Instant};
 
 use alloy_consensus::TxEnvelope;
 use alloy_eips::{BlockNumberOrTag, Decodable2718};
@@ -194,17 +190,16 @@ impl Signer {
     }
 }
 
-
 /// Configuration for adaptive gas pricing strategy.
 ///
 /// This config controls how gas prices are calculated. There are two modes:
 ///
-/// 1. **Override mode**: If `max_fee_override` or `max_priority_fee_override` are set,
-///    those values are used directly, bypassing all adaptive logic.
+/// 1. **Override mode**: If `max_fee_override` or `max_priority_fee_override` are set, those values
+///    are used directly, bypassing all adaptive logic.
 ///
-/// 2. **Adaptive mode**: When gas prices exceed `gas_price_threshold`, uses
-///    historical average baseFee (from `eth_feeHistory`) multiplied by a factor,
-///    with gradual increases after a timeout.
+/// 2. **Adaptive mode**: When gas prices exceed `gas_price_threshold`, uses historical average
+///    baseFee (from `eth_feeHistory`) multiplied by a factor, with gradual increases after a
+///    timeout.
 #[derive(Clone, Debug)]
 pub struct AdaptiveGasConfig {
     /// Optional hard override for max fee per gas (wei).
@@ -237,9 +232,9 @@ impl Default for AdaptiveGasConfig {
         Self {
             max_fee_override: None,
             max_priority_fee_override: None,
-            gas_price_threshold: 3_000_000_000,   // 3 gwei
-            history_blocks: 900,                   // ~3 hours at 12s/block
-            price_multiplier: 1.1,                 // 110%
+            gas_price_threshold: 3_000_000_000, // 3 gwei
+            history_blocks: 900,                // ~3 hours at 12s/block
+            price_multiplier: 1.1,              // 110%
             fallback_timeout_minutes: 30,
             fallback_increase_percent: 10,
         }
@@ -268,26 +263,52 @@ impl AdaptiveGasConfig {
         let mut config = Self::default();
 
         // Parse override values (these bypass adaptive logic when set)
-        config.max_fee_override = Self::parse_env_var_u128("MAX_FEE_PER_GAS")?;
-        config.max_priority_fee_override = Self::parse_env_var_u128("MAX_PRIORITY_FEE_PER_GAS")?;
+        config.max_fee_override =
+            Self::parse_env_var("MAX_FEE_PER_GAS", "Value must be a valid integer in wei")?;
+        config.max_priority_fee_override = Self::parse_env_var(
+            "MAX_PRIORITY_FEE_PER_GAS",
+            "Value must be a valid integer in wei",
+        )?;
 
         // Parse adaptive config values
-        if let Some(threshold) = Self::parse_env_var_u128("GAS_PRICE_THRESHOLD")? {
+        if let Some(threshold) =
+            Self::parse_env_var("GAS_PRICE_THRESHOLD", "Value must be a valid integer in wei")?
+        {
             config.gas_price_threshold = threshold;
         }
-        if let Some(blocks) = Self::parse_env_var_u64("GAS_HISTORY_BLOCKS")? {
+        if let Some(blocks) =
+            Self::parse_env_var("GAS_HISTORY_BLOCKS", "Value must be a valid positive integer")?
+        {
             config.history_blocks = blocks;
         }
-        if let Some(multiplier) = Self::parse_env_var_f64("GAS_PRICE_MULTIPLIER")? {
-            if multiplier <= 0.0 {
-                anyhow::bail!("GAS_PRICE_MULTIPLIER must be positive, got: {}", multiplier);
+        if let Some(multiplier) = Self::parse_env_var::<f64>(
+            "GAS_PRICE_MULTIPLIER",
+            "Value must be a valid decimal number (e.g., 1.1)",
+        )? {
+            if !multiplier.is_finite() || multiplier <= 0.0 {
+                anyhow::bail!(
+                    "GAS_PRICE_MULTIPLIER must be a finite positive number, got: {}",
+                    multiplier
+                );
             }
             config.price_multiplier = multiplier;
         }
-        if let Some(timeout) = Self::parse_env_var_u64("GAS_FALLBACK_TIMEOUT_MINUTES")? {
+        if let Some(timeout) = Self::parse_env_var(
+            "GAS_FALLBACK_TIMEOUT_MINUTES",
+            "Value must be a valid positive integer",
+        )? {
+            if timeout == 0 {
+                anyhow::bail!(
+                    "GAS_FALLBACK_TIMEOUT_MINUTES must be greater than 0, got: {}",
+                    timeout
+                );
+            }
             config.fallback_timeout_minutes = timeout;
         }
-        if let Some(percent) = Self::parse_env_var_u64("GAS_FALLBACK_INCREASE_PERCENT")? {
+        if let Some(percent) = Self::parse_env_var(
+            "GAS_FALLBACK_INCREASE_PERCENT",
+            "Value must be a valid positive integer",
+        )? {
             config.fallback_increase_percent = percent;
         }
 
@@ -299,70 +320,24 @@ impl AdaptiveGasConfig {
         self.max_fee_override.is_some() || self.max_priority_fee_override.is_some()
     }
 
-    fn parse_env_var_u128(var_name: &str) -> Result<Option<u128>> {
+    fn parse_env_var<T>(var_name: &str, type_hint: &str) -> Result<Option<T>>
+    where
+        T: FromStr,
+        T::Err: std::fmt::Display,
+    {
         match std::env::var(var_name) {
             Ok(value) => {
                 let trimmed = value.trim();
                 if trimmed.is_empty() {
                     return Ok(None);
                 }
-                trimmed.parse::<u128>().map(Some).with_context(|| {
-                    format!(
-                        "Failed to parse {} environment variable: '{}'. \
-                         Value must be a valid integer in wei.",
-                        var_name, value
-                    )
-                })
-            }
-            Err(std::env::VarError::NotPresent) => Ok(None),
-            Err(std::env::VarError::NotUnicode(os_str)) => {
-                anyhow::bail!(
-                    "{} environment variable contains invalid unicode: {:?}",
-                    var_name,
-                    os_str
-                )
-            }
-        }
-    }
-
-    fn parse_env_var_u64(var_name: &str) -> Result<Option<u64>> {
-        match std::env::var(var_name) {
-            Ok(value) => {
-                let trimmed = value.trim();
-                if trimmed.is_empty() {
-                    return Ok(None);
-                }
-                trimmed.parse::<u64>().map(Some).with_context(|| {
-                    format!(
-                        "Failed to parse {} environment variable: '{}'. \
-                         Value must be a valid positive integer.",
-                        var_name, value
-                    )
-                })
-            }
-            Err(std::env::VarError::NotPresent) => Ok(None),
-            Err(std::env::VarError::NotUnicode(os_str)) => {
-                anyhow::bail!(
-                    "{} environment variable contains invalid unicode: {:?}",
-                    var_name,
-                    os_str
-                )
-            }
-        }
-    }
-
-    fn parse_env_var_f64(var_name: &str) -> Result<Option<f64>> {
-        match std::env::var(var_name) {
-            Ok(value) => {
-                let trimmed = value.trim();
-                if trimmed.is_empty() {
-                    return Ok(None);
-                }
-                trimmed.parse::<f64>().map(Some).with_context(|| {
-                    format!(
-                        "Failed to parse {} environment variable: '{}'. \
-                         Value must be a valid decimal number (e.g., 1.1).",
-                        var_name, value
+                trimmed.parse::<T>().map(Some).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to parse {} environment variable: '{}'. {}: {}",
+                        var_name,
+                        value,
+                        type_hint,
+                        e
                     )
                 })
             }
@@ -406,10 +381,7 @@ pub struct AdaptiveGasOracle {
 impl AdaptiveGasOracle {
     /// Creates a new AdaptiveGasOracle with the given configuration.
     pub fn new(config: AdaptiveGasConfig) -> Self {
-        Self {
-            config,
-            high_gas_start: Arc::new(RwLock::new(None)),
-        }
+        Self { config, high_gas_start: Arc::new(RwLock::new(None)) }
     }
 
     /// Creates a new AdaptiveGasOracle with default configuration.
@@ -486,10 +458,8 @@ impl AdaptiveGasOracle {
         }
 
         // Get current gas price and provider estimates for any non-overridden values
-        let current_gas = provider
-            .get_gas_price()
-            .await
-            .context("Failed to get current gas price")?;
+        let current_gas =
+            provider.get_gas_price().await.context("Failed to get current gas price")?;
 
         // If only one override is set, we need to get the other value
         if let Some(max_fee) = self.config.max_fee_override {
@@ -554,13 +524,8 @@ impl AdaptiveGasOracle {
         };
 
         // Calculate average priority fee from rewards
-        let priority_fees: Vec<u128> = fee_history
-            .reward
-            .iter()
-            .flatten()
-            .flatten()
-            .copied()
-            .collect();
+        let priority_fees: Vec<u128> =
+            fee_history.reward.iter().flatten().flatten().copied().collect();
         let avg_priority_fee = if priority_fees.is_empty() {
             1_000_000_000u128 // 1 gwei default if no data
         } else {
@@ -577,10 +542,7 @@ impl AdaptiveGasOracle {
             priority_fee = (priority_fee as f64 * factor) as u128;
         }
 
-        Ok(GasPriceEstimate {
-            max_fee_per_gas: max_fee,
-            max_priority_fee_per_gas: priority_fee,
-        })
+        Ok(GasPriceEstimate { max_fee_per_gas: max_fee, max_priority_fee_per_gas: priority_fee })
     }
 
     /// Applies the gas estimate to a transaction request.
@@ -615,13 +577,13 @@ impl GasPricingStrategy {
     /// Otherwise uses Default (provider estimation).
     pub fn from_env() -> Result<Self> {
         // Check if any gas config vars are set
-        let has_gas_config = std::env::var("MAX_FEE_PER_GAS").is_ok()
-            || std::env::var("MAX_PRIORITY_FEE_PER_GAS").is_ok()
-            || std::env::var("GAS_PRICE_THRESHOLD").is_ok()
-            || std::env::var("GAS_HISTORY_BLOCKS").is_ok()
-            || std::env::var("GAS_PRICE_MULTIPLIER").is_ok()
-            || std::env::var("GAS_FALLBACK_TIMEOUT_MINUTES").is_ok()
-            || std::env::var("GAS_FALLBACK_INCREASE_PERCENT").is_ok();
+        let has_gas_config = std::env::var("MAX_FEE_PER_GAS").is_ok() ||
+            std::env::var("MAX_PRIORITY_FEE_PER_GAS").is_ok() ||
+            std::env::var("GAS_PRICE_THRESHOLD").is_ok() ||
+            std::env::var("GAS_HISTORY_BLOCKS").is_ok() ||
+            std::env::var("GAS_PRICE_MULTIPLIER").is_ok() ||
+            std::env::var("GAS_FALLBACK_TIMEOUT_MINUTES").is_ok() ||
+            std::env::var("GAS_FALLBACK_INCREASE_PERCENT").is_ok();
 
         if has_gas_config {
             return Ok(Self::Adaptive(AdaptiveGasOracle::from_env()?));
@@ -664,11 +626,7 @@ impl SignerLock {
     /// Creates a new SignerLock with a custom gas pricing strategy.
     pub fn new_with_strategy(signer: Signer, gas_strategy: GasPricingStrategy) -> Self {
         let cached_address = signer.address();
-        SignerLock {
-            inner: Arc::new(Mutex::new(signer)),
-            cached_address,
-            gas_strategy,
-        }
+        SignerLock { inner: Arc::new(Mutex::new(signer)), cached_address, gas_strategy }
     }
 
     /// Creates a SignerLock from environment variables.
@@ -723,9 +681,8 @@ impl SignerLock {
             }
             GasPricingStrategy::Adaptive(oracle) => {
                 // Create a provider to query gas prices
-                let provider = ProviderBuilder::new()
-                    .network::<Ethereum>()
-                    .connect_http(l1_rpc.clone());
+                let provider =
+                    ProviderBuilder::new().network::<Ethereum>().connect_http(l1_rpc.clone());
 
                 // Get gas prices (handles both static overrides and adaptive pricing)
                 let estimate = oracle.get_gas_prices(&provider).await?;
@@ -1213,7 +1170,7 @@ mod tests {
                 let result = AdaptiveGasConfig::from_env();
                 assert!(result.is_err());
                 let err_msg = result.unwrap_err().to_string();
-                assert!(err_msg.contains("positive"));
+                assert!(err_msg.contains("finite positive"));
             });
         }
 
@@ -1222,6 +1179,37 @@ mod tests {
             with_env_vars(&[("GAS_PRICE_MULTIPLIER", Some("0"))], || {
                 let result = AdaptiveGasConfig::from_env();
                 assert!(result.is_err());
+            });
+        }
+
+        #[test]
+        fn test_adaptive_config_rejects_nan_multiplier() {
+            with_env_vars(&[("GAS_PRICE_MULTIPLIER", Some("NaN"))], || {
+                let result = AdaptiveGasConfig::from_env();
+                assert!(result.is_err());
+                let err_msg = result.unwrap_err().to_string();
+                assert!(err_msg.contains("finite positive"));
+            });
+        }
+
+        #[test]
+        fn test_adaptive_config_rejects_infinity_multiplier() {
+            with_env_vars(&[("GAS_PRICE_MULTIPLIER", Some("inf"))], || {
+                let result = AdaptiveGasConfig::from_env();
+                assert!(result.is_err());
+                let err_msg = result.unwrap_err().to_string();
+                assert!(err_msg.contains("finite positive"));
+            });
+        }
+
+        #[test]
+        fn test_adaptive_config_rejects_zero_fallback_timeout() {
+            with_env_vars(&[("GAS_FALLBACK_TIMEOUT_MINUTES", Some("0"))], || {
+                let result = AdaptiveGasConfig::from_env();
+                assert!(result.is_err());
+                let err_msg = result.unwrap_err().to_string();
+                assert!(err_msg.contains("GAS_FALLBACK_TIMEOUT_MINUTES"));
+                assert!(err_msg.contains("greater than 0"));
             });
         }
 
@@ -1240,10 +1228,7 @@ mod tests {
         fn test_gas_pricing_strategy_from_env_with_override() {
             // When override vars are set, strategy should be Adaptive (which now handles overrides)
             with_env_vars(
-                &[
-                    ("GAS_PRICE_THRESHOLD", None),
-                    ("MAX_FEE_PER_GAS", Some("100000000000")),
-                ],
+                &[("GAS_PRICE_THRESHOLD", None), ("MAX_FEE_PER_GAS", Some("100000000000"))],
                 || {
                     let strategy = GasPricingStrategy::from_env().unwrap();
                     assert!(matches!(strategy, GasPricingStrategy::Adaptive(_)));
@@ -1257,10 +1242,7 @@ mod tests {
         #[test]
         fn test_gas_pricing_strategy_from_env_adaptive() {
             with_env_vars(
-                &[
-                    ("GAS_PRICE_THRESHOLD", Some("5000000000")),
-                    ("MAX_FEE_PER_GAS", None),
-                ],
+                &[("GAS_PRICE_THRESHOLD", Some("5000000000")), ("MAX_FEE_PER_GAS", None)],
                 || {
                     let strategy = GasPricingStrategy::from_env().unwrap();
                     assert!(matches!(strategy, GasPricingStrategy::Adaptive(_)));
