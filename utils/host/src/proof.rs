@@ -41,19 +41,28 @@ pub fn get_agg_proof_stdin(
     Ok(stdin)
 }
 
-pub async fn get_range_proof_stdin<T: OPSuccinctHost + Send + Sync + 'static>(
+pub async fn get_range_proof_stdin<T: OPSuccinctHost + Clone + Send + Sync + 'static>(
     host: &T,
     start_block: u64,
     end_block: u64,
     l1_head_hash: Option<B256>,
     safe_db_fallback: bool,
-) -> Result<SP1Stdin> {
+) -> Result<SP1Stdin>
+where
+    <<T as OPSuccinctHost>::WitnessGenerator as WitnessGenerator>::WitnessData: std::marker::Send,
+{
     let host_args = host
         .fetch(start_block, end_block, l1_head_hash, safe_db_fallback)
         .await
         .context("Failed to get host CLI args")?;
 
-    let witness_data = host.run(&host_args).await?;
+    let host_clone = host.clone();
+    let witness_data = tokio::task::spawn_blocking(move || {
+        let rt = tokio::runtime::Handle::current();
+        rt.block_on(async move { host_clone.run(&host_args).await })
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("Witness generation task failed: {}", e))??;
 
     let sp1_stdin = match host.witness_generator().get_sp1_stdin(witness_data) {
         Ok(stdin) => stdin,
