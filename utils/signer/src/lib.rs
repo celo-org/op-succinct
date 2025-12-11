@@ -294,15 +294,18 @@ impl AdaptiveGasConfig {
     /// - `RBF_PRICE_BUMP_PERCENT` - Gas increase for RBF (default: 12.0)
     /// - `RBF_MAX_RETRIES` - Maximum RBF retry attempts (default: 5)
     pub fn from_env() -> Result<Self> {
-        let mut config = Self::default();
-
         // Parse override values (these bypass adaptive logic when set)
-        config.max_fee_override =
-            Self::parse_env_var("MAX_FEE_PER_GAS", "Value must be a valid integer in wei")?;
-        config.max_priority_fee_override = Self::parse_env_var(
-            "MAX_PRIORITY_FEE_PER_GAS",
-            "Value must be a valid integer in wei",
-        )?;
+        let mut config = Self {
+            max_fee_override: Self::parse_env_var(
+                "MAX_FEE_PER_GAS",
+                "Value must be a valid integer in wei",
+            )?,
+            max_priority_fee_override: Self::parse_env_var(
+                "MAX_PRIORITY_FEE_PER_GAS",
+                "Value must be a valid integer in wei",
+            )?,
+            ..Default::default()
+        };
 
         // Parse adaptive config values
         if let Some(threshold) =
@@ -720,7 +723,7 @@ pub enum GasPricingStrategy {
     Default,
     /// Adaptive gas pricing based on network conditions.
     /// Also handles static overrides via `max_fee_override` and `max_priority_fee_override`.
-    Adaptive(AdaptiveGasOracle),
+    Adaptive(Box<AdaptiveGasOracle>),
 }
 
 impl GasPricingStrategy {
@@ -742,7 +745,7 @@ impl GasPricingStrategy {
             std::env::var("GAS_FALLBACK_INCREASE_PERCENT").is_ok();
 
         if has_gas_config {
-            return Ok(Self::Adaptive(AdaptiveGasOracle::from_env()?));
+            return Ok(Self::Adaptive(Box::new(AdaptiveGasOracle::from_env()?)));
         }
 
         Ok(Self::Default)
@@ -775,7 +778,7 @@ impl SignerLock {
         SignerLock {
             inner: Arc::new(Mutex::new(signer)),
             cached_address,
-            gas_strategy: GasPricingStrategy::Adaptive(oracle),
+            gas_strategy: GasPricingStrategy::Adaptive(Box::new(oracle)),
         }
     }
 
@@ -811,7 +814,7 @@ impl SignerLock {
     /// Returns None if using default pricing.
     pub fn gas_oracle(&self) -> Option<&AdaptiveGasOracle> {
         match &self.gas_strategy {
-            GasPricingStrategy::Adaptive(oracle) => Some(oracle),
+            GasPricingStrategy::Adaptive(oracle) => Some(oracle.as_ref()),
             GasPricingStrategy::Default => None,
         }
     }
@@ -868,6 +871,10 @@ impl SignerLock {
             mut current_priority_fee,
         ) = rbf_config;
 
+        // Acquire lock BEFORE fetching nonce to prevent race conditions.
+        // This ensures concurrent callers serialize properly and each gets a unique nonce.
+        let signer = self.inner.lock().await;
+
         // Get the nonce explicitly so we can reuse it for RBF
         let provider = ProviderBuilder::new().network::<Ethereum>().connect_http(l1_rpc.clone());
         let nonce = provider
@@ -875,8 +882,6 @@ impl SignerLock {
             .await
             .context("Failed to get nonce")?;
         transaction_request = transaction_request.nonce(nonce);
-
-        let signer = self.inner.lock().await;
         let mut attempts = 0u32;
 
         loop {
