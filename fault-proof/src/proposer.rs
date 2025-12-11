@@ -1537,69 +1537,6 @@ where
     }
 }
 
-/// Result of fetching a game from the factory.
-///
-/// Games can either be added to the cache or dropped based on validation criteria.
-pub enum GameFetchResult {
-    /// Game was successfully validated and added to cache
-    ValidGame { game_address: Address, deadline: u64 },
-    /// Game type is unsupported
-    UnsupportedType { game_address: Address },
-    /// Game is invalid
-    InvalidGame { index: U256 },
-    /// Game was already present in the cache
-    AlreadyExists,
-}
-
-/// Cursor that tracks dispute-game indices, representing the current position in the ordered
-/// factory sequence.
-///
-/// Wraps `Option<U256>`:
-/// - `Some(i)`: concrete position within the factory's ordered game sequence.
-/// - `None`: sentinel meaning "no position" (before first game / past zero / uninitialized).
-#[derive(Default, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Cursor {
-    index: Option<U256>,
-}
-
-impl Cursor {
-    /// Create a cursor with no index.
-    pub fn none() -> Self {
-        Cursor { index: None }
-    }
-
-    /// Get the current index of the cursor.
-    pub fn index(&self) -> Option<U256> {
-        self.index
-    }
-
-    /// Step the cursor back by one. If the cursor is at zero, it becomes `None`.
-    pub fn step_back(&mut self) {
-        if let Some(idx) = self.index {
-            if idx > U256::ZERO {
-                self.index = Some(idx.saturating_sub(U256::ONE));
-            } else {
-                self.index = None;
-            }
-        }
-    }
-}
-
-impl std::fmt::Display for Cursor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.index {
-            Some(idx) => write!(f, "{idx}"),
-            None => write!(f, "None"),
-        }
-    }
-}
-
-impl From<U256> for Cursor {
-    fn from(idx: U256) -> Self {
-        Self { index: Some(idx) }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::config::RangeSplitCount;
