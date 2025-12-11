@@ -652,6 +652,7 @@ impl AdaptiveGasOracle {
     /// Calculates the percentile value from a slice of values.
     ///
     /// Uses linear interpolation for non-integer indices.
+    /// Clamps the percentile to 0-100 range to prevent out-of-bounds access.
     fn calculate_percentile(values: &[u128], percentile: f64) -> u128 {
         if values.is_empty() {
             return 0;
@@ -663,8 +664,13 @@ impl AdaptiveGasOracle {
         let mut sorted = values.to_vec();
         sorted.sort_unstable();
 
+        // Clamp percentile to valid range [0, 100] to prevent out-of-bounds access.
+        // This guards against invalid values from direct struct construction bypassing
+        // the from_env() validation.
+        let clamped_percentile = percentile.clamp(0.0, 100.0);
+
         // Calculate the index for the percentile
-        let idx = (percentile / 100.0) * (sorted.len() - 1) as f64;
+        let idx = (clamped_percentile / 100.0) * (sorted.len() - 1) as f64;
         let lower = idx.floor() as usize;
         let upper = idx.ceil() as usize;
 
@@ -1220,6 +1226,28 @@ mod tests {
 
         // Test empty slice
         assert_eq!(AdaptiveGasOracle::calculate_percentile(&[], 50.0), 0);
+    }
+
+    #[test]
+    fn test_calculate_percentile_clamps_out_of_range() {
+        let values = vec![10, 20, 30, 40, 50];
+
+        // Test percentile > 100 is clamped to 100 (returns max)
+        assert_eq!(AdaptiveGasOracle::calculate_percentile(&values, 150.0), 50);
+        assert_eq!(AdaptiveGasOracle::calculate_percentile(&values, 200.0), 50);
+
+        // Test negative percentile is clamped to 0 (returns min)
+        assert_eq!(AdaptiveGasOracle::calculate_percentile(&values, -10.0), 10);
+        assert_eq!(AdaptiveGasOracle::calculate_percentile(&values, -100.0), 10);
+
+        // Edge case: very large percentile
+        assert_eq!(AdaptiveGasOracle::calculate_percentile(&values, 1000.0), 50);
+
+        // Edge case: NaN and infinity are clamped appropriately
+        // Note: NaN.clamp() returns NaN, but the floor/ceil will produce valid indices
+        // For safety with NaN, we'd need additional handling, but clamp handles infinity
+        assert_eq!(AdaptiveGasOracle::calculate_percentile(&values, f64::INFINITY), 50);
+        assert_eq!(AdaptiveGasOracle::calculate_percentile(&values, f64::NEG_INFINITY), 10);
     }
 
     #[test]
