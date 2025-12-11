@@ -483,10 +483,10 @@ where
             async move {
                 tracing::info!("Generating Range Proof for blocks {start} to {end}");
                 let sp1_stdin = get_range_proof_stdin(
-                    &this.host,
+                    this.host.as_ref(),
                     start,
                     end,
-                    l1_head_hash.into(),
+                    Some(l1_head_hash.into()),
                     self.config.safe_db_fallback,
                 )
                 .await?;

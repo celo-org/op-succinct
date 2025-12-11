@@ -9082,6 +9082,7 @@ dependencies = [
  "alloy-sol-types",
  "anyhow",
  "async-trait",
+ "bincode",
  "c-kzg",
  "cargo_metadata",
  "celo-alloy-consensus",

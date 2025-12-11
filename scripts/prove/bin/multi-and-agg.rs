@@ -10,7 +10,7 @@ use op_succinct_elfs::AGGREGATION_ELF;
 use op_succinct_host_utils::{
     block_range::{get_validated_block_range, RangeSplitCount},
     fetcher::OPSuccinctDataFetcher,
-    get_agg_proof_stdin,
+    get_agg_proof_stdin, get_range_proof_stdin,
     host::OPSuccinctHost,
     network::parse_fulfillment_strategy,
     witness_generation::WitnessGenerator,
@@ -35,7 +35,6 @@ async fn main() -> Result<()> {
     utils::setup_logger();
 
     let config = Config::from_env().expect("failed to get config");
-
     let data_fetcher = OPSuccinctDataFetcher::new_with_rollup_config().await?;
     let host = initialize_host(Arc::new(data_fetcher.clone()));
 
@@ -73,16 +72,13 @@ async fn main() -> Result<()> {
         let host = host.clone();
         let config = config.clone();
         async move {
-            let host_args = host.fetch(start, end, None, config.safe_db_fallback).await?;
-            let witness_data = host.run(&host_args).await?;
 
             // Get the stdin for the block.
-            let sp1_stdin = host.witness_generator().get_sp1_stdin(witness_data)?;
+            let sp1_stdin = get_range_proof_stdin(host.as_ref(), start, end, None, config.safe_db_fallback).await?;
             let stdin_bytes = bincode::serialize(&sp1_stdin).unwrap();
             let stdin_len = stdin_bytes.len();
             tracing::info!("Generated SP1 stdin for blocks {l2_start_block} to {l2_end_block}, number: {:?}, size: {stdin_len} bytes", l2_end_block - l2_start_block);
 
-            // If the prove flag is set, generate a proof.
             tracing::info!("Generating Range Proof for blocks {l2_start_block} to {l2_end_block}");
             let range_proof = network_prover
             .prove(&range_pk, &sp1_stdin)
@@ -107,7 +103,6 @@ async fn main() -> Result<()> {
     });
 
     let (agg_pk, agg_vk) = network_prover.setup(AGGREGATION_ELF);
-
     let task_stream = stream::iter(tasks);
     let outputs = task_stream.buffer_unordered(max_concurrent).try_collect::<Vec<_>>().await?;
 
