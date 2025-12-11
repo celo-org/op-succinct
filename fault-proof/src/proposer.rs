@@ -672,8 +672,7 @@ where
             self.prover
                 .network_prover
                 .prove(&self.prover.agg_pk, sp1_stdin)
-                .plonk() // Is this safe to use the agg mode, previously it was
-                // hardcoded to plonk()
+                .mode(self.config.agg_proof_mode)
                 .strategy(self.config.agg_proof_strategy)
                 .timeout(Duration::from_secs(self.config.timeout))
                 .min_auction_period(self.config.min_auction_period)
