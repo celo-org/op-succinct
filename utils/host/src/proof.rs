@@ -107,8 +107,7 @@ pub async fn get_network_proof(
     let builder = maybe_set!(builder, config.verifier, verifier);
 
     let proof = builder.run_async().await?;
-
-    Ok(proof.clone())
+    Ok(proof)
 }
 
 // let agg_proof = network_prover
