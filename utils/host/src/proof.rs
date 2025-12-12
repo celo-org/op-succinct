@@ -223,7 +223,7 @@ impl ProvingConfig {
     /// Load a ProvingConfig from environment variables with the given prefix.
     ///
     /// For example, with prefix "RANGE", reads:
-    /// - RANGE_STRATEGY, RANGE_MODE, RANGE_CYCLE_LIMIT, etc.
+    /// - RANGE_PROOF_STRATEGY, RANGE_PROOF_MODE, RANGE_CYCLE_LIMIT, etc.
     ///
     /// All fields are optional - missing env vars result in None.
     pub fn from_env_with_prefix(prefix: &str) -> Result<Self> {
@@ -248,13 +248,13 @@ impl ProvingConfig {
         };
 
         Ok(Self {
-            strategy: get("STRATEGY").and_then(|s| match s.to_lowercase().as_str() {
+            strategy: get("PROOF_STRATEGY").and_then(|s| match s.to_lowercase().as_str() {
                 "reserved" => Some(FulfillmentStrategy::Reserved),
                 "hosted" => Some(FulfillmentStrategy::Hosted),
                 "auction" => Some(FulfillmentStrategy::Auction),
                 _ => None,
             }),
-            mode: get("MODE").and_then(|s| match s.to_lowercase().as_str() {
+            mode: get("PROOF_MODE").and_then(|s| match s.to_lowercase().as_str() {
                 "core" => Some(SP1ProofMode::Core),
                 "compressed" => Some(SP1ProofMode::Compressed),
                 "plonk" => Some(SP1ProofMode::Plonk),
