@@ -15,7 +15,7 @@ data
 
 # .env files
 .env*
-!.env.example
+!.env.example*
 
 # txt
 **.txt
