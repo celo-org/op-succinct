@@ -18,6 +18,23 @@ use sp1_sdk::{utils, HashableKey, Prover, ProverClient, SP1ProofMode};
 use std::{env, num::NonZeroUsize, path::PathBuf, str::FromStr, sync::Arc};
 use tracing::info;
 
+/// Generates range proofs for a span of L2 blocks and aggregates them into a single proof.
+///
+/// # Pipeline
+///
+/// 1. **Setup**: Load config from env, initialize data fetcher and host
+/// 2. **Block range**: Validate and split the L2 block range into sub-ranges
+/// 3. **Range proofs**: Concurrently generate SP1 proofs for each sub-range via the prover network
+/// 4. **Aggregation**: Combine all range proofs into a single aggregation proof
+/// 5. **Verification** (optional): Verify the aggregation proof on-chain if `--verify` is passed
+///
+/// # Example usage
+///
+/// ```bash
+/// cargo run --bin multi-and-agg -- --start 1000 --end 2000 --range-splits 4 --max-concurrent-splits 2 --verify
+/// ```
+///
+/// See [`Args`] for CLI options and [`Config`] for environment variable configuration.
 #[tokio::main]
 async fn main() -> Result<()> {
     rustls::crypto::ring::default_provider().install_default().unwrap();
@@ -66,21 +83,33 @@ async fn main() -> Result<()> {
         let host = host.clone();
         let config = config.clone();
         async move {
-
             // Get the stdin for the block.
-            let sp1_stdin = get_range_proof_stdin(host.as_ref(), start, end, None, config.safe_db_fallback).await?;
+            tracing::info!(
+                "range {idx}: Generating SP1 stdin for blocks {start} to {end}, number: {}",
+                end - start
+            );
+            let sp1_stdin =
+                get_range_proof_stdin(host.as_ref(), start, end, None, config.safe_db_fallback)
+                    .await?;
             let stdin_bytes = bincode::serialize(&sp1_stdin).unwrap();
             let stdin_len = stdin_bytes.len();
-            tracing::info!("range {}: Generated SP1 stdin for blocks {l2_start_block} to {l2_end_block}, number: {:?}, size: {stdin_len} bytes", idx, l2_end_block - l2_start_block);
-            tracing::info!("range {}: Generating Range proof for blocks {l2_start_block} to {l2_end_block}", idx);
-            let range_proof = get_network_proof(sp1_stdin, &range_pk, &network_prover, &config.range_proving_config).await?;
+            tracing::info!(
+                "range {idx}: SP1 stdin size: {stdin_len} bytes, for blocks {start} to {end}"
+            );
+            tracing::info!("range {idx}: Generating Range proof for blocks {start} to {end}");
+            let range_proof = get_network_proof(
+                sp1_stdin,
+                &range_pk,
+                &network_prover,
+                &config.range_proving_config,
+            )
+            .await?;
             let proof = range_proof.proof.clone();
             let mut public_values = range_proof.public_values.clone();
             let boot_info: BootInfoStruct = public_values.read();
-            tracing::info!("range {}: Completed Range proof", idx);
-
+            tracing::info!("range {idx}: Completed Range proof for blocks {start} to {end}");
             Ok::<_, anyhow::Error>((idx, proof, boot_info))
-    }
+        }
     });
 
     let task_stream = stream::iter(tasks);
@@ -170,7 +199,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// The arguments for the host executable.
+/// Commandline arguments for the multi-and-agg proving script.
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
     /// The start block of the range to execute.
@@ -199,7 +228,26 @@ pub struct Args {
 }
 
 #[derive(Debug, Clone)]
+/// Configuration for the multi-and-agg proving pipeline.
+///
+/// # Required Environment Variables
+///
+/// | Env Var            | Description                                      |
+/// |--------------------|--------------------------------------------------|
+/// | `L1_RPC`           | L1 RPC endpoint URL                              |
+/// | `PROPOSER_ADDRESS` | Address of the proposer (proof creator)          |
+///
+/// # Optional Environment Variables
+///
+/// | Env Var            | Default | Description                               |
+/// |--------------------|---------|-------------------------------------------|
+/// | `SAFE_DB_FALLBACK` | `false` | Use timestamp-based L1 head estimation    |
+///
+/// Additionally, proving parameters are loaded via [`ProvingConfig::from_env_with_prefix`]
+/// using the `RANGE_*` prefix for range proofs and `AGG_*` prefix for aggregation proofs.
+/// See [`ProvingConfig`] for the full list of supported env vars.
 struct Config {
+    /// L1 RPC endpoint URL.
     pub l1_rpc: Url,
 
     /// Proposer (Proof creator) address
@@ -209,13 +257,19 @@ struct Config {
     /// activated for op-node.
     pub safe_db_fallback: bool,
 
-    // The proving configs for agg proofs.
+    /// Proving configuration for aggregation proofs (loaded from `AGG_*` env vars).
+    /// Defaults to Plonk mode if not specified.
     pub agg_proving_config: ProvingConfig,
-    // The proving configs for range proofs.
+
+    /// Proving configuration for range proofs (loaded from `RANGE_*` env vars).
     pub range_proving_config: ProvingConfig,
 }
 
 impl Config {
+    /// Load configuration from environment variables.
+    ///
+    /// # Panics
+    /// Panics if required env vars (`L1_RPC`, `PROPOSER_ADDRESS`) are missing or invalid.
     pub fn from_env() -> Result<Self> {
         let mut agg_proving_config =
             ProvingConfig::agg_from_env().expect("failed to get agg proving config");

@@ -41,6 +41,25 @@ pub fn get_agg_proof_stdin(
     Ok(stdin)
 }
 
+/// Generates the SP1 stdin required for proving a range of L2 blocks.
+///
+/// This function performs the following steps:
+/// 1. Fetches the host arguments for the given block range from the L1/L2 nodes
+/// 2. Runs witness generation in a blocking task (to avoid starving the async runtime)
+/// 3. Converts the witness data into SP1 stdin format
+///
+/// # Arguments
+/// * `host` - The OP Succinct host implementation for fetching data and generating witnesses
+/// * `start_block` - The starting L2 block number (exclusive)
+/// * `end_block` - The ending L2 block number (inclusive)
+/// * `l1_head_hash` - Optional L1 head hash to use; if None, will be determined automatically
+/// * `safe_db_fallback` - Whether to fallback to timestamp-based L1 head estimation
+///
+/// # Returns
+/// The SP1 stdin data ready to be passed to the range proof program.
+///
+/// # Errors
+/// Returns an error if fetching host args, witness generation, or stdin conversion fails.
 pub async fn get_range_proof_stdin<T: OPSuccinctHost + Clone + Send + Sync + 'static>(
     host: &T,
     start_block: u64,
@@ -84,6 +103,19 @@ macro_rules! maybe_set {
     };
 }
 
+/// Submits a proof request to the SP1 prover network and awaits the result.
+///
+/// # Arguments
+/// * `sp1_stdin` - The SP1 stdin data containing the program inputs
+/// * `range_pk` - The proving key for the range/aggregation program
+/// * `prover` - The SP1 network prover client
+/// * `config` - Configuration controlling proof generation parameters
+///
+/// # Returns
+/// The generated proof with its public values on success.
+///
+/// # Errors
+/// Returns an error if the proof request fails or times out.
 pub async fn get_network_proof(
     sp1_stdin: SP1Stdin,
     range_pk: &SP1ProvingKey,
@@ -109,98 +141,6 @@ pub async fn get_network_proof(
     let proof = builder.run_async().await?;
     Ok(proof)
 }
-
-// let agg_proof = network_prover
-// .prove(&agg_pk, &sp1_stdin)
-// .mode(config.agg_proof_mode)
-// .strategy(config.agg_proof_strategy)
-// .timeout(Duration::from_secs(config.timeout))
-// .min_auction_period(config.min_auction_period)
-// .max_price_per_pgu(config.max_price_per_pgu)
-// .cycle_limit(config.agg_cycle_limit)
-// .gas_limit(config.agg_gas_limit)
-// .run_async()
-// .await?;
-
-// impl ProvingConfig {
-//     /// Create a ProvingConfig from environment variables with a given prefix.
-//     /// For example, prefix "RANGE" reads "RANGE_STRATEGY", "RANGE_MODE", etc.
-//     pub fn from_env_with_prefix(prefix: &str) -> Result<Self> {
-//         let get_var = |name: &str| env::var(format!("{}_{}", prefix, name));
-//         let get_var_or = |name: &str, default: &str| {
-//             env::var(format!("{}_{}", prefix, name)).unwrap_or_else(|_| default.to_string())
-//         };
-
-//         Ok(Self {
-//             strategy: parse_fulfillment_strategy(get_var_or("STRATEGY", "reserved")),
-
-//             mode: match get_var_or("MODE", "compressed").to_lowercase().as_str() {
-//                 "core" => SP1ProofMode::Core,
-//                 "groth16" => SP1ProofMode::Groth16,
-//                 "plonk" => SP1ProofMode::Plonk,
-//                 _ => SP1ProofMode::Compressed,
-//             },
-
-//             max_price_per_pgu: get_var_or("MAX_PRICE_PER_PGU", "300000000")
-//                 .parse()
-//                 .context(format!("{}_MAX_PRICE_PER_PGU must be a valid u64", prefix))?,
-
-//             min_auction_period: get_var_or("MIN_AUCTION_PERIOD", "1")
-//                 .parse()
-//                 .context(format!("{}_MIN_AUCTION_PERIOD must be a valid u64", prefix))?,
-
-//             proving_timeout: get_var_or("TIMEOUT", "14400") // 4 hours
-//                 .parse()
-//                 .context(format!("{}_TIMEOUT must be a valid u64", prefix))?,
-
-//             cycle_limit: get_var_or("CYCLE_LIMIT", "1000000000000") // 1 trillion
-//                 .parse()
-//                 .context(format!("{}_CYCLE_LIMIT must be a valid u64", prefix))?,
-
-//             gas_limit: get_var_or("GAS_LIMIT", "1000000000000") // 1 trillion
-//                 .parse()
-//                 .context(format!("{}_GAS_LIMIT must be a valid u64", prefix))?,
-
-//             skip_simulation: get_var_or("SKIP_SIMULATION", "true")
-//                 .parse()
-//                 .context(format!("{}_SKIP_SIMULATION must be a valid bool", prefix))?,
-
-//             whitelist: get_var("WHITELIST").ok().map(|s| {
-//                 s.split(',')
-//                     .filter(|s| !s.is_empty())
-//                     .map(|addr| addr.trim().parse().expect("Invalid address in whitelist"))
-//                     .collect()
-//             }),
-
-//             auctioneer: get_var("AUCTIONEER")
-//                 .ok()
-//                 .map(|s| s.parse().expect("Invalid AUCTIONEER address")),
-
-//             executor: get_var("EXECUTOR")
-//                 .ok()
-//                 .map(|s| s.parse().expect("Invalid EXECUTOR address")),
-
-//             verifier: get_var("VERIFIER")
-//                 .ok()
-//                 .map(|s| s.parse().expect("Invalid VERIFIER address")),
-
-//             auction_timeout: get_var_or("AUCTION_TIMEOUT", "300") // 5 minutes
-//                 .parse()
-//                 .context(format!("{}_AUCTION_TIMEOUT must be a valid u64", prefix))?,
-//         })
-//     }
-
-//     /// Create a ProvingConfig for range proofs from RANGE_* env vars.
-//     pub fn range_from_env() -> Result<Self> {
-//         Self::from_env_with_prefix("RANGE")
-//     }
-
-//     /// Create a ProvingConfig for aggregation proofs from AGG_* env vars.
-//     pub fn agg_from_env() -> Result<Self> {
-//         Self::from_env_with_prefix("AGG")
-//     }
-// }
-
 #[derive(Debug, Clone)]
 pub struct ProvingConfig {
     pub strategy: Option<FulfillmentStrategy>,
@@ -221,10 +161,36 @@ pub struct ProvingConfig {
 impl ProvingConfig {
     /// Load a ProvingConfig from environment variables with the given prefix.
     ///
-    /// For example, with prefix "RANGE", reads:
-    /// - RANGE_PROOF_STRATEGY, RANGE_PROOF_MODE, RANGE_CYCLE_LIMIT, etc.
+    /// All fields are optional — missing env vars result in `None` (or `false` for bools).
     ///
-    /// All fields are optional - missing env vars result in None.
+    /// # Environment Variables
+    ///
+    /// Given a prefix (e.g., `RANGE` or `AGG`), the following env vars are read:
+    ///
+    /// | Env Var                      | Type     | Values / Format                          |
+    /// |------------------------------|----------|------------------------------------------|
+    /// | `{PREFIX}_PROOF_STRATEGY`    | enum     | `reserved`, `hosted`, `auction`          |
+    /// | `{PREFIX}_PROOF_MODE`        | enum     | `core`, `compressed`, `plonk`, `groth16` |
+    /// | `{PREFIX}_CYCLE_LIMIT`       | u64      | Max cycles for proving                   |
+    /// | `{PREFIX}_GAS_LIMIT`         | u64      | Max gas for proving                      |
+    /// | `{PREFIX}_MAX_PRICE_PER_PGU` | u64      | Max price per proof gas unit             |
+    /// | `{PREFIX}_SKIP_SIMULATION`   | bool     | `true` or `false` (default: `false`)     |
+    /// | `{PREFIX}_PROVING_TIMEOUT`   | duration | e.g., `4h`, `30m`, `1h30m`               |
+    /// | `{PREFIX}_MIN_AUCTION_PERIOD`| u64      | Min auction period in seconds            |
+    /// | `{PREFIX}_AUCTION_TIMEOUT`   | duration | e.g., `5m`, `300s`                       |
+    /// | `{PREFIX}_WHITELIST`         | addresses| Comma-separated: `0x123...,0x456...`     |
+    /// | `{PREFIX}_AUCTIONEER`        | address  | Auctioneer address for auction strategy  |
+    /// | `{PREFIX}_EXECUTOR`          | address  | Executor address for auction strategy    |
+    /// | `{PREFIX}_VERIFIER`          | address  | Verifier address for auction strategy    |
+    ///
+    /// # Example
+    ///
+    /// ```bash
+    /// export RANGE_PROOF_STRATEGY=reserved
+    /// export RANGE_PROOF_MODE=compressed
+    /// export RANGE_PROVING_TIMEOUT=4h
+    /// export AGG_PROOF_MODE=plonk
+    /// ```
     pub fn from_env_with_prefix(prefix: &str) -> Result<Self> {
         let get = |suffix: &str| env::var(format!("{}_{}", prefix, suffix)).ok();
 
