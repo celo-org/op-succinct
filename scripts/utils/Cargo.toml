@@ -43,14 +43,24 @@ path = "bin/gen_sp1_test_artifacts.rs"
 name = "game-monitor"
 path = "bin/game_monitor.rs"
 
-
 [[bin]]
 name = "parallel-cost-estimator"
 path = "bin/parallel_cost_estimator.rs"
 
+[[bin]]
+name = "preflight"
+path = "bin/preflight.rs"
+
 [dependencies]
 
 # workspace
+alloy-network.workspace = true
+alloy-node-bindings.workspace = true
+alloy-provider = { workspace = true, features = ["reqwest"] }
+alloy-transport-http = { workspace = true, features = [
+    "reqwest",
+    "reqwest-native-tls",
+] }
 alloy-primitives.workspace = true
 alloy-sol-types.workspace = true
 alloy-signer-local.workspace = true
@@ -66,23 +76,21 @@ csv.workspace = true
 serde.workspace = true
 futures.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
+
+# local
 op-succinct-host-utils.workspace = true
 op-succinct-client-utils.workspace = true
 op-succinct-proof-utils.workspace = true
 op-succinct-elfs.workspace = true
 op-succinct-fp.workspace = true
-alloy-provider.workspace = true
-sp1-sdk.workspace = true
-rayon = "1.10.0"
-env_logger = "0.11"
-
-# local
-
-# alloy
 
 # sp1
+sp1-sdk.workspace = true
 
 rustls = "0.23.23"
+rayon = "1.10.0"
+env_logger = "0.11"
 
 [build-dependencies]
 op-succinct-build-utils.workspace = true
