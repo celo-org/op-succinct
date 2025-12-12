@@ -77,9 +77,9 @@ async fn main() -> Result<()> {
     let (range_pk, range_vk) = network_prover.setup(get_range_elf_embedded());
 
     let tasks = ranges.into_iter().enumerate().map(|(idx, (start, end))| {
+        // Clone these so that they can be moved into the async block.
         let network_prover = network_prover.clone();
         let range_pk = range_pk.clone();
-        // async move {
         let host = host.clone();
         let config = config.clone();
         async move {
@@ -97,18 +97,19 @@ async fn main() -> Result<()> {
                 "range {idx}: SP1 stdin size: {stdin_len} bytes, for blocks {start} to {end}"
             );
             tracing::info!("range {idx}: Generating Range proof for blocks {start} to {end}");
-            let range_proof = get_network_proof(
+            let mut range_proof = get_network_proof(
                 sp1_stdin,
                 &range_pk,
                 &network_prover,
                 &config.range_proving_config,
             )
             .await?;
-            let proof = range_proof.proof.clone();
-            let mut public_values = range_proof.public_values.clone();
-            let boot_info: BootInfoStruct = public_values.read();
             tracing::info!("range {idx}: Completed Range proof for blocks {start} to {end}");
-            Ok::<_, anyhow::Error>((idx, proof, boot_info))
+            Ok::<_, anyhow::Error>((
+                idx,
+                range_proof.proof,
+                range_proof.public_values.read::<BootInfoStruct>(),
+            ))
         }
     });
 
