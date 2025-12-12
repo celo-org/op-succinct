@@ -71,26 +71,25 @@ async fn main() -> Result<()> {
             let sp1_stdin = get_range_proof_stdin(host.as_ref(), start, end, None, config.safe_db_fallback).await?;
             let stdin_bytes = bincode::serialize(&sp1_stdin).unwrap();
             let stdin_len = stdin_bytes.len();
-            tracing::info!("Generated SP1 stdin for blocks {l2_start_block} to {l2_end_block}, number: {:?}, size: {stdin_len} bytes", l2_end_block - l2_start_block);
-
-            tracing::info!("Generating Range Proof for blocks {l2_start_block} to {l2_end_block}");
+            tracing::info!("range {}: Generated SP1 stdin for blocks {l2_start_block} to {l2_end_block}, number: {:?}, size: {stdin_len} bytes", idx, l2_end_block - l2_start_block);
+            tracing::info!("range {}: Generating Range proof for blocks {l2_start_block} to {l2_end_block}", idx);
             let range_proof = get_network_proof(sp1_stdin, &range_pk, &network_prover, &config.range_proving_config).await?;
-            tracing::info!("Preparing Stdin for Agg Proof");
             let proof = range_proof.proof.clone();
             let mut public_values = range_proof.public_values.clone();
             let boot_info: BootInfoStruct = public_values.read();
+            tracing::info!("range {}: Completed Range proof", idx);
 
             Ok::<_, anyhow::Error>((idx, proof, boot_info))
     }
     });
 
-    let (agg_pk, agg_vk) = network_prover.setup(AGGREGATION_ELF);
     let task_stream = stream::iter(tasks);
     let outputs = task_stream.buffer_unordered(max_concurrent).try_collect::<Vec<_>>().await?;
 
+    tracing::info!("Preparing stdin for Agg Proof");
+
     let mut proofs = vec![None; num_ranges];
     let mut boot_infos = vec![None; num_ranges];
-
     // Put the proofs and boot infos back into vectors in their original order.
     for (idx, proof, boot_info) in outputs {
         proofs[idx] = Some(proof);
@@ -126,10 +125,9 @@ async fn main() -> Result<()> {
     };
 
     tracing::info!("Generating Agg Proof");
-
+    let (agg_pk, agg_vk) = network_prover.setup(AGGREGATION_ELF);
     let agg_proof =
         get_network_proof(sp1_stdin, &agg_pk, &network_prover, &config.agg_proving_config).await?;
-
     tracing::info!("Aggregation proof generated successfully.");
 
     if args.verify {
