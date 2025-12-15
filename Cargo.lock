@@ -5660,6 +5660,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
+name = "humantime"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "135b12329e5e3ce057a9f972339ea52bc954fe1e9358ef27f95e89716fbc5424"
+
+[[package]]
+name = "humantime-serde"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57a3db5ea5923d99402c94e9feb261dc5ee9b4efa158b0315f788cf549cc200c"
+dependencies = [
+ "humantime",
+ "serde",
+]
+
+[[package]]
 name = "hyper"
 version = "0.14.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9080,6 +9096,7 @@ dependencies = [
  "alloy-sol-types",
  "anyhow",
  "async-trait",
+ "bincode",
  "c-kzg",
  "cargo_metadata",
  "celo-alloy-consensus",
@@ -9092,6 +9109,8 @@ dependencies = [
  "futures",
  "hana-host",
  "hokulea-host-bin",
+ "humantime",
+ "humantime-serde",
  "kona-derive",
  "kona-genesis",
  "kona-host",
@@ -9117,9 +9136,11 @@ dependencies = [
  "opentelemetry_sdk 0.23.0",
  "reqwest 0.12.24",
  "rkyv",
+ "rstest",
  "serde",
  "serde_cbor",
  "serde_json",
+ "serde_yaml",
  "sp1-sdk",
  "strum 0.27.2",
  "tokio",
@@ -9145,7 +9166,13 @@ dependencies = [
 name = "op-succinct-prove"
 version = "3.3.3-b"
 dependencies = [
+ "alloy-contract",
+ "alloy-network",
  "alloy-primitives",
+ "alloy-provider",
+ "alloy-sol-macro",
+ "alloy-sol-types",
+ "alloy-transport-http",
  "anyhow",
  "bincode",
  "cargo_metadata",
@@ -9153,6 +9180,7 @@ dependencies = [
  "clap",
  "csv",
  "dotenv",
+ "futures",
  "op-succinct-build-utils",
  "op-succinct-client-utils",
  "op-succinct-elfs",
@@ -9164,6 +9192,7 @@ dependencies = [
  "serde_json",
  "sp1-sdk",
  "tokio",
+ "tokio-stream",
  "tracing",
 ]
 
@@ -10876,6 +10905,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
+name = "relative-path"
+version = "1.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba39f3699c378cd8970968dcbff9c43159ea4cfbd88d43c00b22f2ef10a435d2"
+
+[[package]]
 name = "rend"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11847,6 +11882,35 @@ dependencies = [
  "revm-primitives",
  "revm-state",
  "serde",
+]
+
+[[package]]
+name = "rstest"
+version = "0.26.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5a3193c063baaa2a95a33f03035c8a72b83d97a54916055ba22d35ed3839d49"
+dependencies = [
+ "futures-timer",
+ "futures-util",
+ "rstest_macros",
+]
+
+[[package]]
+name = "rstest_macros"
+version = "0.26.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c845311f0ff7951c5506121a9ad75aec44d083c31583b2ea5a30bcb0b0abba0"
+dependencies = [
+ "cfg-if",
+ "glob",
+ "proc-macro-crate 3.4.0",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "relative-path",
+ "rustc_version 0.4.1",
+ "syn 2.0.109",
+ "unicode-ident",
 ]
 
 [[package]]
