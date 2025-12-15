@@ -28,10 +28,11 @@ COPY . .
 # Build the binary
 ENV CARGO_HOME=/usr/local/cargo
 ENV RUSTUP_HOME=/usr/local/rustup
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/usr/local/rustup \
-    cargo build --release --bin proposer --features eigenda
+RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=target-proposer,target=/app/target \
+    cargo build --release --bin proposer --features eigenda && \
+    install -D -m 0755 /app/target/release/proposer /out/proposer
 
 # Runtime stage
 FROM rust:1.89.0-trixie 
@@ -40,7 +41,7 @@ WORKDIR /app
 COPY resources/ ./resources/
 
 # Copy the built proposer binary
-COPY --from=builder /app/target/release/proposer /usr/local/bin/
+COPY --from=builder /out/proposer /usr/local/bin/proposer
 
 # Set the command
 CMD ["proposer"]
