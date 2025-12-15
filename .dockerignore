@@ -9,3 +9,5 @@
 .gitignore
 Dockerfile*
 gha-creds-*.json
+/contracts
+/celo
