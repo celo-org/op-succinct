@@ -26,7 +26,12 @@ WORKDIR /app
 COPY . .
 
 # Build the binary
-RUN cargo build --release --bin proposer --features eigenda
+ENV CARGO_HOME=/usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/usr/local/rustup \
+    cargo build --release --bin proposer --features eigenda
 
 # Runtime stage
 FROM rust:1.89.0-trixie 
