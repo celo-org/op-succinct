@@ -37,6 +37,7 @@ RUN --mount=type=cache,id=rustup,target=/usr/local/rustup \
     cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
+COPY rust-toolchain.toml rust-toolchain.toml
 COPY --from=planner /app/recipe.json recipe.json
 
 RUN --mount=type=cache,id=rustup,target=/usr/local/rustup \
