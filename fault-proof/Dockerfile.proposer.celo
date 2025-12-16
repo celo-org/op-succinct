@@ -25,25 +25,27 @@ FROM base AS builder
 WORKDIR /app
 
 # Build the binary
+COPY . .
+
 ENV CARGO_HOME=/usr/local/cargo \
     RUSTUP_HOME=/usr/local/rustup \
     PATH=/usr/local/cargo/bin:$PATH
 
-COPY rust-toolchain.toml rust-toolchain.toml
-RUN --mount=type=cache,id=rustup,target=/usr/local/rustup \
-    set -eux; \
-    tc="$(sed -nE 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' rust-toolchain.toml)"; \
-    rustup toolchain install "$tc" --profile minimal; \
-    rustup default "$tc"
+RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
+    cargo install sccache --locked
 
-COPY . .
+ENV RUSTC_WRAPPER=/usr/local/cargo/bin/sccache
+ENV SCCACHE_DIR=/usr/local/cargo/sccache
 
-RUN --mount=type=cache,id=rustup,target=/usr/local/rustup \
+RUN --mount=type=cache,id=sccache,target=/usr/local/cargo/sccache \
+    --mount=type=cache,id=rustup,target=/usr/local/rustup \
     --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
     --mount=type=cache,id=target-proposer,target=/app/target \
-    cargo build --release --bin proposer --features eigenda && \
-    install -D -m 0755 /app/target/release/proposer /out/proposer
+    set -eux; \
+    cargo build --release --bin proposer --features eigenda; \
+    install -Dm755 /app/target/release/proposer /out/proposer; \
+    sccache --show-stats
 
 # Runtime stage
 FROM rust:1.89.0-trixie 
