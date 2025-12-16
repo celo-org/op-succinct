@@ -258,7 +258,7 @@ impl Default for AdaptiveGasConfig {
             fallback_timeout_minutes: 30,
             fallback_increase_percent: 10.0,
             max_gas_price_cap: Some(15_000_000_000), // 15 gwei
-            skip_if_gas_above: Some(10_000_000_000), // 10 gwei
+            skip_if_gas_above: Some(15_000_000_000), // 15 gwei (should be >= max_gas_price_cap)
             gas_percentile: 50.0,                    // median
             rbf_timeout_seconds: 60,
             rbf_price_bump_percent: 12.0, // 12% to ensure RBF acceptance
@@ -748,7 +748,13 @@ impl GasPricingStrategy {
             std::env::var("GAS_HISTORY_BLOCKS").is_ok() ||
             std::env::var("GAS_PRICE_MULTIPLIER").is_ok() ||
             std::env::var("GAS_FALLBACK_TIMEOUT_MINUTES").is_ok() ||
-            std::env::var("GAS_FALLBACK_INCREASE_PERCENT").is_ok();
+            std::env::var("GAS_FALLBACK_INCREASE_PERCENT").is_ok() ||
+            std::env::var("MAX_GAS_PRICE_CAP").is_ok() ||
+            std::env::var("SKIP_IF_GAS_ABOVE").is_ok() ||
+            std::env::var("GAS_PERCENTILE").is_ok() ||
+            std::env::var("RBF_TIMEOUT_SECONDS").is_ok() ||
+            std::env::var("RBF_PRICE_BUMP_PERCENT").is_ok() ||
+            std::env::var("RBF_MAX_RETRIES").is_ok();
 
         if has_gas_config {
             return Ok(Self::Adaptive(Box::new(AdaptiveGasOracle::from_env()?)));
@@ -1117,7 +1123,7 @@ mod tests {
         assert!(!config.has_overrides());
         // New fields
         assert_eq!(config.max_gas_price_cap, Some(15_000_000_000)); // 15 gwei
-        assert_eq!(config.skip_if_gas_above, Some(10_000_000_000)); // 10 gwei
+        assert_eq!(config.skip_if_gas_above, Some(15_000_000_000)); // 15 gwei (should be >= max_gas_price_cap)
         assert!((config.gas_percentile - 50.0).abs() < f64::EPSILON);
         assert_eq!(config.rbf_timeout_seconds, 60);
         assert!((config.rbf_price_bump_percent - 12.0).abs() < f64::EPSILON);
@@ -1521,7 +1527,7 @@ mod tests {
             assert!((config.fallback_increase_percent - 10.0).abs() < f64::EPSILON);
             // New fields defaults
             assert_eq!(config.max_gas_price_cap, Some(15_000_000_000)); // 15 gwei
-            assert_eq!(config.skip_if_gas_above, Some(10_000_000_000)); // 10 gwei
+            assert_eq!(config.skip_if_gas_above, Some(15_000_000_000)); // 15 gwei (should be >= max_gas_price_cap)
             assert!((config.gas_percentile - 50.0).abs() < f64::EPSILON);
             assert_eq!(config.rbf_timeout_seconds, 60);
             assert!((config.rbf_price_bump_percent - 12.0).abs() < f64::EPSILON);
@@ -1688,6 +1694,64 @@ mod tests {
                     }
                 },
             );
+        }
+
+        #[test]
+        fn test_gas_pricing_strategy_from_env_with_missing_vars() {
+            // Test that previously missing environment variables now correctly trigger Adaptive strategy
+            // Test MAX_GAS_PRICE_CAP
+            with_env_vars(&[("MAX_GAS_PRICE_CAP", Some("500000000000"))], || {
+                let strategy = GasPricingStrategy::from_env().unwrap();
+                assert!(matches!(strategy, GasPricingStrategy::Adaptive(_)));
+                if let GasPricingStrategy::Adaptive(oracle) = strategy {
+                    assert_eq!(oracle.config().max_gas_price_cap, Some(500_000_000_000));
+                }
+            });
+
+            // Test SKIP_IF_GAS_ABOVE
+            with_env_vars(&[("SKIP_IF_GAS_ABOVE", Some("200000000000"))], || {
+                let strategy = GasPricingStrategy::from_env().unwrap();
+                assert!(matches!(strategy, GasPricingStrategy::Adaptive(_)));
+                if let GasPricingStrategy::Adaptive(oracle) = strategy {
+                    assert_eq!(oracle.config().skip_if_gas_above, Some(200_000_000_000));
+                }
+            });
+
+            // Test GAS_PERCENTILE
+            with_env_vars(&[("GAS_PERCENTILE", Some("25.0"))], || {
+                let strategy = GasPricingStrategy::from_env().unwrap();
+                assert!(matches!(strategy, GasPricingStrategy::Adaptive(_)));
+                if let GasPricingStrategy::Adaptive(oracle) = strategy {
+                    assert!((oracle.config().gas_percentile - 25.0).abs() < f64::EPSILON);
+                }
+            });
+
+            // Test RBF_TIMEOUT_SECONDS
+            with_env_vars(&[("RBF_TIMEOUT_SECONDS", Some("120"))], || {
+                let strategy = GasPricingStrategy::from_env().unwrap();
+                assert!(matches!(strategy, GasPricingStrategy::Adaptive(_)));
+                if let GasPricingStrategy::Adaptive(oracle) = strategy {
+                    assert_eq!(oracle.config().rbf_timeout_seconds, 120);
+                }
+            });
+
+            // Test RBF_PRICE_BUMP_PERCENT
+            with_env_vars(&[("RBF_PRICE_BUMP_PERCENT", Some("15.0"))], || {
+                let strategy = GasPricingStrategy::from_env().unwrap();
+                assert!(matches!(strategy, GasPricingStrategy::Adaptive(_)));
+                if let GasPricingStrategy::Adaptive(oracle) = strategy {
+                    assert!((oracle.config().rbf_price_bump_percent - 15.0).abs() < f64::EPSILON);
+                }
+            });
+
+            // Test RBF_MAX_RETRIES
+            with_env_vars(&[("RBF_MAX_RETRIES", Some("10"))], || {
+                let strategy = GasPricingStrategy::from_env().unwrap();
+                assert!(matches!(strategy, GasPricingStrategy::Adaptive(_)));
+                if let GasPricingStrategy::Adaptive(oracle) = strategy {
+                    assert_eq!(oracle.config().rbf_max_retries, 10);
+                }
+            });
         }
     }
 }
