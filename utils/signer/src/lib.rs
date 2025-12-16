@@ -1698,8 +1698,8 @@ mod tests {
 
         #[test]
         fn test_gas_pricing_strategy_from_env_with_missing_vars() {
-            // Test that previously missing environment variables now correctly trigger Adaptive strategy
-            // Test MAX_GAS_PRICE_CAP
+            // Test that previously missing environment variables now correctly trigger Adaptive
+            // strategy Test MAX_GAS_PRICE_CAP
             with_env_vars(&[("MAX_GAS_PRICE_CAP", Some("500000000000"))], || {
                 let strategy = GasPricingStrategy::from_env().unwrap();
                 assert!(matches!(strategy, GasPricingStrategy::Adaptive(_)));
