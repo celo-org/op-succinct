@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1.4
 
 # Base stage: Install Rust and dependencies
-FROM ubuntu:24.04 AS rust-base
+FROM rust:1.89.0-trixie AS base
 
 WORKDIR /app
 
 # Install required dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     clang \
     build-essential \
@@ -15,56 +15,60 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH=/root/.cargo/bin:$PATH
-RUN rustup install stable && rustup default stable
-
 # Install SP1
 RUN curl -L https://sp1.succinct.xyz | bash && \
     ~/.sp1/bin/sp1up -v v5.2.2 && \
     ~/.sp1/bin/cargo-prove prove --version
 
-# Copy toolchain file
-COPY rust-toolchain.toml .
-# This installs the nightly version from the file
-RUN rustup show
-
 # Build stage
-FROM rust-base AS builder
+FROM base AS chef
+RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
+    cargo install cargo-chef --locked \
+    && cargo install sccache --locked
 
-# Copy the entire workspace
+ENV RUSTC_WRAPPER=/usr/local/cargo/bin/sccache \
+    SCCACHE_DIR=/usr/local/cargo/sccache
+
+FROM chef AS planner
+COPY . .
+RUN --mount=type=cache,id=rustup,target=/usr/local/rustup \
+    --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
+    cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY rust-toolchain.toml rust-toolchain.toml
+COPY --from=planner /app/recipe.json recipe.json
+
+RUN --mount=type=cache,id=rustup,target=/usr/local/rustup \
+    --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=sccache,target=/usr/local/cargo/sccache \
+    cargo chef cook --release --recipe-path recipe.json
+
 COPY . .
 
-# Build the cost-estimator
-RUN cargo build --release --bin cost-estimator --features eigenda
-# Build the game-monitor
-RUN cargo build --release --bin game-monitor
+RUN --mount=type=cache,id=rustup,target=/usr/local/rustup \
+    --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=sccache,target=/usr/local/cargo/sccache \
+    set -eux; \
+    cargo build --release --bin cost-estimator --features eigenda; \
+    install -Dm755 target/release/cost-estimator /out/cost-estimator; \
+    cargo build --release --bin game-monitor; \
+    install -Dm755 target/release/game-monitor /out/game-monitor; \
+    sccache --show-stats
 
 # Runtime stage (minimal image)
-FROM ubuntu:24.04
+FROM rust:1.89.0-trixie AS runtime
 
 WORKDIR /app
-
-# Install only necessary runtime dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Rust (needed by calls to cargo_metadata::MetadataCommand)
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH=/root/.cargo/bin:$PATH
-RUN rustup install stable && rustup default stable
-
-# Copy toolchain file
-COPY rust-toolchain.toml .
-# This installs the nightly version from the file
-RUN rustup show
+COPY resources/ ./resources/
 
 # Copy the built binaries
-COPY --from=builder /app/target/release/cost-estimator /usr/local/bin/
-COPY --from=builder /app/target/release/game-monitor /usr/local/bin/
+COPY --from=builder /out/cost-estimator /usr/local/bin/cost-estimator
+COPY --from=builder /out/game-monitor /usr/local/bin/game-monitor
 
 # Copy the entire workspace so we can run cargo_metadata::MetadataCommand to get the workspace root.
 COPY . .
