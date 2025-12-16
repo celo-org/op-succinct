@@ -20,35 +20,44 @@ RUN curl -L https://sp1.succinct.xyz | bash && \
     ~/.sp1/bin/cargo-prove prove --version
 
 
-FROM base AS builder
-
-WORKDIR /app
-
-# Build the binary
-COPY . .
-
-ENV CARGO_HOME=/usr/local/cargo \
-    RUSTUP_HOME=/usr/local/rustup \
-    PATH=/usr/local/cargo/bin:$PATH
-
+FROM base AS chef
 RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
-    cargo install sccache --locked
+    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
+    cargo install cargo-chef --locked \
+    && cargo install sccache --locked
 
-ENV RUSTC_WRAPPER=/usr/local/cargo/bin/sccache
-ENV SCCACHE_DIR=/usr/local/cargo/sccache
+ENV RUSTC_WRAPPER=/usr/local/cargo/bin/sccache \
+    SCCACHE_DIR=/usr/local/cargo/sccache
 
-RUN --mount=type=cache,id=sccache,target=/usr/local/cargo/sccache \
-    --mount=type=cache,id=rustup,target=/usr/local/rustup \
+FROM chef AS planner
+COPY . .
+RUN --mount=type=cache,id=rustup,target=/usr/local/rustup \
     --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=target-proposer,target=/app/target \
+    cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+
+RUN --mount=type=cache,id=rustup,target=/usr/local/rustup \
+    --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=sccache,target=/usr/local/cargo/sccache \
+    cargo chef cook --release --recipe-path recipe.json
+
+COPY . .
+
+RUN --mount=type=cache,id=rustup,target=/usr/local/rustup \
+    --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=sccache,target=/usr/local/cargo/sccache \
     set -eux; \
     cargo build --release --bin proposer --features eigenda; \
-    install -Dm755 /app/target/release/proposer /out/proposer; \
+    install -Dm755 target/release/proposer /out/proposer; \
     sccache --show-stats
 
 # Runtime stage
-FROM rust:1.89.0-trixie 
+FROM rust:1.89.0-trixie AS runtime
 
 WORKDIR /app
 COPY resources/ ./resources/
