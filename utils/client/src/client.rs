@@ -168,6 +168,8 @@ where
             },
         };
 
+        tracing::info!(target: "client", "Constructed Block: {:?}", block);
+
         // Get the pipeline origin and update the tip cursor.
         let origin = driver.pipeline.origin().ok_or(PipelineError::MissingOrigin.crit())?;
         let celo_l2_info = CeloL2BlockInfo::from_block_and_genesis(
