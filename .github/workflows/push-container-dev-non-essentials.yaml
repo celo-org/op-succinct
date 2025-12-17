@@ -25,8 +25,8 @@ jobs:
           filters: |
             parallel_cost_estimator:
               - 'scripts/utils/Dockerfile.parallel-cost-estimator'
-              - 'scripts/utils/bin/parallel-cost-estimator.rs'
-              - 'scripts/utils/bin/cost-estimator.rs'
+              - 'scripts/utils/bin/parallel_cost_estimator.rs'
+              - 'scripts/utils/bin/cost_estimator.rs'
               - 'scripts/utils/src/**'
               - 'utils/**'
               - 'programs/**'
