@@ -17,22 +17,16 @@ jobs:
     runs-on: ["self-hosted", "org", "8-cpu"]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.ref }}
-      - name: Free disk space
+
+      - name: Install Rust toolchain
         run: |
-          echo "Before cleanup:"
-          df -h /
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source $HOME/.cargo/env
+          rustup show
 
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /usr/local/share/boost
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY" || true
-          docker system prune -af || true
-
-          echo "After cleanup:"
-          df -h /
       - name: Install SP1 toolchain
         run: |
           curl -L https://sp1.succinct.xyz | bash
