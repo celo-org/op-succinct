@@ -14,23 +14,12 @@ on:
 jobs:
   elf:
     # runs-on: ubuntu-latest
-    runs-on: ["self-hosted", "org", "8-cpu"]
+    runs-on: ["self-hosted", "org", "8-cpu-c3d"]
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.ref }}
-
-      - name: Cache Rust toolchain
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.rustup/toolchains
-            ~/.rustup/update-hashes
-            ~/.rustup/settings.toml
-          key: ${{ runner.os }}-rustup-${{ hashFiles('rust-toolchain.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-rustup-
 
       - name: Install Rust toolchain
         run: |
@@ -39,27 +28,6 @@ jobs:
           source $HOME/.cargo/env
           rustup show
 
-      - name: Cache Cargo registry and git
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Cache SP1 toolchain
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.sp1/bin
-            ~/.sp1/circuits
-          key: ${{ runner.os }}-sp1-v5.2.2
-          restore-keys: |
-            ${{ runner.os }}-sp1-
-
       - name: Install SP1 toolchain
         run: |
           source $HOME/.cargo/env
@@ -67,16 +35,11 @@ jobs:
           source ~/.bashrc
           ~/.sp1/bin/sp1up
           ~/.sp1/bin/cargo-prove prove --version
-
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
-
       - name: Verify the OP Succinct binaries
         run: |
-          # Build the binaries with Docker BuildKit caching
-          # BuildKit will use inline cache and registry cache automatically
-          export DOCKER_BUILDKIT=1
-          
+          # Build the binaries
           cd programs/range/ethereum
           ~/.sp1/bin/cargo-prove prove build --elf-name range-elf-bump --docker --tag v5.2.2 --output-directory ../../../elf
           ~/.sp1/bin/cargo-prove prove build --elf-name range-elf-embedded --docker --tag v5.2.2 --output-directory ../../../elf --features embedded
