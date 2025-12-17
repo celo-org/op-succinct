@@ -105,6 +105,11 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     cargo build --release --bin cost-estimator --features eigenda && \
     cargo build --release --bin game-monitor
 
+# Copy binaries from cache mount to filesystem so they can be copied to runtime stage
+RUN --mount=type=cache,target=/app/target \
+    cp /app/target/release/cost-estimator /app/cost-estimator && \
+    cp /app/target/release/game-monitor /app/game-monitor
+
 # Runtime stage (minimal image)
 FROM ubuntu:24.04
 
@@ -126,9 +131,9 @@ COPY rust-toolchain.toml .
 # This installs the nightly version from the file
 RUN rustup show
 
-# Copy the built binaries
-COPY --from=builder /app/target/release/cost-estimator /usr/local/bin/
-COPY --from=builder /app/target/release/game-monitor /usr/local/bin/
+# Copy the built binaries (copied from cache mount to filesystem)
+COPY --from=builder /app/cost-estimator /usr/local/bin/
+COPY --from=builder /app/game-monitor /usr/local/bin/
 
 # Copy the entire workspace so we can run cargo_metadata::MetadataCommand to get the workspace root.
 COPY . .

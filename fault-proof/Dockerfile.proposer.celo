@@ -115,14 +115,18 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
     cargo build --release --bin proposer --features eigenda
 
+# Copy binary from cache mount to filesystem so it can be copied to runtime stage
+RUN --mount=type=cache,target=/app/target \
+    cp /app/target/release/proposer /app/proposer
+
 # Runtime stage
 FROM rust:1.89.0-trixie 
 
 WORKDIR /app
 COPY resources/ ./resources/
 
-# Copy the built proposer binary
-COPY --from=builder /app/target/release/proposer /usr/local/bin/
+# Copy the built proposer binary (copied from cache mount to filesystem)
+COPY --from=builder /app/proposer /usr/local/bin/
 
 # Set the command
 CMD ["proposer"]
