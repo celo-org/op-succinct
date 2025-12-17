@@ -118,6 +118,33 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy workspace metadata files required by cargo_metadata::MetadataCommand
+# cost-estimator uses cargo_metadata to find the workspace root and create output directories
+COPY --from=builder /app/Cargo.toml /app/Cargo.lock ./
+COPY --from=builder /app/rust-toolchain.toml ./
+COPY --from=builder /app/fault-proof/Cargo.toml ./fault-proof/
+COPY --from=builder /app/utils/client/Cargo.toml ./utils/client/
+COPY --from=builder /app/utils/host/Cargo.toml ./utils/host/
+COPY --from=builder /app/utils/build/Cargo.toml ./utils/build/
+COPY --from=builder /app/utils/celestia/client/Cargo.toml ./utils/celestia/client/
+COPY --from=builder /app/utils/celestia/host/Cargo.toml ./utils/celestia/host/
+COPY --from=builder /app/utils/eigenda/client/Cargo.toml ./utils/eigenda/client/
+COPY --from=builder /app/utils/eigenda/host/Cargo.toml ./utils/eigenda/host/
+COPY --from=builder /app/utils/proof/Cargo.toml ./utils/proof/
+COPY --from=builder /app/utils/signer/Cargo.toml ./utils/signer/
+COPY --from=builder /app/utils/ethereum/client/Cargo.toml ./utils/ethereum/client/
+COPY --from=builder /app/utils/ethereum/host/Cargo.toml ./utils/ethereum/host/
+COPY --from=builder /app/utils/elfs/Cargo.toml ./utils/elfs/
+COPY --from=builder /app/programs/range/ethereum/Cargo.toml ./programs/range/ethereum/
+COPY --from=builder /app/programs/range/celestia/Cargo.toml ./programs/range/celestia/
+COPY --from=builder /app/programs/range/eigenda/Cargo.toml ./programs/range/eigenda/
+COPY --from=builder /app/programs/range/utils/Cargo.toml ./programs/range/utils/
+COPY --from=builder /app/programs/aggregation/Cargo.toml ./programs/aggregation/
+COPY --from=builder /app/scripts/prove/Cargo.toml ./scripts/prove/
+COPY --from=builder /app/scripts/utils/Cargo.toml ./scripts/utils/
+COPY --from=builder /app/validity/Cargo.toml ./validity/
+COPY --from=builder /app/bindings/Cargo.toml ./bindings/
+
 # Copy the built binaries (copied from cache mount to filesystem)
 COPY --from=builder /app/cost-estimator /usr/local/bin/
 COPY --from=builder /app/game-monitor /usr/local/bin/
