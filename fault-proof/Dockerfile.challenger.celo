@@ -52,6 +52,9 @@ COPY scripts/utils/Cargo.toml ./scripts/utils/
 COPY validity/Cargo.toml ./validity/
 COPY bindings/Cargo.toml ./bindings/
 
+# Copy elf binaries needed by utils/elfs at compile time (needed before building)
+COPY elf/ ./elf/
+
 # Create dummy source files to satisfy Cargo's dependency resolution
 # This allows us to download and compile dependencies without the actual source
 RUN mkdir -p fault-proof/src fault-proof/bin && \

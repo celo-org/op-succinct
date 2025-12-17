@@ -75,6 +75,8 @@ COPY validity/src ./validity/src
 COPY fault-proof/src ./fault-proof/src
 COPY scripts/utils/src ./scripts/utils/src
 COPY scripts/prove/src ./scripts/prove/src
+# Copy elf binaries needed by utils/elfs at compile time
+COPY elf/ ./elf/
 
 # Create dummy binary source files (binaries are what we're building, so we can cache their compilation)
 RUN mkdir -p fault-proof/bin && \
