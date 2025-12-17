@@ -13,8 +13,8 @@ on:
 
 jobs:
   elf:
-    runs-on: ubuntu-latest
-
+    # runs-on: ubuntu-latest
+    runs-on: ["self-hosted", "org", "8-cpu"]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
