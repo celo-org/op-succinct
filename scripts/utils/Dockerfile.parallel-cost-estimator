@@ -79,8 +79,8 @@ RUN mkdir -p fault-proof/bin && \
     mkdir -p scripts/utils/bin && \
     echo "fn main() {}" > fault-proof/bin/proposer.rs && \
     echo "fn main() {}" > fault-proof/bin/challenger.rs && \
-    echo "fn main() {}" > scripts/utils/bin/cost-estimator.rs && \
-    echo "fn main() {}" > scripts/utils/bin/parallel-cost-estimator.rs
+    echo "fn main() {}" > scripts/utils/bin/cost_estimator.rs && \
+    echo "fn main() {}" > scripts/utils/bin/parallel_cost_estimator.rs
 
 # Download and compile dependencies (this layer will be cached if Cargo.toml/Cargo.lock don't change)
 # Build workspace libraries with actual source, but skip binaries (they have dummy source)
