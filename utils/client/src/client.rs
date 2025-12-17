@@ -168,7 +168,7 @@ where
             },
         };
 
-        tracing::info!(target: "client", "Constructed Block: {:?}", block);
+        tracing::info!(target: "client", "Constructed Block hash{}: {:?}", block.header.hash_slow(), block);
 
         // Get the pipeline origin and update the tip cursor.
         let origin = driver.pipeline.origin().ok_or(PipelineError::MissingOrigin.crit())?;
