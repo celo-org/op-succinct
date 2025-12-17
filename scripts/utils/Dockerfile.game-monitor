@@ -85,8 +85,8 @@ RUN mkdir -p fault-proof/bin && \
 # Build workspace libraries with actual source, but skip binaries (they have dummy source)
 # Use BuildKit cache mounts for faster Cargo operations
 # The || true allows this to fail gracefully if there are issues
-RUN --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/root/.cargo/git \
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
     cargo build --release --workspace --lib --features eigenda || true
 
@@ -96,8 +96,8 @@ COPY scripts/utils/bin ./scripts/utils/bin
 
 # Build the actual binaries (only rebuilds if source changed)
 # Use BuildKit cache mounts for faster builds
-RUN --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/root/.cargo/git \
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
     cargo build --release --bin cost-estimator --features eigenda && \
     cargo build --release --bin game-monitor
