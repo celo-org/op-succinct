@@ -66,65 +66,44 @@ COPY scripts/utils/Cargo.toml ./scripts/utils/
 COPY validity/Cargo.toml ./validity/
 COPY bindings/Cargo.toml ./bindings/
 
-# Create dummy source files to satisfy Cargo's dependency resolution
-# This allows us to download and compile dependencies without the actual source
-RUN mkdir -p fault-proof/src fault-proof/bin && \
-    mkdir -p utils/client/src utils/host/src utils/build/src && \
-    mkdir -p utils/celestia/client/src utils/celestia/host/src && \
-    mkdir -p utils/eigenda/client/src utils/eigenda/host/src && \
-    mkdir -p utils/proof/src utils/signer/src && \
-    mkdir -p utils/ethereum/client/src utils/ethereum/host/src && \
-    mkdir -p utils/elfs/src && \
-    mkdir -p programs/range/ethereum/src programs/range/celestia/src && \
-    mkdir -p programs/range/eigenda/src programs/range/utils/src && \
-    mkdir -p programs/aggregation/src && \
-    mkdir -p scripts/prove/src scripts/utils/src && \
+# Copy actual source code for library crates (needed for dependency compilation)
+# These are workspace dependencies that other crates import from
+COPY utils/ ./utils/
+COPY programs/ ./programs/
+COPY bindings/src ./bindings/src
+COPY validity/src ./validity/src
+COPY fault-proof/src ./fault-proof/src
+COPY scripts/utils/src ./scripts/utils/src
+COPY scripts/prove/src ./scripts/prove/src
+
+# Create dummy binary source files (binaries are what we're building, so we can cache their compilation)
+RUN mkdir -p fault-proof/bin && \
     mkdir -p scripts/utils/bin && \
-    mkdir -p validity/src bindings/src && \
     echo "fn main() {}" > fault-proof/bin/proposer.rs && \
     echo "fn main() {}" > fault-proof/bin/challenger.rs && \
     echo "fn main() {}" > scripts/utils/bin/cost-estimator.rs && \
-    echo "fn main() {}" > scripts/utils/bin/game-monitor.rs && \
-    echo "" > fault-proof/src/lib.rs && \
-    echo "" > utils/client/src/lib.rs && \
-    echo "" > utils/host/src/lib.rs && \
-    echo "" > utils/build/src/lib.rs && \
-    echo "" > utils/celestia/client/src/lib.rs && \
-    echo "" > utils/celestia/host/src/lib.rs && \
-    echo "" > utils/eigenda/client/src/lib.rs && \
-    echo "" > utils/eigenda/host/src/lib.rs && \
-    echo "" > utils/proof/src/lib.rs && \
-    echo "" > utils/signer/src/lib.rs && \
-    echo "" > utils/ethereum/client/src/lib.rs && \
-    echo "" > utils/ethereum/host/src/lib.rs && \
-    echo "" > utils/elfs/src/lib.rs && \
-    echo "" > programs/range/ethereum/src/lib.rs && \
-    echo "" > programs/range/celestia/src/lib.rs && \
-    echo "" > programs/range/eigenda/src/lib.rs && \
-    echo "" > programs/range/utils/src/lib.rs && \
-    echo "" > programs/aggregation/src/lib.rs && \
-    echo "" > scripts/prove/src/lib.rs && \
-    echo "" > scripts/utils/src/lib.rs && \
-    echo "" > validity/src/lib.rs && \
-    echo "" > bindings/src/lib.rs
+    echo "fn main() {}" > scripts/utils/bin/game-monitor.rs
 
 # Download and compile dependencies (this layer will be cached if Cargo.toml/Cargo.lock don't change)
-# The || true allows this to fail gracefully since we have dummy source files
-RUN cargo build --release --bin cost-estimator --features eigenda || true
-RUN cargo build --release --bin game-monitor || true
+# Build workspace libraries with actual source, but skip binaries (they have dummy source)
+# Use BuildKit cache mounts for faster Cargo operations
+# The || true allows this to fail gracefully if there are issues
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --workspace --lib --features eigenda || true
 
-# Now copy the actual source code
-COPY fault-proof/src ./fault-proof/src
+# Now copy the actual binary source code
 COPY fault-proof/bin ./fault-proof/bin
-COPY utils/ ./utils/
-COPY programs/ ./programs/
-COPY scripts/ ./scripts/
-COPY validity/src ./validity/src
-COPY bindings/src ./bindings/src
+COPY scripts/utils/bin ./scripts/utils/bin
 
 # Build the actual binaries (only rebuilds if source changed)
-RUN cargo build --release --bin cost-estimator --features eigenda
-RUN cargo build --release --bin game-monitor
+# Use BuildKit cache mounts for faster builds
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --bin cost-estimator --features eigenda && \
+    cargo build --release --bin game-monitor
 
 # Runtime stage (minimal image)
 FROM ubuntu:24.04
