@@ -107,21 +107,19 @@ RUN --mount=type=cache,target=/app/target \
     cp /app/target/release/cost-estimator /app/cost-estimator && \
     cp /app/target/release/game-monitor /app/game-monitor
 
-# Runtime stage (minimal image)
-FROM debian:trixie-slim
+# Runtime stage
+# Use rust image since cost-estimator needs cargo at runtime (calls cargo_metadata::MetadataCommand)
+FROM rust:1.89.0-trixie
 
 WORKDIR /app
 
-# Install only necessary runtime dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Copy toolchain file and install the specific toolchain version
+COPY rust-toolchain.toml .
+RUN rustup show
 
 # Copy workspace metadata files required by cargo_metadata::MetadataCommand
 # cost-estimator uses cargo_metadata to find the workspace root and create output directories
 COPY --from=builder /app/Cargo.toml /app/Cargo.lock ./
-COPY --from=builder /app/rust-toolchain.toml ./
 COPY --from=builder /app/fault-proof/Cargo.toml ./fault-proof/
 COPY --from=builder /app/utils/client/Cargo.toml ./utils/client/
 COPY --from=builder /app/utils/host/Cargo.toml ./utils/host/
