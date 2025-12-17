@@ -119,10 +119,18 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 RUN --mount=type=cache,target=/app/target \
     cp /app/target/release/challenger /app/challenger
 
-# Runtime stage
-FROM rust:1.89.0-trixie
+# Runtime stage (minimal image - only runtime dependencies)
+FROM debian:bookworm-slim
 
 WORKDIR /app
+
+# Install only necessary runtime dependencies
+# libssl3 is needed for reqwest-native-tls, ca-certificates for HTTPS
+RUN apt-get update && apt-get install -y \
+    libssl3 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY resources/ ./resources/
 
 # Copy the built challenger binary (copied from cache mount to filesystem)
