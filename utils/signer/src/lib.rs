@@ -381,6 +381,12 @@ impl AdaptiveGasConfig {
         if let Some(timeout) =
             Self::parse_env_var("RBF_TIMEOUT_SECONDS", "Value must be a valid positive integer")?
         {
+            if timeout == 0 {
+                anyhow::bail!(
+                    "RBF_TIMEOUT_SECONDS must be greater than 0, got: {}",
+                    timeout
+                );
+            }
             config.rbf_timeout_seconds = timeout;
         }
         if let Some(bump) = Self::parse_env_var::<f64>(
@@ -488,6 +494,26 @@ impl AdaptiveGasOracle {
         &self.config
     }
 
+    /// EIP-1559 helper: enforce `max_fee_per_gas >= max_priority_fee_per_gas` by clamping priority.
+    fn clamp_priority_fee_to_max_fee(
+        max_fee_per_gas: u128,
+        max_priority_fee_per_gas: u128,
+    ) -> (u128, u128) {
+        (max_fee_per_gas, max_priority_fee_per_gas.min(max_fee_per_gas))
+    }
+
+    /// EIP-1559 helper: enforce `max_fee_per_gas >= max_priority_fee_per_gas` by bumping max fee if needed.
+    ///
+    /// Use this only when max fee is *not* explicitly user-pinned (e.g. when priority fee is overridden
+    /// but max fee comes from the provider).
+    fn ensure_max_fee_gte_priority_fee(
+        max_fee_per_gas: u128,
+        max_priority_fee_per_gas: u128,
+    ) -> (u128, u128) {
+        let max_fee_per_gas = max_fee_per_gas.max(max_priority_fee_per_gas);
+        (max_fee_per_gas, max_priority_fee_per_gas.min(max_fee_per_gas))
+    }
+
     /// Resets the high-gas timer (called when gas drops below threshold).
     async fn reset_high_gas_timer(&self) {
         let mut guard = self.high_gas_start.write().await;
@@ -540,6 +566,13 @@ impl AdaptiveGasOracle {
             (self.config.max_fee_override, self.config.max_priority_fee_override)
         {
             // Both overrides set - use them directly, no RPC needed
+            if max_fee < priority_fee {
+                anyhow::bail!(
+                    "Invalid EIP-1559 overrides: max_fee_per_gas ({}) must be >= max_priority_fee_per_gas ({})",
+                    max_fee,
+                    priority_fee
+                );
+            }
             return Ok(GasPriceEstimate {
                 max_fee_per_gas: max_fee,
                 max_priority_fee_per_gas: priority_fee,
@@ -557,9 +590,18 @@ impl AdaptiveGasOracle {
                 .estimate_eip1559_fees()
                 .await
                 .context("Failed to estimate EIP-1559 fees")?;
+            let mut priority_fee = fees.max_priority_fee_per_gas;
+            if priority_fee > max_fee {
+                tracing::warn!(
+                    max_fee_override = max_fee,
+                    provider_priority_fee = priority_fee,
+                    "Provider max_priority_fee_per_gas exceeds max_fee_override; clamping priority fee to max_fee"
+                );
+                priority_fee = max_fee;
+            }
             return Ok(GasPriceEstimate {
                 max_fee_per_gas: max_fee,
-                max_priority_fee_per_gas: fees.max_priority_fee_per_gas,
+                max_priority_fee_per_gas: priority_fee,
             });
         }
 
@@ -569,8 +611,18 @@ impl AdaptiveGasOracle {
                 .estimate_eip1559_fees()
                 .await
                 .context("Failed to estimate EIP-1559 fees")?;
+            let (max_fee, priority_fee) = if priority_fee > fees.max_fee_per_gas {
+                tracing::warn!(
+                    max_priority_fee_override = priority_fee,
+                    provider_max_fee = fees.max_fee_per_gas,
+                    "max_priority_fee_override exceeds provider max_fee_per_gas; bumping max_fee to satisfy EIP-1559 invariant"
+                );
+                Self::ensure_max_fee_gte_priority_fee(priority_fee, priority_fee)
+            } else {
+                Self::clamp_priority_fee_to_max_fee(fees.max_fee_per_gas, priority_fee)
+            };
             return Ok(GasPriceEstimate {
-                max_fee_per_gas: fees.max_fee_per_gas,
+                max_fee_per_gas: max_fee,
                 max_priority_fee_per_gas: priority_fee,
             });
         }
@@ -587,9 +639,13 @@ impl AdaptiveGasOracle {
                 .estimate_eip1559_fees()
                 .await
                 .context("Failed to estimate EIP-1559 fees")?;
+            let (max_fee, priority_fee) = Self::clamp_priority_fee_to_max_fee(
+                fees.max_fee_per_gas,
+                fees.max_priority_fee_per_gas,
+            );
             return Ok(GasPriceEstimate {
-                max_fee_per_gas: fees.max_fee_per_gas,
-                max_priority_fee_per_gas: fees.max_priority_fee_per_gas,
+                max_fee_per_gas: max_fee,
+                max_priority_fee_per_gas: priority_fee,
             });
         }
 
@@ -869,6 +925,7 @@ impl SignerLock {
                     oracle.config().rbf_timeout_seconds,
                     oracle.config().rbf_price_bump_percent,
                     oracle.config().rbf_max_retries,
+                    oracle.config().max_gas_price_cap,
                     estimate.max_fee_per_gas,
                     estimate.max_priority_fee_per_gas,
                 )
@@ -879,6 +936,7 @@ impl SignerLock {
             rbf_timeout_secs,
             rbf_bump_percent,
             max_retries,
+            max_gas_price_cap,
             mut current_max_fee,
             mut current_priority_fee,
         ) = rbf_config;
@@ -968,10 +1026,39 @@ impl SignerLock {
                 );
             }
 
-            // Bump gas prices for RBF (must be at least 10% higher, we use configured bump)
-            let bump_factor = 1.0 + (rbf_bump_percent / 100.0);
-            current_max_fee = (current_max_fee as f64 * bump_factor) as u128;
-            current_priority_fee = (current_priority_fee as f64 * bump_factor) as u128;
+            // Bump gas prices for RBF (must be at least 10% higher, we use configured bump).
+            // IMPORTANT: If max_gas_price_cap is configured, enforce it on every retry bump to
+            // prevent runaway escalation (e.g. 12% bumps quickly exceed a 15 gwei cap).
+            match Self::bump_rbf_fees(
+                current_max_fee,
+                current_priority_fee,
+                rbf_bump_percent,
+                max_gas_price_cap,
+            ) {
+                Some((new_max_fee, new_priority_fee)) => {
+                    if let Some(cap) = max_gas_price_cap {
+                        if new_max_fee == cap && (current_max_fee as f64 * (1.0 + rbf_bump_percent / 100.0)).ceil() as u128 > cap
+                        {
+                            tracing::warn!(
+                                attempt = attempts + 1,
+                                cap,
+                                "RBF bump hit max_gas_price_cap; clamping gas to cap"
+                            );
+                        }
+                    }
+                    current_max_fee = new_max_fee;
+                    current_priority_fee = new_priority_fee;
+                }
+                None => {
+                    anyhow::bail!(
+                        "RBF gas bump blocked by max_gas_price_cap. cap={:?}, max_fee={}, priority_fee={}, bump_percent={}",
+                        max_gas_price_cap,
+                        current_max_fee,
+                        current_priority_fee,
+                        rbf_bump_percent
+                    );
+                }
+            }
 
             tracing::info!(
                 attempt = attempts + 1,
@@ -980,6 +1067,32 @@ impl SignerLock {
                 "Bumping gas for RBF retry"
             );
         }
+    }
+
+    /// Applies an RBF bump to EIP-1559 fees, optionally enforcing `max_gas_price_cap`.
+    ///
+    /// Returns `None` if the bump cannot increase fees due to the cap (i.e. would resend the same
+    /// gas values), which would make further RBF retries pointless.
+    fn bump_rbf_fees(
+        current_max_fee: u128,
+        current_priority_fee: u128,
+        rbf_bump_percent: f64,
+        max_gas_price_cap: Option<u128>,
+    ) -> Option<(u128, u128)> {
+        let bump_factor = 1.0 + (rbf_bump_percent / 100.0);
+        let mut new_max_fee = ((current_max_fee as f64) * bump_factor).ceil() as u128;
+        let mut new_priority_fee = ((current_priority_fee as f64) * bump_factor).ceil() as u128;
+
+        if let Some(cap) = max_gas_price_cap {
+            new_max_fee = new_max_fee.min(cap);
+        }
+        // Keep EIP-1559 invariant: priority fee must not exceed max fee.
+        new_priority_fee = new_priority_fee.min(new_max_fee);
+
+        if new_max_fee <= current_max_fee && new_priority_fee <= current_priority_fee {
+            return None;
+        }
+        Some((new_max_fee, new_priority_fee))
     }
 }
 
@@ -1078,6 +1191,32 @@ mod tests {
     }
 
     #[test]
+    fn test_eip1559_clamp_priority_fee_to_max_fee() {
+        let (max_fee, priority_fee) =
+            AdaptiveGasOracle::clamp_priority_fee_to_max_fee(100, 150);
+        assert_eq!(max_fee, 100);
+        assert_eq!(priority_fee, 100);
+
+        let (max_fee, priority_fee) =
+            AdaptiveGasOracle::clamp_priority_fee_to_max_fee(200, 150);
+        assert_eq!(max_fee, 200);
+        assert_eq!(priority_fee, 150);
+    }
+
+    #[test]
+    fn test_eip1559_ensure_max_fee_gte_priority_fee_bumps_when_needed() {
+        let (max_fee, priority_fee) =
+            AdaptiveGasOracle::ensure_max_fee_gte_priority_fee(100, 150);
+        assert_eq!(max_fee, 150);
+        assert_eq!(priority_fee, 150);
+
+        let (max_fee, priority_fee) =
+            AdaptiveGasOracle::ensure_max_fee_gte_priority_fee(200, 150);
+        assert_eq!(max_fee, 200);
+        assert_eq!(priority_fee, 150);
+    }
+
+    #[test]
     fn test_signer_lock_with_override_config() {
         let signer = Signer::new_local_signer(
             "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
@@ -1170,6 +1309,29 @@ mod tests {
         assert_eq!(oracle.config().rbf_timeout_seconds, 120);
         assert!((oracle.config().rbf_price_bump_percent - 15.0).abs() < f64::EPSILON);
         assert_eq!(oracle.config().rbf_max_retries, 3);
+    }
+
+    #[test]
+    fn test_rbf_bump_respects_max_gas_price_cap() {
+        // Default cap is 15 gwei; demonstrate that a 12% bump would exceed it without clamping.
+        let current_max_fee = 15_000_000_000u128; // 15 gwei
+        let current_priority_fee = 2_000_000_000u128; // 2 gwei
+        let bump_percent = 12.0;
+        let cap = Some(15_000_000_000u128); // 15 gwei
+
+        // With cap, max_fee should remain clamped at 15 gwei, priority fee can still increase
+        // (but never exceed max_fee).
+        let (new_max_fee, new_priority_fee) =
+            SignerLock::bump_rbf_fees(current_max_fee, current_priority_fee, bump_percent, cap)
+                .expect("should still be able to bump priority fee under the cap");
+        assert_eq!(new_max_fee, 15_000_000_000u128);
+        assert!(new_priority_fee > current_priority_fee);
+        assert!(new_priority_fee <= new_max_fee);
+
+        // If both values are already at the cap (priority==max), we should not allow an RBF bump,
+        // since it would resend identical gas values.
+        let none = SignerLock::bump_rbf_fees(current_max_fee, current_max_fee, bump_percent, cap);
+        assert!(none.is_none());
     }
 
     #[test]
@@ -1602,6 +1764,17 @@ mod tests {
                 assert!(result.is_err());
                 let err_msg = result.unwrap_err().to_string();
                 assert!(err_msg.contains("GAS_FALLBACK_TIMEOUT_MINUTES"));
+                assert!(err_msg.contains("greater than 0"));
+            });
+        }
+
+        #[test]
+        fn test_adaptive_config_rejects_zero_rbf_timeout() {
+            with_env_vars(&[("RBF_TIMEOUT_SECONDS", Some("0"))], || {
+                let result = AdaptiveGasConfig::from_env();
+                assert!(result.is_err());
+                let err_msg = result.unwrap_err().to_string();
+                assert!(err_msg.contains("RBF_TIMEOUT_SECONDS"));
                 assert!(err_msg.contains("greater than 0"));
             });
         }
