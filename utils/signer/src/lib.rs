@@ -382,10 +382,7 @@ impl AdaptiveGasConfig {
             Self::parse_env_var("RBF_TIMEOUT_SECONDS", "Value must be a valid positive integer")?
         {
             if timeout == 0 {
-                anyhow::bail!(
-                    "RBF_TIMEOUT_SECONDS must be greater than 0, got: {}",
-                    timeout
-                );
+                anyhow::bail!("RBF_TIMEOUT_SECONDS must be greater than 0, got: {}", timeout);
             }
             config.rbf_timeout_seconds = timeout;
         }
@@ -502,10 +499,11 @@ impl AdaptiveGasOracle {
         (max_fee_per_gas, max_priority_fee_per_gas.min(max_fee_per_gas))
     }
 
-    /// EIP-1559 helper: enforce `max_fee_per_gas >= max_priority_fee_per_gas` by bumping max fee if needed.
+    /// EIP-1559 helper: enforce `max_fee_per_gas >= max_priority_fee_per_gas` by bumping max fee if
+    /// needed.
     ///
-    /// Use this only when max fee is *not* explicitly user-pinned (e.g. when priority fee is overridden
-    /// but max fee comes from the provider).
+    /// Use this only when max fee is *not* explicitly user-pinned (e.g. when priority fee is
+    /// overridden but max fee comes from the provider).
     fn ensure_max_fee_gte_priority_fee(
         max_fee_per_gas: u128,
         max_priority_fee_per_gas: u128,
@@ -1037,7 +1035,10 @@ impl SignerLock {
             ) {
                 Some((new_max_fee, new_priority_fee)) => {
                     if let Some(cap) = max_gas_price_cap {
-                        if new_max_fee == cap && (current_max_fee as f64 * (1.0 + rbf_bump_percent / 100.0)).ceil() as u128 > cap
+                        if new_max_fee == cap &&
+                            (current_max_fee as f64 * (1.0 + rbf_bump_percent / 100.0)).ceil()
+                                as u128 >
+                                cap
                         {
                             tracing::warn!(
                                 attempt = attempts + 1,
@@ -1192,26 +1193,22 @@ mod tests {
 
     #[test]
     fn test_eip1559_clamp_priority_fee_to_max_fee() {
-        let (max_fee, priority_fee) =
-            AdaptiveGasOracle::clamp_priority_fee_to_max_fee(100, 150);
+        let (max_fee, priority_fee) = AdaptiveGasOracle::clamp_priority_fee_to_max_fee(100, 150);
         assert_eq!(max_fee, 100);
         assert_eq!(priority_fee, 100);
 
-        let (max_fee, priority_fee) =
-            AdaptiveGasOracle::clamp_priority_fee_to_max_fee(200, 150);
+        let (max_fee, priority_fee) = AdaptiveGasOracle::clamp_priority_fee_to_max_fee(200, 150);
         assert_eq!(max_fee, 200);
         assert_eq!(priority_fee, 150);
     }
 
     #[test]
     fn test_eip1559_ensure_max_fee_gte_priority_fee_bumps_when_needed() {
-        let (max_fee, priority_fee) =
-            AdaptiveGasOracle::ensure_max_fee_gte_priority_fee(100, 150);
+        let (max_fee, priority_fee) = AdaptiveGasOracle::ensure_max_fee_gte_priority_fee(100, 150);
         assert_eq!(max_fee, 150);
         assert_eq!(priority_fee, 150);
 
-        let (max_fee, priority_fee) =
-            AdaptiveGasOracle::ensure_max_fee_gte_priority_fee(200, 150);
+        let (max_fee, priority_fee) = AdaptiveGasOracle::ensure_max_fee_gte_priority_fee(200, 150);
         assert_eq!(max_fee, 200);
         assert_eq!(priority_fee, 150);
     }
