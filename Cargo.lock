@@ -16063,5 +16063,5 @@ dependencies = [
 
 [[patch.unused]]
 name = "alloy-eips"
-version = "1.0.1"
-source = "git+https://github.com/piersy/alloy?rev=32d0621#32d0621f9e81b7c5d8f0689ed0daed9192a945f1"
+version = "1.1.0"
+source = "git+https://github.com/piersy/alloy?rev=d1ed7fd#d1ed7fd1f874ddf329ff7ca58140c13bb2754cc1"
