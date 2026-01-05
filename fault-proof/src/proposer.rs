@@ -26,7 +26,7 @@ use op_succinct_proof_utils::get_range_elf_embedded;
 use op_succinct_signer_utils::SignerLock;
 use sp1_sdk::{
     NetworkProver, Prover, ProverClient, SP1ProofMode, SP1ProofWithPublicValues, SP1ProvingKey,
-    SP1VerifyingKey, SP1_CIRCUIT_VERSION,
+    SP1Stdin, SP1VerifyingKey, SP1_CIRCUIT_VERSION,
 };
 use tokio::{sync::Mutex, time};
 
@@ -479,8 +479,15 @@ where
         let sp1_stdin = tokio::task::spawn_blocking(move || {
             let rt = tokio::runtime::Handle::current();
             rt.block_on(async move {
-                let witness_data = host_clone.run(&host_args).await?;
-                host_clone.witness_generator().get_sp1_stdin(witness_data)
+                let witness_data = host_clone
+                    .run(&host_args)
+                    .await
+                    .inspect_err(|e| tracing::error!("Failed to generate witness: {e}"))?;
+                let sp1_stdin = host_clone
+                    .witness_generator()
+                    .get_sp1_stdin(witness_data)
+                    .inspect_err(|e| tracing::error!("Failed to get proof stdin: {e}"))?;
+                Ok::<SP1Stdin, anyhow::Error>(sp1_stdin)
             })
         })
         .await
