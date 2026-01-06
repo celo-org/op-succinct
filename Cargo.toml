@@ -257,3 +257,4 @@ kona-rpc = { git = "https://github.com/celo-org/kona", rev = "b0ea596", default-
 kona-protocol = { git = "https://github.com/celo-org/kona", rev = "b0ea596", default-features = false }
 kona-registry = { git = "https://github.com/celo-org/kona", rev = "b0ea596", default-features = false }
 kona-genesis = { git = "https://github.com/celo-org/kona", rev = "b0ea596", default-features = false }
+
