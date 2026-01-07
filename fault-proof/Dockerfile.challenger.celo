@@ -99,7 +99,6 @@ RUN mkdir -p fault-proof/src fault-proof/bin && \
 # The || true allows this to fail gracefully since we have dummy source files
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
     cargo build --release --bin challenger --features eigenda || true
 
 # Now copy the actual source code
@@ -115,12 +114,7 @@ COPY bindings/src ./bindings/src
 # Use BuildKit cache mounts for faster builds
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
     cargo build --release --bin challenger --features eigenda
-
-# Copy binary from cache mount to filesystem so it can be copied to runtime stage
-RUN --mount=type=cache,target=/app/target \
-    cp /app/target/release/challenger /app/challenger
 
 # Runtime stage (minimal image - only runtime dependencies)
 FROM debian:trixie-slim
@@ -137,7 +131,7 @@ RUN apt-get update && apt-get install -y \
 COPY resources/ ./resources/
 
 # Copy the built challenger binary (copied from cache mount to filesystem)
-COPY --from=builder /app/challenger /usr/local/bin/
+COPY --from=builder /app/target/release/challenger /usr/local/bin/
 
 # Set the command
 CMD ["challenger"]
