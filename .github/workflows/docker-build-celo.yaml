@@ -1,0 +1,279 @@
+---
+  name: "Run Container Workflow"
+  on:
+    workflow_call:
+      inputs:
+        workload-id-provider:
+          required: true
+          type: string
+        service-account:
+          required: true
+          type: string
+        access-token-lifetime:
+          description: "GCP token expiration timeout"
+          required: false
+          type: string
+          default: "20m"
+        artifact-registry:
+          required: true
+          type: string
+        tags:
+          required: true
+          type: string
+        platforms:
+          type: string
+          default: "linux/amd64"
+        context:
+          required: true
+          type: string
+        file:
+          required: false
+          type: string
+        build-args:
+          required: false
+          type: string
+        provenance:
+          type: boolean
+          required: false
+          default: true
+        docker-gcp-registries:
+          type: string
+          description: "GCP Artifact registry to login into. Check https://cloud.google.com/artifact-registry/docs/docker/authentication"
+          default: "us-west1-docker.pkg.dev,us-central1-docker.pkg.dev"
+        runs-on:
+          default: "['ubuntu-24.04']"
+          type: string
+          description: "github runner tags"
+        timeout-minutes:
+          default: 30
+          type: number
+          description: "Workflow timeout"
+        environment:
+          default: ""
+          description: "Deployment environment in github"
+          type: string
+        debug-enabled:
+          default: false
+          required: false
+          type: boolean
+          description: "run tmate for troubleshooting"
+        summary:
+          default: true
+          type: boolean
+        trivy-enabled:
+          default: true
+          type: boolean
+        trivy-timeout:
+          default: 15m
+          type: string
+          description: "trivy timeout 15 minutes"
+        trivy-skip-dirs:
+          type: string
+          description: "Directories to skip scanning"
+        trivy-severity:
+          default: "UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL"
+          type: string
+          description: "trivy severity types to scan for"
+        trivy-vuln-type:
+          default: "os,library"
+          type: string
+          description: "trivy vulnerability types"
+  
+  jobs:
+    auth-build-push-scan-container:
+      runs-on: ${{ fromJson(inputs.runs-on) }}
+      timeout-minutes: ${{ inputs.timeout-minutes }}
+      defaults:
+        run:
+          shell: bash
+      # Specify an environment here if using deployment environments
+      environment:
+        name: ${{ inputs.environment }}
+      permissions: # Required for workload identity auth and push the trivy results to GitHub
+        actions: read
+        contents: write
+        id-token: write
+        security-events: write
+        attestations: write
+        pull-requests: write
+      steps:
+        - name: Preprocess inputs
+          id: preprocessed_inputs
+          env:
+            RAW_TAGS: ${{ inputs.tags }}
+            RAW_REGISTRY: ${{ inputs.artifact-registry }}
+          run: |
+            set -euo pipefail
+            START_TIME=$(date +%s)
+            echo "⏱️ Starting input preprocessing at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+  
+            location=${RAW_REGISTRY%%/*}
+            app_name=${RAW_REGISTRY##*/}
+            raw_tags="${RAW_TAGS//$'\r'/}"
+  
+            normalized_tags="$(printf '%s' "$raw_tags" | tr ',' '\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d')"
+            tags_csv="$(printf '%s' "$normalized_tags" | paste -sd, -)"
+  
+            echo "::debug::location=$location"
+            echo "::debug::app_name=$app_name"
+            echo "::debug::tags=$tags_csv"
+  
+            echo "tags_csv=$tags_csv" >> "$GITHUB_OUTPUT"
+            echo "location=$location" >> $GITHUB_OUTPUT
+            echo "app_name=$app_name" >> $GITHUB_OUTPUT
+  
+            END_TIME=$(date +%s)
+            DURATION=$((END_TIME - START_TIME))
+            echo "✅ Input preprocessing completed in ${DURATION}s"
+  
+        # Security policy docker is configured in step security app
+        # Policy can be seen here https://app.stepsecurity.io/github/celo-org/actions/policies/docker
+        # disable-sudo is set to false if debug is true, because tmate requires root to work.
+        - name: Harden Runner
+          uses: step-security/harden-runner@v2
+          if: runner.environment == 'github-hosted'
+          with:
+            policy: ${{ inputs.debug-enabled == true && 'docker-debug' || 'docker' }}
+  
+        # Only turns on tmate if workflow_dispatch set debug to true.
+        # limit-access-to-actor or some other security precaution should be added
+        # so anyone with the link can't ssh in without a key.
+        # Currently detaches and runs concurrently with workflow, can change
+        # if needed
+  
+        - name: Setup tmate session
+          uses: mxschmitt/action-tmate@e5c7151931ca95bad1c6f4190c730ecf8c7dde48
+          if: inputs.debug-enabled == true
+          with:
+            detached: true
+            limit-access-to-actor: true
+  
+        - name: "Checkout"
+          uses: actions/checkout@v4
+          
+        - name: Log checkout completion
+          run: echo "✅ Checkout completed at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+  
+        - name: Check if GHAS is Enabled
+          uses: actions/github-script@v7
+          id: ghas-check
+          with:
+            script: |
+              const [owner, repo] = '${{ github.repository }}'.split("/");
+              const res = await github.rest.repos.get({ owner, repo });
+              const isPrivate = res.data.private;
+              const hasGhas = res.data.security_and_analysis?.advanced_security?.status === 'enabled';
+              if (isPrivate && !hasGhas) {
+                core.warning('GHAS is NOT enabled and repo is private. Cannot upload SARIF.');
+                return false;
+              }
+              return true;
+  
+        - name: Log Trivy FS scan start
+          if: inputs.trivy-enabled
+          run: echo "⏱️ Starting Trivy filesystem scan at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+  
+        - name: Run Trivy Scan
+          id: trivy-fs
+          if: inputs.trivy-enabled
+          uses: celo-org/trivy-composite-action@v1.0.1
+          with:
+            scan-type: fs
+            scan-ref: ${{ inputs.context }}
+            timeout: ${{ inputs.trivy-timeout }}
+            vuln-type: ${{ inputs.trivy-vuln-type }}
+            severity: ${{ inputs.trivy-severity }}
+            skip-dirs: ${{ inputs.trivy-skip-dirs }}
+        
+        - name: Log Trivy FS scan completion
+          if: inputs.trivy-enabled
+          run: echo "✅ Trivy filesystem scan completed at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+  
+        - name: Upload SARIF to Security Tab
+          if: inputs.trivy-enabled &&fromJSON(steps.ghas-check.outputs.result)
+          uses: github/codeql-action/upload-sarif@v3
+          with:
+            sarif_file: ${{ steps.trivy-fs.outputs.sarif-file }}
+            category: fs-${{ steps.preprocessed_inputs.outputs.app_name }}
+  
+        - name: Log GCP authentication start
+          run: echo "⏱️ Starting GCP authentication at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+  
+        - name: Authenticate to Google Cloud
+          id: auth
+          uses: "google-github-actions/auth@v2"
+          with:
+            workload_identity_provider: ${{ inputs.workload-id-provider }}
+            service_account: ${{ inputs.service-account }}
+            access_token_lifetime: ${{ inputs.access-token-lifetime }}
+            token_format: access_token
+        
+        - name: Log GCP authentication completion
+          run: echo "✅ GCP authentication completed at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+  
+        - name: Login to GAR
+          uses: docker/login-action@v3
+          with:
+            registry: ${{ inputs.artifact-registry }}
+            username: oauth2accesstoken
+            password: ${{ steps.auth.outputs.access_token }}
+  
+        - name: Log Docker build start
+          run: echo "⏱️ Starting Docker build and push at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+  
+        - name: Build, push and scan the container
+          uses: celo-org/docker-build-composite-action@jcortejoso/cache
+          id: docker-build-scan
+          with:
+            platforms: ${{ inputs.platforms }}
+            registry: ${{ inputs.artifact-registry }}
+            tags: ${{ steps.preprocessed_inputs.outputs.tags_csv }}
+            context: ${{ inputs.context }}
+            dockerfile: ${{ inputs.file }}
+            build-args: ${{ inputs.build-args }}
+            push: ${{ fromJSON(true) }}
+        
+        - name: Log Docker build completion
+          run: echo "✅ Docker build and push completed at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+  
+        - name: Log Trivy image scan start
+          if: inputs.trivy-enabled
+          run: echo "⏱️ Starting Trivy image scan at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+  
+        - name: Run Trivy Scan
+          id: trivy-image
+          if: inputs.trivy-enabled
+          uses: celo-org/trivy-composite-action@v1.0.1
+          with:
+            scan-type: image
+            image-ref: ${{ steps.docker-build-scan.outputs.full-image-name }}
+            timeout: ${{ inputs.trivy-timeout }}
+            vuln-type: ${{ inputs.trivy-vuln-type }}
+            severity: ${{ inputs.trivy-severity }}
+            skip-dirs: ${{ inputs.trivy-skip-dirs }}
+            skip-setup-trivy: true
+        
+        - name: Log Trivy image scan completion
+          if: inputs.trivy-enabled
+          run: echo "✅ Trivy image scan completed at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+  
+        - name: Upload SARIF to Security Tab
+          if: inputs.trivy-enabled &&fromJSON(steps.ghas-check.outputs.result)
+          uses: github/codeql-action/upload-sarif@v3
+          with:
+            sarif_file: ${{ steps.trivy-image.outputs.sarif-file }}
+            category: image-${{ steps.preprocessed_inputs.outputs.app_name }}
+  
+        - name: Add Trivy FileSystem Report to Workflow Summary
+          if: inputs.summary && (steps.trivy-fs.outputs.text-report != '' || steps.trivy-image.outputs.text-report )
+          shell: bash
+          run: |
+            echo "### Trivy Scan Output" >> $GITHUB_STEP_SUMMARY
+            cat ${{ steps.trivy-fs.outputs.text-report }} >> $GITHUB_STEP_SUMMARY
+            echo -e "\n" >> $GITHUB_STEP_SUMMARY # Add a blank line
+            cat ${{ steps.trivy-image.outputs.text-report }} >> $GITHUB_STEP_SUMMARY
+        
+        - name: Log workflow completion
+          if: always()
+          run: echo "🏁 Workflow completed at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+  
