@@ -28,7 +28,7 @@ FROM base AS planner
 
 COPY . .
 
-RUN cargo chef prepare  --recipe-path recipe.json
+RUN cargo chef prepare --bin proposer --recipe-path recipe.json
 
 RUN cat recipe.json
 
@@ -39,7 +39,7 @@ FROM base AS builder
 COPY --from=planner /app/recipe.json recipe.json
 
 # only build dependencies with cargo-chef 
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --release --features eigenda --bin proposer --recipe-path recipe.json 
 
 # now copy the actual source code
 COPY . .
