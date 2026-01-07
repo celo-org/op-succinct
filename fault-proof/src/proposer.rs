@@ -215,6 +215,7 @@ where
     /// Runs the proposer indefinitely.
     pub async fn run(self: Arc<Self>) -> Result<()> {
         tracing::info!("OP Succinct Proposer running...");
+        tracing::debug!("... and running...");
         let mut interval = time::interval(Duration::from_secs(self.config.fetch_interval));
 
         // Spawn a dedicated task for continuous metrics collection

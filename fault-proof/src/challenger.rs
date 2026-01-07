@@ -66,6 +66,7 @@ where
     /// cached state, and then handles challenging, resolution, and bond-claiming tasks.
     pub async fn run(&mut self) -> Result<()> {
         tracing::info!("OP Succinct Lite Challenger running...");
+        tracing::debug!("... and running...");
         if self.config.disable_monitor_only {
             if self.config.malicious_challenge_percentage > 0.0 {
                 tracing::warn!(
