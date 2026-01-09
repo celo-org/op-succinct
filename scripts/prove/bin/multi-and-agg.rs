@@ -4,13 +4,13 @@ use alloy_sol_macro::sol;
 use alloy_transport_http::reqwest::Url;
 use anyhow::{Context, Result};
 use clap::Parser;
+use fault_proof::config::RangeSplitCount;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use op_succinct_client_utils::boot::BootInfoStruct;
 use op_succinct_elfs::AGGREGATION_ELF;
 use op_succinct_host_utils::{
-    block_range::{get_validated_block_range, RangeSplitCount},
-    fetcher::OPSuccinctDataFetcher,
-    get_agg_proof_stdin, get_network_proof, get_range_proof_stdin, ProvingConfig,
+    block_range::get_validated_block_range, fetcher::OPSuccinctDataFetcher, get_agg_proof_stdin,
+    get_network_proof, get_range_proof_stdin, ProvingConfig,
 };
 use op_succinct_proof_utils::{get_range_elf_embedded, initialize_host};
 use op_succinct_prove::DEFAULT_RANGE;
