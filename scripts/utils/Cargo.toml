@@ -48,6 +48,10 @@ path = "bin/game_monitor.rs"
 name = "parallel-cost-estimator"
 path = "bin/parallel_cost_estimator.rs"
 
+[[bin]]
+name = "check-excess-blob-gas"
+path = "bin/check_excess_blob_gas.rs"
+
 [dependencies]
 
 # workspace
