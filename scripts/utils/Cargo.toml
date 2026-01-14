@@ -48,6 +48,10 @@ path = "bin/game_monitor.rs"
 name = "parallel-cost-estimator"
 path = "bin/parallel_cost_estimator.rs"
 
+[[bin]]
+name = "find-active-range"
+path = "bin/find_active_range.rs"
+
 [dependencies]
 
 # workspace
