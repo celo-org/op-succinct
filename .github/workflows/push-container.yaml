@@ -71,4 +71,4 @@ jobs:
       context: .
       file: ${{ inputs.file }}
       tags: ${{ needs.infer_image_metadata.outputs.tags }}
-      trivy-enabled: true
+      trivy-enabled: false
