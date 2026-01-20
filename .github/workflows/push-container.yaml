@@ -29,6 +29,14 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
+          # By default for PRs checkout will checkout the pr merge commit which
+          # is maintained by github and is the PR branch merged into the default
+          # branch and then use that ephemeral commit to build with. This is
+          # highly confusing when building docker images since the tags don't
+          # relate to any accessible commits. The fix is to ensure we use the
+          # head commit sha. See -
+          # https://github.com/actions/checkout?tab=readme-ov-file#checkout-pull-request-head-commit-instead-of-merge-commit
+          ref: ${{ github.event.pull_request.head.sha }}
           images: ${{ inputs.artifact-registry }}
           tags: |
             type=semver,pattern={{version}},match=celo/v(.*)
@@ -36,15 +44,8 @@ jobs:
             type=edge
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha
-            # By default for PRs checkout will checkout the pr merge commit which
-            # is maintained by github and is the PR branch merged into the default
-            # branch and then use that ephemeral commit to build with. This is
-            # highly confusing when building docker images since the tags don't
-            # relate to any accessible commits. The fix is to ensure we use the
-            # head commit sha. See -
-            # https://github.com/actions/checkout?tab=readme-ov-file#checkout-pull-request-head-commit-instead-of-merge-commit
-            # And as a backup when not in a PR context we use the github.sha.
-            type=sha,event=pr
+            # pull request event
+            type=ref,event=pr
   build_push_container:
     needs: infer_image_metadata
     permissions:
