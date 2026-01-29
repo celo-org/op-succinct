@@ -10,7 +10,7 @@
 sp1_zkvm::entrypoint!(main);
 
 use canoe_sp1_cc_verifier::CanoeSp1CCVerifier;
-use canoe_verifier_address_fetcher::CanoeVerifierAddressFetcherDeployedByEigenLabs;
+use celo_host::CeloCanoeVerifierAddressFetcher;
 use hokulea_proof::eigenda_witness::EigenDAWitness;
 use hokulea_zkvm_verification::eigenda_witness_to_preloaded_provider;
 use op_succinct_client_utils::witness::{EigenDAWitnessData, WitnessData};
@@ -42,7 +42,7 @@ fn main() {
         let preloaded_preimage_provider = eigenda_witness_to_preloaded_provider(
             oracle.clone(),
             CanoeSp1CCVerifier {},
-            CanoeVerifierAddressFetcherDeployedByEigenLabs {},
+            CeloCanoeVerifierAddressFetcher {},
             eigenda_witness,
         )
         .await
