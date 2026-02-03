@@ -301,3 +301,15 @@ kona-rpc = { git = "https://github.com/celo-org/kona", rev = "ce6c778e", default
 kona-protocol = { git = "https://github.com/celo-org/kona", rev = "ce6c778e", default-features = false }
 kona-registry = { git = "https://github.com/celo-org/kona", rev = "ce6c778e", default-features = false }
 kona-genesis = { git = "https://github.com/celo-org/kona", rev = "ce6c778e", default-features = false }
+
+[patch."https://github.com/Layr-Labs/hokulea"]
+hokulea-zkvm-verification = { git = "https://github.com/celo-org/hokulea", rev = "301f4532" }
+hokulea-proof = { git = "https://github.com/celo-org/hokulea", rev = "301f4532" }
+hokulea-eigenda = { git = "https://github.com/celo-org/hokulea", rev = "301f4532" }
+hokulea-witgen = { git = "https://github.com/celo-org/hokulea", rev = "301f4532" }
+hokulea-compute-proof = { git = "https://github.com/celo-org/hokulea", rev = "301f4532" }
+eigenda-cert = { git = "https://github.com/celo-org/hokulea", rev = "301f4532" }
+canoe-verifier = { git = "https://github.com/celo-org/hokulea", rev = "301f4532" }
+canoe-verifier-address-fetcher = { git = "https://github.com/celo-org/hokulea", rev = "301f4532" }
+canoe-sp1-cc-verifier = { git = "https://github.com/celo-org/hokulea", rev = "301f4532" }
+canoe-sp1-cc-host = { git = "https://github.com/celo-org/hokulea", rev = "301f4532" }
