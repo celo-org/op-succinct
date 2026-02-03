@@ -249,10 +249,10 @@ k256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-k2
 # Both are now at 1.4.x for hokulea v1.1.4 compatibility
 
 # We patch alloy-eips to a version where fake_exponential does not overflow when provided with large inputs.
-alloy-eips = { git = "https://github.com/celo-org/alloy", rev = "f88c10d3", default-features = false }
+alloy-eips = { git = "https://github.com/celo-org/alloy", rev = "f88c10d3"}
 # We also need to patch alloy-serde to this version since otherwise a different non patch version is also included in the project
 # which breaks trait bound satisfaction
-alloy-serde = { git = "https://github.com/celo-org/alloy", rev = "f88c10d3", default-features = false }
+alloy-serde = { git = "https://github.com/celo-org/alloy", rev = "f88c10d3"}
 
 
 # Note: vergen-lib conflict fixed by pinning vergen=9.0.4, vergen-git2=1.0.5 in Cargo.lock
@@ -287,18 +287,15 @@ reth-trie-common = { git = "https://github.com/succinctlabs/reth", branch = "v1.
 
 [patch."https://github.com/op-rs/kona"]
 kona-mpt = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-derive = { git = "https://github.com/celo-org/kona", rev = "ce6c778e", default-features = false }
+kona-derive = { git = "https://github.com/celo-org/kona", rev = "ce6c778e"}
 kona-driver = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-preimage = { git = "https://github.com/celo-org/kona", rev = "ce6c778e", features = [
-    "rkyv",
-    "serde",
-] }
+kona-preimage = { git = "https://github.com/celo-org/kona", rev = "ce6c778e"}
 kona-executor = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
 kona-proof = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
 kona-client = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
 kona-host = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
 kona-providers-alloy = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-rpc = { git = "https://github.com/celo-org/kona", rev = "ce6c778e", default-features = false }
-kona-protocol = { git = "https://github.com/celo-org/kona", rev = "ce6c778e", default-features = false }
-kona-registry = { git = "https://github.com/celo-org/kona", rev = "ce6c778e", default-features = false }
-kona-genesis = { git = "https://github.com/celo-org/kona", rev = "ce6c778e", default-features = false }
+kona-rpc = { git = "https://github.com/celo-org/kona", rev = "ce6c778e"}
+kona-protocol = { git = "https://github.com/celo-org/kona", rev = "ce6c778e"}
+kona-registry = { git = "https://github.com/celo-org/kona", rev = "ce6c778e"}
+kona-genesis = { git = "https://github.com/celo-org/kona", rev = "ce6c778e"}
