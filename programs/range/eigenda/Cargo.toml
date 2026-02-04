@@ -15,9 +15,6 @@ serde_cbor.workspace = true
 # kona
 kona-proof.workspace = true
 
-# celo-kona
-celo-host.workspace = true
-
 # hokulea
 hokulea-proof.workspace = true
 hokulea-zkvm-verification.workspace = true
@@ -32,6 +29,11 @@ op-succinct-eigenda-client-utils.workspace = true
 op-succinct-range-utils = { workspace = true, features = [
     "tracing-subscriber",
 ] }
+
+# celo verifier fetcher deps
+alloy-primitives.workspace = true
+canoe-verifier-address-fetcher.workspace = true
+eigenda-cert.workspace = true
 
 # `tracing-subscriber` feature dependencies
 tracing-subscriber = { workspace = true, optional = true }

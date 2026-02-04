@@ -124,6 +124,8 @@ hokulea-witgen = { git = "https://github.com/Layr-Labs/hokulea", rev = "hokulea-
 hokulea-zkvm-verification = { git = "https://github.com/Layr-Labs/hokulea", rev = "hokulea-client/v1.1.4" }
 canoe-sp1-cc-host = { git = "https://github.com/Layr-Labs/hokulea", rev = "hokulea-client/v1.1.4" }
 canoe-sp1-cc-verifier = { git = "https://github.com/Layr-Labs/hokulea", rev = "hokulea-client/v1.1.4" }
+canoe-verifier-address-fetcher = { git = "https://github.com/Layr-Labs/hokulea", rev = "hokulea-client/v1.1.4" }
+eigenda-cert = { git = "https://github.com/Layr-Labs/hokulea", rev = "hokulea-client/v1.1.4" }
 
 # op-succinct
 op-succinct-prove = { path = "scripts/prove" }

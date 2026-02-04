@@ -7,10 +7,12 @@
 //! the data is supplied by the host binary to the verifiable program.
 
 #![no_main]
+
+mod celo_verifier_fetcher;
 sp1_zkvm::entrypoint!(main);
 
 use canoe_sp1_cc_verifier::CanoeSp1CCVerifier;
-use celo_host::CeloCanoeVerifierAddressFetcher;
+use celo_verifier_fetcher::CeloCanoeVerifierAddressFetcher;
 use hokulea_proof::eigenda_witness::EigenDAWitness;
 use hokulea_zkvm_verification::eigenda_witness_to_preloaded_provider;
 use op_succinct_client_utils::witness::{EigenDAWitnessData, WitnessData};
