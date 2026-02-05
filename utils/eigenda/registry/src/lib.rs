@@ -1,4 +1,7 @@
-//! Celo EigenDA verifier address fetcher implementation.
+//! Celo EigenDA registry for verifier address fetching.
+//!
+//! This crate provides Celo-specific implementations for EigenDA cert verification,
+//! returning Celo-deployed router addresses instead of the default EigenLabs-deployed ones.
 
 use alloy_primitives::{address, Address};
 use canoe_verifier_address_fetcher::{

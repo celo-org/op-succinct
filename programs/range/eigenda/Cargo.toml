@@ -30,10 +30,8 @@ op-succinct-range-utils = { workspace = true, features = [
     "tracing-subscriber",
 ] }
 
-# celo verifier fetcher deps
-alloy-primitives.workspace = true
-canoe-verifier-address-fetcher.workspace = true
-eigenda-cert.workspace = true
+# celo eigenda registry
+celo-eigenda-registry.workspace = true
 
 # `tracing-subscriber` feature dependencies
 tracing-subscriber = { workspace = true, optional = true }
