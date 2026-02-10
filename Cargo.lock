@@ -111,7 +111,7 @@ dependencies = [
 [[package]]
 name = "alloy-celo-evm"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=74619dc#74619dc7c1d734144d0fd4479af1db7a628a4628"
+source = "git+https://github.com/celo-org/celo-kona?rev=a907b8e#a907b8ebaa7d540d92fe5b0d94b3c34f32cbf5e4"
 dependencies = [
  "alloy-consensus",
  "alloy-evm 0.24.2",
@@ -1038,9 +1038,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-trie"
-version = "0.9.4"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d7fd448ab0a017de542de1dcca7a58e7019fe0e7a34ed3f9543ebddf6aceffa"
+checksum = "428aa0f0e0658ff091f8f667c406e034b431cb10abd39de4f507520968acc499"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -1049,7 +1049,6 @@ dependencies = [
  "nybbles",
  "serde",
  "smallvec",
- "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -1561,9 +1560,9 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "aws-config"
-version = "1.8.13"
+version = "1.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c456581cb3c77fafcc8c67204a70680d40b61112d6da78c77bd31d945b65f1b5"
+checksum = "96571e6996817bf3d58f6b569e4b9fd2e9d2fcf9f7424eed07b2ce9bb87535e5"
 dependencies = [
  "aws-credential-types",
  "aws-runtime",
@@ -1571,7 +1570,7 @@ dependencies = [
  "aws-sdk-ssooidc",
  "aws-sdk-sts",
  "aws-smithy-async",
- "aws-smithy-http",
+ "aws-smithy-http 0.62.6",
  "aws-smithy-json",
  "aws-smithy-runtime",
  "aws-smithy-runtime-api",
@@ -1625,22 +1624,22 @@ dependencies = [
 
 [[package]]
 name = "aws-runtime"
-version = "1.6.0"
+version = "1.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c635c2dc792cb4a11ce1a4f392a925340d1bdf499289b5ec1ec6810954eb43f5"
+checksum = "959dab27ce613e6c9658eb3621064d0e2027e5f2acb65bc526a43577facea557"
 dependencies = [
  "aws-credential-types",
  "aws-sigv4",
  "aws-smithy-async",
- "aws-smithy-http",
+ "aws-smithy-http 0.62.6",
  "aws-smithy-runtime",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
  "aws-types",
  "bytes",
  "fastrand",
- "http 1.4.0",
- "http-body 1.0.1",
+ "http 0.2.12",
+ "http-body 0.4.6",
  "percent-encoding",
  "pin-project-lite",
  "tracing",
@@ -1649,14 +1648,14 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-kms"
-version = "1.99.0"
+version = "1.98.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa37c3e267142899d18cb1617258c93ed7a78873e9adff0221838b0e621188be"
+checksum = "50c74fef3d08159467cad98300f33a2e3bd1a985d527ad66ab0ea83c95e3a615"
 dependencies = [
  "aws-credential-types",
  "aws-runtime",
  "aws-smithy-async",
- "aws-smithy-http",
+ "aws-smithy-http 0.62.6",
  "aws-smithy-json",
  "aws-smithy-observability",
  "aws-smithy-runtime",
@@ -1666,21 +1665,20 @@ dependencies = [
  "bytes",
  "fastrand",
  "http 0.2.12",
- "http 1.4.0",
  "regex-lite",
  "tracing",
 ]
 
 [[package]]
 name = "aws-sdk-sso"
-version = "1.93.0"
+version = "1.92.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dcb38bb33fc0a11f1ffc3e3e85669e0a11a37690b86f77e75306d8f369146a0"
+checksum = "b7d63bd2bdeeb49aa3f9b00c15e18583503b778b2e792fc06284d54e7d5b6566"
 dependencies = [
  "aws-credential-types",
  "aws-runtime",
  "aws-smithy-async",
- "aws-smithy-http",
+ "aws-smithy-http 0.62.6",
  "aws-smithy-json",
  "aws-smithy-observability",
  "aws-smithy-runtime",
@@ -1690,21 +1688,20 @@ dependencies = [
  "bytes",
  "fastrand",
  "http 0.2.12",
- "http 1.4.0",
  "regex-lite",
  "tracing",
 ]
 
 [[package]]
 name = "aws-sdk-ssooidc"
-version = "1.95.0"
+version = "1.94.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ada8ffbea7bd1be1f53df1dadb0f8fdb04badb13185b3321b929d1ee3caad09"
+checksum = "532d93574bf731f311bafb761366f9ece345a0416dbcc273d81d6d1a1205239b"
 dependencies = [
  "aws-credential-types",
  "aws-runtime",
  "aws-smithy-async",
- "aws-smithy-http",
+ "aws-smithy-http 0.62.6",
  "aws-smithy-json",
  "aws-smithy-observability",
  "aws-smithy-runtime",
@@ -1714,21 +1711,20 @@ dependencies = [
  "bytes",
  "fastrand",
  "http 0.2.12",
- "http 1.4.0",
  "regex-lite",
  "tracing",
 ]
 
 [[package]]
 name = "aws-sdk-sts"
-version = "1.97.0"
+version = "1.96.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6443ccadc777095d5ed13e21f5c364878c9f5bad4e35187a6cdbd863b0afcad"
+checksum = "357e9a029c7524db6a0099cd77fbd5da165540339e7296cca603531bc783b56c"
 dependencies = [
  "aws-credential-types",
  "aws-runtime",
  "aws-smithy-async",
- "aws-smithy-http",
+ "aws-smithy-http 0.62.6",
  "aws-smithy-json",
  "aws-smithy-observability",
  "aws-smithy-query",
@@ -1739,19 +1735,18 @@ dependencies = [
  "aws-types",
  "fastrand",
  "http 0.2.12",
- "http 1.4.0",
  "regex-lite",
  "tracing",
 ]
 
 [[package]]
 name = "aws-sigv4"
-version = "1.3.8"
+version = "1.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efa49f3c607b92daae0c078d48a4571f599f966dce3caee5f1ea55c4d9073f99"
+checksum = "69e523e1c4e8e7e8ff219d732988e22bfeae8a1cafdbe6d9eca1546fa080be7c"
 dependencies = [
  "aws-credential-types",
- "aws-smithy-http",
+ "aws-smithy-http 0.62.6",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
  "bytes",
@@ -1775,6 +1770,27 @@ dependencies = [
  "futures-util",
  "pin-project-lite",
  "tokio",
+]
+
+[[package]]
+name = "aws-smithy-http"
+version = "0.62.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "826141069295752372f8203c17f28e30c464d22899a43a0c9fd9c458d469c88b"
+dependencies = [
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "bytes",
+ "bytes-utils",
+ "futures-core",
+ "futures-util",
+ "http 0.2.12",
+ "http 1.4.0",
+ "http-body 0.4.6",
+ "percent-encoding",
+ "pin-project-lite",
+ "pin-utils",
+ "tracing",
 ]
 
 [[package]]
@@ -1830,9 +1846,9 @@ dependencies = [
 
 [[package]]
 name = "aws-smithy-json"
-version = "0.62.3"
+version = "0.61.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cb96aa208d62ee94104645f7b2ecaf77bf27edf161590b6224bfbac2832f979"
+checksum = "49fa1213db31ac95288d981476f78d05d9cbb0353d22cdf3472cc05bb02f6551"
 dependencies = [
  "aws-smithy-types",
 ]
@@ -1863,7 +1879,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f3df87c14f0127a0d77eb261c3bc45d5b4833e2a1f63583ebfb728e4852134ee"
 dependencies = [
  "aws-smithy-async",
- "aws-smithy-http",
+ "aws-smithy-http 0.63.3",
  "aws-smithy-http-client",
  "aws-smithy-observability",
  "aws-smithy-runtime-api",
@@ -2623,7 +2639,7 @@ dependencies = [
 [[package]]
 name = "canoe-bindings"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=bf561cc#bf561ccda57b8a043d6b403a225c579eacf82de3"
 dependencies = [
  "alloy-sol-types",
  "serde",
@@ -2632,21 +2648,21 @@ dependencies = [
 [[package]]
 name = "canoe-provider"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=bf561cc#bf561ccda57b8a043d6b403a225c579eacf82de3"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "anyhow",
  "async-trait",
- "canoe-bindings 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
- "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
+ "canoe-bindings 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
+ "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "serde",
 ]
 
 [[package]]
 name = "canoe-sp1-cc-host"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=bf561cc#bf561ccda57b8a043d6b403a225c579eacf82de3"
 dependencies = [
  "alloy-primitives",
  "alloy-rpc-client",
@@ -2655,7 +2671,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bincode",
- "canoe-bindings 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
+ "canoe-bindings 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "canoe-provider",
  "rsp-primitives",
  "sp1-cc-client-executor",
@@ -2669,15 +2685,15 @@ dependencies = [
 [[package]]
 name = "canoe-sp1-cc-verifier"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=bf561cc#bf561ccda57b8a043d6b403a225c579eacf82de3"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "bincode",
- "canoe-bindings 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
- "canoe-verifier 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
+ "canoe-bindings 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
+ "canoe-verifier 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "cfg-if",
- "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
+ "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "rsp-primitives",
  "sha2 0.10.9",
  "sp1-cc-client-executor",
@@ -2704,11 +2720,11 @@ dependencies = [
 [[package]]
 name = "canoe-verifier"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=bf561cc#bf561ccda57b8a043d6b403a225c579eacf82de3"
 dependencies = [
  "alloy-genesis",
  "alloy-primitives",
- "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
+ "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "reth-chainspec",
  "reth-evm",
  "revm-primitives",
@@ -2730,10 +2746,10 @@ dependencies = [
 [[package]]
 name = "canoe-verifier-address-fetcher"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=bf561cc#bf561ccda57b8a043d6b403a225c579eacf82de3"
 dependencies = [
  "alloy-primitives",
- "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
+ "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "thiserror 2.0.18",
 ]
 
@@ -2861,7 +2877,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-consensus"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=74619dc#74619dc7c1d734144d0fd4479af1db7a628a4628"
+source = "git+https://github.com/celo-org/celo-kona?rev=a907b8e#a907b8ebaa7d540d92fe5b0d94b3c34f32cbf5e4"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -2876,7 +2892,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-network"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=74619dc#74619dc7c1d734144d0fd4479af1db7a628a4628"
+source = "git+https://github.com/celo-org/celo-kona?rev=a907b8e#a907b8ebaa7d540d92fe5b0d94b3c34f32cbf5e4"
 dependencies = [
  "alloy-consensus",
  "alloy-network",
@@ -2890,7 +2906,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-rpc-types"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=74619dc#74619dc7c1d734144d0fd4479af1db7a628a4628"
+source = "git+https://github.com/celo-org/celo-kona?rev=a907b8e#a907b8ebaa7d540d92fe5b0d94b3c34f32cbf5e4"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -2909,7 +2925,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-rpc-types-engine"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=74619dc#74619dc7c1d734144d0fd4479af1db7a628a4628"
+source = "git+https://github.com/celo-org/celo-kona?rev=a907b8e#a907b8ebaa7d540d92fe5b0d94b3c34f32cbf5e4"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -2925,7 +2941,7 @@ dependencies = [
 [[package]]
 name = "celo-client"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=74619dc#74619dc7c1d734144d0fd4479af1db7a628a4628"
+source = "git+https://github.com/celo-org/celo-kona?rev=a907b8e#a907b8ebaa7d540d92fe5b0d94b3c34f32cbf5e4"
 dependencies = [
  "alloy-celo-evm",
  "alloy-consensus",
@@ -2950,7 +2966,7 @@ dependencies = [
 [[package]]
 name = "celo-driver"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=74619dc#74619dc7c1d734144d0fd4479af1db7a628a4628"
+source = "git+https://github.com/celo-org/celo-kona?rev=a907b8e#a907b8ebaa7d540d92fe5b0d94b3c34f32cbf5e4"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -2969,18 +2985,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "celo-eigenda-registry"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "canoe-verifier-address-fetcher 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
- "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
-]
-
-[[package]]
 name = "celo-executor"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=74619dc#74619dc7c1d734144d0fd4479af1db7a628a4628"
+source = "git+https://github.com/celo-org/celo-kona?rev=a907b8e#a907b8ebaa7d540d92fe5b0d94b3c34f32cbf5e4"
 dependencies = [
  "alloy-celo-evm",
  "alloy-consensus",
@@ -3008,7 +3015,7 @@ dependencies = [
 [[package]]
 name = "celo-genesis"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=74619dc#74619dc7c1d734144d0fd4479af1db7a628a4628"
+source = "git+https://github.com/celo-org/celo-kona?rev=a907b8e#a907b8ebaa7d540d92fe5b0d94b3c34f32cbf5e4"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3028,7 +3035,7 @@ dependencies = [
 [[package]]
 name = "celo-host"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=74619dc#74619dc7c1d734144d0fd4479af1db7a628a4628"
+source = "git+https://github.com/celo-org/celo-kona?rev=a907b8e#a907b8ebaa7d540d92fe5b0d94b3c34f32cbf5e4"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3039,13 +3046,11 @@ dependencies = [
  "anyhow",
  "ark-ff 0.5.0",
  "async-trait",
- "canoe-verifier-address-fetcher 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
  "celo-alloy-network",
  "celo-alloy-rpc-types-engine",
  "celo-client",
  "celo-genesis",
  "clap",
- "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
  "hokulea-host-bin 0.1.0 (git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.4)",
  "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.4)",
  "kona-cli 0.3.2 (git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.2.7)",
@@ -3068,7 +3073,7 @@ dependencies = [
 [[package]]
 name = "celo-proof"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=74619dc#74619dc7c1d734144d0fd4479af1db7a628a4628"
+source = "git+https://github.com/celo-org/celo-kona?rev=a907b8e#a907b8ebaa7d540d92fe5b0d94b3c34f32cbf5e4"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3103,7 +3108,7 @@ dependencies = [
 [[package]]
 name = "celo-protocol"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=74619dc#74619dc7c1d734144d0fd4479af1db7a628a4628"
+source = "git+https://github.com/celo-org/celo-kona?rev=a907b8e#a907b8ebaa7d540d92fe5b0d94b3c34f32cbf5e4"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3132,7 +3137,7 @@ dependencies = [
 [[package]]
 name = "celo-registry"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=74619dc#74619dc7c1d734144d0fd4479af1db7a628a4628"
+source = "git+https://github.com/celo-org/celo-kona?rev=a907b8e#a907b8ebaa7d540d92fe5b0d94b3c34f32cbf5e4"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -3146,7 +3151,7 @@ dependencies = [
 [[package]]
 name = "celo-revm"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=74619dc#74619dc7c1d734144d0fd4479af1db7a628a4628"
+source = "git+https://github.com/celo-org/celo-kona?rev=a907b8e#a907b8ebaa7d540d92fe5b0d94b3c34f32cbf5e4"
 dependencies = [
  "alloy-eips",
  "alloy-evm 0.24.2",
@@ -3231,9 +3236,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.5.57"
+version = "4.5.56"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6899ea499e3fb9305a65d5ebf6e3d2248c5fab291f300ad0a704fbe142eae31a"
+checksum = "a75ca66430e33a14957acc24c5077b503e7d374151b2b4b3a10c83b4ceb4be0e"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -3241,9 +3246,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.5.57"
+version = "4.5.56"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b12c8b680195a62a8364d16b8447b01b6c2c8f9aaf68bee653be34d4245e238"
+checksum = "793207c7fa6300a0608d1080b858e5fdbe713cdc1c8db9fb17777d8a13e63df0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -4064,12 +4069,12 @@ dependencies = [
 [[package]]
 name = "eigenda-cert"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=bf561cc#bf561ccda57b8a043d6b403a225c579eacf82de3"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "anyhow",
- "canoe-bindings 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
+ "canoe-bindings 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "rkyv",
  "serde",
  "thiserror 2.0.18",
@@ -5131,12 +5136,12 @@ dependencies = [
 [[package]]
 name = "hokulea-client"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=bf561cc#bf561ccda57b8a043d6b403a225c579eacf82de3"
 dependencies = [
  "alloy-consensus",
  "alloy-evm 0.24.2",
  "alloy-op-evm 0.24.2",
- "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
+ "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "kona-client",
  "kona-derive",
  "kona-driver",
@@ -5172,13 +5177,13 @@ dependencies = [
 [[package]]
 name = "hokulea-client-bin"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=bf561cc#bf561ccda57b8a043d6b403a225c579eacf82de3"
 dependencies = [
  "alloy-evm 0.24.2",
  "alloy-op-evm 0.24.2",
  "cfg-if",
- "hokulea-client 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
- "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
+ "hokulea-client 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
+ "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "kona-client",
  "kona-preimage",
  "kona-proof",
@@ -5192,12 +5197,12 @@ dependencies = [
 [[package]]
 name = "hokulea-compute-proof"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=bf561cc#bf561ccda57b8a043d6b403a225c579eacf82de3"
 dependencies = [
  "alloy-primitives",
  "ark-bn254",
  "ark-serialize 0.5.0",
- "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
+ "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "num",
  "rust-kzg-bn254-primitives",
  "rust-kzg-bn254-prover",
@@ -5223,11 +5228,11 @@ dependencies = [
 [[package]]
 name = "hokulea-eigenda"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=bf561cc#bf561ccda57b8a043d6b403a225c579eacf82de3"
 dependencies = [
  "alloy-primitives",
  "async-trait",
- "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
+ "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "kona-derive",
  "kona-protocol",
  "rkyv",
@@ -5266,16 +5271,16 @@ dependencies = [
 [[package]]
 name = "hokulea-host-bin"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=bf561cc#bf561ccda57b8a043d6b403a225c579eacf82de3"
 dependencies = [
  "alloy-primitives",
  "anyhow",
  "async-trait",
  "clap",
- "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
- "hokulea-client-bin 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
- "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
- "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
+ "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
+ "hokulea-client-bin 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
+ "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
+ "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "kona-cli 0.3.2 (git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.2.7)",
  "kona-client",
  "kona-host",
@@ -5315,16 +5320,16 @@ dependencies = [
 [[package]]
 name = "hokulea-proof"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=bf561cc#bf561ccda57b8a043d6b403a225c579eacf82de3"
 dependencies = [
  "alloy-primitives",
  "ark-bn254",
  "ark-ff 0.5.0",
  "async-trait",
- "canoe-verifier 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
- "canoe-verifier-address-fetcher 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
- "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
- "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
+ "canoe-verifier 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
+ "canoe-verifier-address-fetcher 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
+ "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
+ "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "kona-preimage",
  "kona-proof",
  "rkyv",
@@ -5337,7 +5342,7 @@ dependencies = [
 [[package]]
 name = "hokulea-witgen"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=bf561cc#bf561ccda57b8a043d6b403a225c579eacf82de3"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -5345,10 +5350,10 @@ dependencies = [
  "anyhow",
  "async-trait",
  "canoe-provider",
- "canoe-verifier-address-fetcher 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
- "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
- "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
- "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
+ "canoe-verifier-address-fetcher 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
+ "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
+ "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
+ "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "kona-preimage",
  "kona-proof",
  "tracing",
@@ -5357,11 +5362,11 @@ dependencies = [
 [[package]]
 name = "hokulea-zkvm-verification"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=bf561cc#bf561ccda57b8a043d6b403a225c579eacf82de3"
 dependencies = [
- "canoe-verifier 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
- "canoe-verifier-address-fetcher 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
- "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
+ "canoe-verifier 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
+ "canoe-verifier-address-fetcher 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
+ "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "kona-derive",
  "kona-preimage",
  "kona-proof",
@@ -5537,7 +5542,7 @@ dependencies = [
  "tokio",
  "tokio-rustls 0.26.4",
  "tower-service",
- "webpki-roots 1.0.6",
+ "webpki-roots 1.0.5",
 ]
 
 [[package]]
@@ -7541,9 +7546,9 @@ checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
 name = "nybbles"
-version = "0.4.8"
+version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d49ff0c0d00d4a502b39df9af3a525e1efeb14b9dabb5bb83335284c1309210"
+checksum = "7b5676b5c379cf5b03da1df2b3061c4a4e2aa691086a56ac923e08c143f53f59"
 dependencies = [
  "alloy-rlp",
  "cfg-if",
@@ -7845,8 +7850,8 @@ dependencies = [
  "celo-genesis",
  "celo-proof",
  "celo-protocol",
- "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
- "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
+ "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
+ "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "hokulea-witgen",
  "kona-derive",
  "kona-driver",
@@ -7869,15 +7874,15 @@ dependencies = [
  "anyhow",
  "async-trait",
  "canoe-sp1-cc-host",
- "celo-eigenda-registry",
+ "canoe-verifier-address-fetcher 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "celo-genesis",
  "celo-host",
  "celo-protocol",
  "dotenv",
  "hokulea-compute-proof",
- "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
- "hokulea-host-bin 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
- "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
+ "hokulea-eigenda 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
+ "hokulea-host-bin 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
+ "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "hokulea-witgen",
  "kona-preimage",
  "kona-proof",
@@ -8011,7 +8016,7 @@ dependencies = [
  "cfg-if",
  "futures",
  "hana-host",
- "hokulea-host-bin 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
+ "hokulea-host-bin 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "humantime",
  "humantime-serde",
  "kona-derive",
@@ -9670,8 +9675,9 @@ name = "range-eigenda"
 version = "0.1.0"
 dependencies = [
  "canoe-sp1-cc-verifier",
- "celo-eigenda-registry",
- "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
+ "canoe-verifier-address-fetcher 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
+ "celo-proof",
+ "hokulea-proof 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=bf561cc)",
  "hokulea-zkvm-verification",
  "kona-proof",
  "op-succinct-client-utils",
@@ -9943,7 +9949,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
- "webpki-roots 1.0.6",
+ "webpki-roots 1.0.5",
 ]
 
 [[package]]
@@ -14424,14 +14430,14 @@ version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75c7f0ef91146ebfb530314f5f1d24528d7f0767efbfd31dce919275413e393e"
 dependencies = [
- "webpki-root-certs 1.0.6",
+ "webpki-root-certs 1.0.5",
 ]
 
 [[package]]
 name = "webpki-root-certs"
-version = "1.0.6"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "804f18a4ac2676ffb4e8b5b5fa9ae38af06df08162314f96a68d2a363e21a8ca"
+checksum = "36a29fc0408b113f68cf32637857ab740edfafdf460c326cd2afaa2d84cc05dc"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -14442,14 +14448,14 @@ version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
 dependencies = [
- "webpki-roots 1.0.6",
+ "webpki-roots 1.0.5",
 ]
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.6"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22cfaf3c063993ff62e73cb4311efde4db1efb31ab78a3e5c457939ad5cc0bed"
+checksum = "12bed680863276c63889429bfd6cab3b99943659923822de1c8a39c49e4d722c"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -15059,18 +15065,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.38"
+version = "0.8.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57cf3aa6855b23711ee9852dfc97dfaa51c45feaba5b645d0c777414d494a961"
+checksum = "7456cf00f0685ad319c5b1693f291a650eaf345e941d082fc4e03df8a03996ac"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.38"
+version = "0.8.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a616990af1a287837c4fe6596ad77ef57948f787e46ce28e166facc0cc1cb75"
+checksum = "1328722bbf2115db7e19d69ebcc15e795719e2d66b60827c6a69a117365e37a0"
 dependencies = [
  "proc-macro2",
  "quote",
