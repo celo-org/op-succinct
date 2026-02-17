@@ -106,6 +106,13 @@ pub trait FactoryTrait<P>
 where
     P: Provider + Clone,
 {
+    /// Returns the game implementation for the given game type.
+    /// Errors if the game type is not registered (zero address).
+    async fn game_impl(
+        &self,
+        game_type: u32,
+    ) -> Result<OPSuccinctFaultDisputeGame::OPSuccinctFaultDisputeGameInstance<P>>;
+
     /// Fetches the bond required to create a game.
     async fn fetch_init_bond(&self, game_type: u32) -> Result<U256>;
 
@@ -135,6 +142,19 @@ impl<P> FactoryTrait<P> for DisputeGameFactoryInstance<P>
 where
     P: Provider + Clone,
 {
+    /// Returns the game implementation for the given game type.
+    /// Errors if the game type is not registered (zero address).
+    async fn game_impl(
+        &self,
+        game_type: u32,
+    ) -> Result<OPSuccinctFaultDisputeGame::OPSuccinctFaultDisputeGameInstance<P>> {
+        let game_impl_address = self.gameImpls(game_type).call().await?;
+        if game_impl_address == Address::ZERO {
+            bail!("Game type {game_type} is not registered in the factory");
+        }
+        Ok(OPSuccinctFaultDisputeGame::new(game_impl_address, self.provider().clone()))
+    }
+
     /// Fetches the bond required to create a game.
     async fn fetch_init_bond(&self, game_type: u32) -> Result<U256> {
         let init_bond = self.initBonds(game_type).call().await?;
