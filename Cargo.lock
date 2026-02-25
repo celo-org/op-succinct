@@ -8005,6 +8005,7 @@ dependencies = [
  "celo-host",
  "celo-proof",
  "celo-protocol",
+ "celo-registry",
  "cfg-if",
  "futures",
  "hana-host",
