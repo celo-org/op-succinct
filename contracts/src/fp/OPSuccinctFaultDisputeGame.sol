@@ -307,9 +307,15 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
             GameType.unwrap(ANCHOR_STATE_REGISTRY.respectedGameType()) == GameType.unwrap(GAME_TYPE);
     }
 
+    /// @notice The L2 sequence number (block number) for which this game is proposing an output root.
+    function l2SequenceNumber() public pure returns (uint256 l2SequenceNumber_) {
+        l2SequenceNumber_ = _getArgUint256(0x54);
+    }
+
     /// @notice The L2 block number for which this game is proposing an output root.
+    /// @dev Alias for l2SequenceNumber() for backward compatibility.
     function l2BlockNumber() public pure returns (uint256 l2BlockNumber_) {
-        l2BlockNumber_ = _getArgUint256(0x54);
+        l2BlockNumber_ = l2SequenceNumber();
     }
 
     /// @notice The parent index of the game.
