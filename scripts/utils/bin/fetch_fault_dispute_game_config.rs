@@ -240,6 +240,7 @@ async fn update_fdg_config() -> Result<()> {
 }
 
 use clap::Parser;
+use sp1_sdk::utils;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -260,6 +261,8 @@ async fn main() -> Result<()> {
     } else {
         eprintln!("Warning: Could not find project root. {} file not loaded.", args.env_file);
     }
+
+    utils::setup_logger();
 
     update_fdg_config().await?;
 
