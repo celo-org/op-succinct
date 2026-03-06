@@ -203,11 +203,7 @@ impl MonitorState {
                     );
                     self.running_processes.insert(
                         pending.game_index,
-                        RunningEstimator {
-                            started_at: Instant::now(),
-                            process: child,
-                            log_file,
-                        },
+                        RunningEstimator { started_at: Instant::now(), process: child, log_file },
                     );
                 }
                 Err(e) => {
@@ -385,10 +381,7 @@ async fn main() -> Result<()> {
                 continue;
             }
 
-            info!(
-                "Found new game of type {} at index {}: {}",
-                game_type, game_index, game_address
-            );
+            info!("Found new game of type {} at index {}: {}", game_type, game_index, game_address);
 
             let game = OPSuccinctFaultDisputeGame::new(game_address, l1_provider.clone());
 
@@ -403,10 +396,7 @@ async fn main() -> Result<()> {
             let start_block = match game.startingBlockNumber().call().await {
                 Ok(block) => block.to::<u64>(),
                 Err(e) => {
-                    warn!(
-                        "Failed to get starting block number for game {}: {}",
-                        game_address, e
-                    );
+                    warn!("Failed to get starting block number for game {}: {}", game_address, e);
                     0
                 }
             };
@@ -423,10 +413,7 @@ async fn main() -> Result<()> {
                 end_block,
             });
 
-            info!(
-                "Queued game {} for cost estimation after {:?} delay",
-                game_address, delay
-            );
+            info!("Queued game {} for cost estimation after {:?} delay", game_address, delay);
         }
 
         sleep(poll_interval).await;
