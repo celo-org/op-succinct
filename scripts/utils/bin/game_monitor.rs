@@ -20,8 +20,6 @@ use tokio::time::sleep;
 const GAME_TYPE: u32 = 42;
 // How long should we let a cost estimator run before killing it?
 const VALID_ESTIMATOR_DURATION_IN_SECONDS: u64 = 60 * 60 * 3; // 3 hours
-const MAX_RETRIES: u32 = 3;
-
 /// Arguments for the game monitor.
 #[derive(Debug, Clone, Parser)]
 pub struct GameMonitorArgs {
@@ -86,7 +84,6 @@ struct RunningEstimator {
 struct PendingGame {
     discovered_at: Instant,
     game_index: u64,
-    retries: u32,
 }
 
 struct MonitorState {
@@ -283,26 +280,16 @@ async fn main() -> Result<()> {
                 break;
             }
 
-            let mut pending = state.pending_games.pop_front().unwrap();
+            let pending = state.pending_games.pop_front().unwrap();
             let game_index = pending.game_index;
 
             let game_info = match factory.gameAtIndex(U256::from(game_index)).call().await {
                 Ok(info) => info,
                 Err(e) => {
-                    if pending.retries < MAX_RETRIES {
-                        pending.retries += 1;
-                        pending.discovered_at = Instant::now();
-                        warn!(
-                            "Failed to get game at index {}: {}. Retry {}/{}",
-                            game_index, e, pending.retries, MAX_RETRIES
-                        );
-                        state.pending_games.push_back(pending);
-                    } else {
-                        error!(
-                            "Failed to get game at index {} after {} retries: {}. Skipping.",
-                            game_index, MAX_RETRIES, e
-                        );
-                    }
+                    error!(
+                        "Failed to get game at index {}: {}. Skipping.",
+                        game_index, e
+                    );
                     continue;
                 }
             };
@@ -325,20 +312,10 @@ async fn main() -> Result<()> {
             let l2_block_number = match game.l2BlockNumber().call().await {
                 Ok(block) => block.to::<u64>(),
                 Err(e) => {
-                    if pending.retries < MAX_RETRIES {
-                        pending.retries += 1;
-                        pending.discovered_at = Instant::now();
-                        warn!(
-                            "Failed to get L2 block number for game {} at index {}: {}. Retry {}/{}",
-                            game_address, game_index, e, pending.retries, MAX_RETRIES
-                        );
-                        state.pending_games.push_back(pending);
-                    } else {
-                        error!(
-                            "Failed to get L2 block number for game {} after {} retries: {}. Skipping.",
-                            game_address, MAX_RETRIES, e
-                        );
-                    }
+                    error!(
+                        "Failed to get L2 block number for game {} at index {}: {}. Skipping.",
+                        game_address, game_index, e
+                    );
                     continue;
                 }
             };
@@ -394,7 +371,6 @@ async fn main() -> Result<()> {
             state.pending_games.push_back(PendingGame {
                 discovered_at: Instant::now(),
                 game_index,
-                retries: 0,
             });
         }
 
