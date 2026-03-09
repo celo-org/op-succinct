@@ -18,8 +18,15 @@ use std::{
 use tokio::time::sleep;
 
 const GAME_TYPE: u32 = 42;
-// How long should we let a cost estimator run before killing it?
-const VALID_ESTIMATOR_DURATION_IN_SECONDS: u64 = 60 * 60 * 3; // 3 hours
+const MAX_RETRIES: u32 = 3;
+/// Kill a process if its log file is this many times larger than the median of peers.
+const LOG_VOLUME_KILL_MULTIPLIER: f64 = 10.0;
+/// Minimum number of running processes required to perform log volume comparison.
+const LOG_VOLUME_MIN_PEERS: usize = 3;
+/// Kill a process if its time-per-block exceeds this multiplier of the median of completed
+/// processes.
+const RUNTIME_ANOMALY_MULTIPLIER: f64 = 5.0;
+
 /// Arguments for the game monitor.
 #[derive(Debug, Clone, Parser)]
 pub struct GameMonitorArgs {
@@ -77,6 +84,12 @@ pub struct GameMonitorArgs {
     /// default values used when running op stack nodes.
     #[arg(long, default_value = "600")]
     pub delay: u64,
+
+    /// Maximum duration in seconds before a cost estimator process is killed.
+    /// When completion history is available, a relative check (based on time-per-block
+    /// vs completed processes) may kill sooner. This value acts as the absolute ceiling.
+    #[arg(long, default_value = "10800")]
+    pub max_process_duration_secs: u64,
 }
 
 /// Represents a running cost estimator process for a game.
@@ -84,6 +97,20 @@ struct RunningEstimator {
     started_at: Instant,
     process: Child,
     log_file: PathBuf,
+    block_range: u64,
+    retries: u32,
+    game_address: Address,
+    start_block: u64,
+    end_block: u64,
+}
+
+/// Pre-fetched game details for retrying a killed process.
+/// When present, the pending game processing loop skips RPC calls
+/// and directly spawns the cost estimator.
+struct RetryInfo {
+    game_address: Address,
+    start_block: u64,
+    end_block: u64,
 }
 
 /// A game index discovered from the factory, waiting for its delay to elapse before
@@ -91,65 +118,245 @@ struct RunningEstimator {
 struct PendingGame {
     discovered_at: Instant,
     game_index: u64,
+    retries: u32,
+    retry_info: Option<RetryInfo>,
 }
 
 struct MonitorState {
     running_processes: HashMap<u64, RunningEstimator>,
     pending_games: VecDeque<PendingGame>,
     next_game_index: u64,
+    completion_history: Vec<f64>,
+    max_process_duration_secs: u64,
 }
 
 impl MonitorState {
-    fn new(next_game_index: u64) -> Self {
-        Self { running_processes: HashMap::new(), pending_games: VecDeque::new(), next_game_index }
+    fn new(next_game_index: u64, max_process_duration_secs: u64) -> Self {
+        Self {
+            running_processes: HashMap::new(),
+            pending_games: VecDeque::new(),
+            next_game_index,
+            completion_history: Vec::new(),
+            max_process_duration_secs,
+        }
     }
 
     /// Clean up finished processes and return their results.
     fn cleanup_finished_processes(&mut self) {
-        let mut finished = Vec::new();
+        // Pre-compute log sizes (needed for log volume anomaly check).
+        // We do this before iter_mut to avoid borrow issues.
+        let log_sizes: Vec<(u64, f64)> = self
+            .running_processes
+            .iter()
+            .map(|(id, est)| {
+                let size = fs::metadata(&est.log_file).map(|m| m.len()).unwrap_or(0);
+                (*id, size as f64)
+            })
+            .collect();
+
+        // Compute median log size (only meaningful with enough peers).
+        let median_log_size: Option<f64> = if log_sizes.len() >= LOG_VOLUME_MIN_PEERS {
+            let sizes: Vec<f64> = log_sizes.iter().map(|(_, s)| *s).collect();
+            median(&sizes)
+        } else {
+            None
+        };
+
+        // Compute median time-per-block from historical completions.
+        let median_tpb: Option<f64> = median(&self.completion_history);
+
+        // Classify each running process. We use an enum to avoid nested borrows.
+        enum ProcessAction {
+            Success { tpb: Option<f64> },
+            Kill { reason: String },
+            Retry { reason: String },
+        }
+
+        let mut process_actions: Vec<(u64, ProcessAction)> = Vec::new();
 
         for (id, estimator) in self.running_processes.iter_mut() {
+            let elapsed = estimator.started_at.elapsed();
+            let elapsed_secs = elapsed.as_secs_f64();
+
             match estimator.process.try_wait() {
                 Ok(Some(status)) => {
                     if status.success() {
+                        let tpb = if estimator.block_range > 0 {
+                            Some(elapsed_secs / estimator.block_range as f64)
+                        } else {
+                            None
+                        };
                         info!(
                             "Cost estimator {} completed successfully, log file: {}",
                             id,
                             estimator.log_file.display(),
                         );
+                        process_actions.push((*id, ProcessAction::Success { tpb }));
                     } else {
                         error!(
-                            "Cost estimator {} failed with status {:?}, log file: {})",
+                            "Cost estimator {} failed with status {:?}, log file: {}",
                             id,
                             status,
                             estimator.log_file.display(),
                         );
+                        process_actions.push((
+                            *id,
+                            ProcessAction::Retry { reason: format!("exit status {:?}", status) },
+                        ));
                     }
-                    finished.push(*id);
                 }
                 Ok(None) => {
-                    let duration = Instant::now().duration_since(estimator.started_at);
-                    if duration.as_secs() > VALID_ESTIMATOR_DURATION_IN_SECONDS {
-                        error!("Cost estimator {} is still running for more than 3 hours, log file: {}. Killing it", id, estimator.log_file.display());
-                        let _ = estimator.process.kill();
-                        finished.push(*id);
+                    // Process still running — check watchdog heuristics.
+                    let mut kill_reason: Option<String> = None;
+
+                    // Heuristic 1: Absolute timeout.
+                    if elapsed.as_secs() > self.max_process_duration_secs {
+                        kill_reason = Some(format!(
+                            "exceeded maximum duration of {}s",
+                            self.max_process_duration_secs
+                        ));
+                    }
+
+                    // Heuristic 2: Runtime anomaly (time-per-block vs history).
+                    if kill_reason.is_none() && estimator.block_range > 0 {
+                        if let Some(med_tpb) = median_tpb {
+                            let current_tpb = elapsed_secs / estimator.block_range as f64;
+                            if current_tpb > RUNTIME_ANOMALY_MULTIPLIER * med_tpb {
+                                kill_reason = Some(format!(
+                                    "time per block ({:.1}s) exceeds {:.0}x median ({:.1}s)",
+                                    current_tpb, RUNTIME_ANOMALY_MULTIPLIER, med_tpb
+                                ));
+                            }
+                        }
+                    }
+
+                    // Heuristic 3: Log volume anomaly.
+                    if kill_reason.is_none() {
+                        if let Some(med_log) = median_log_size {
+                            let this_size = log_sizes
+                                .iter()
+                                .find(|(lid, _)| *lid == *id)
+                                .map(|(_, s)| *s)
+                                .unwrap_or(0.0);
+                            if this_size > LOG_VOLUME_KILL_MULTIPLIER * med_log {
+                                kill_reason = Some(format!(
+                                    "log size ({:.1} MB) exceeds {:.0}x median ({:.1} MB)",
+                                    this_size / (1024.0 * 1024.0),
+                                    LOG_VOLUME_KILL_MULTIPLIER,
+                                    med_log / (1024.0 * 1024.0)
+                                ));
+                            }
+                        }
+                    }
+
+                    if let Some(reason) = kill_reason {
+                        error!(
+                            "Cost estimator {} is out of control ({}), log file: {}. Killing it.",
+                            id,
+                            reason,
+                            estimator.log_file.display()
+                        );
+                        process_actions.push((*id, ProcessAction::Kill { reason }));
                     }
                 }
                 Err(e) => {
                     error!("Error checking process {}: {}", id, e);
-                    finished.push(*id);
+                    process_actions.push((
+                        *id,
+                        ProcessAction::Retry { reason: format!("process check error: {}", e) },
+                    ));
                 }
             }
         }
 
-        for id in finished {
-            self.running_processes.remove(&id);
+        // Process actions (iter_mut borrow is now released).
+        let mut history_updates: Vec<f64> = Vec::new();
+
+        for (id, action) in process_actions {
+            match action {
+                ProcessAction::Success { tpb } => {
+                    if let Some(t) = tpb {
+                        history_updates.push(t);
+                    }
+                    self.running_processes.remove(&id);
+                }
+                ProcessAction::Kill { reason } => {
+                    if let Some(mut est) = self.running_processes.remove(&id) {
+                        let _ = est.process.kill();
+                        if est.retries < MAX_RETRIES {
+                            let new_retries = est.retries + 1;
+                            warn!(
+                                "Re-queuing game {} for retry {}/{} after kill ({})",
+                                id, new_retries, MAX_RETRIES, reason
+                            );
+                            self.pending_games.push_back(PendingGame {
+                                discovered_at: Instant::now(),
+                                game_index: id,
+                                retries: new_retries,
+                                retry_info: Some(RetryInfo {
+                                    game_address: est.game_address,
+                                    start_block: est.start_block,
+                                    end_block: est.end_block,
+                                }),
+                            });
+                        } else {
+                            error!(
+                                "Game {} failed after {} retries ({}), giving up.",
+                                id, MAX_RETRIES, reason
+                            );
+                        }
+                    }
+                }
+                ProcessAction::Retry { reason } => {
+                    if let Some(est) = self.running_processes.remove(&id) {
+                        if est.retries < MAX_RETRIES {
+                            let new_retries = est.retries + 1;
+                            warn!(
+                                "Re-queuing game {} for retry {}/{} ({})",
+                                id, new_retries, MAX_RETRIES, reason
+                            );
+                            self.pending_games.push_back(PendingGame {
+                                discovered_at: Instant::now(),
+                                game_index: id,
+                                retries: new_retries,
+                                retry_info: Some(RetryInfo {
+                                    game_address: est.game_address,
+                                    start_block: est.start_block,
+                                    end_block: est.end_block,
+                                }),
+                            });
+                        } else {
+                            error!(
+                                "Game {} failed after {} retries ({}), giving up.",
+                                id, MAX_RETRIES, reason
+                            );
+                        }
+                    }
+                }
+            }
         }
+
+        self.completion_history.extend(history_updates);
     }
 
     /// Check if we can spawn a new process.
     fn can_spawn_new(&self, max_concurrent: usize) -> bool {
         self.running_processes.len() < max_concurrent
+    }
+}
+
+/// Compute the median of a slice of f64 values. Returns None if the slice is empty.
+fn median(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = sorted.len() / 2;
+    if sorted.len().is_multiple_of(2) {
+        Some((sorted[mid - 1] + sorted[mid]) / 2.0)
+    } else {
+        Some(sorted[mid])
     }
 }
 
@@ -339,7 +546,7 @@ async fn main() -> Result<()> {
             }
         }
     };
-    let mut state = MonitorState::new(next_game_index);
+    let mut state = MonitorState::new(next_game_index, args.max_process_duration_secs);
 
     let poll_interval = Duration::from_secs(args.poll_interval);
     let delay = Duration::from_secs(args.delay);
@@ -370,17 +577,110 @@ async fn main() -> Result<()> {
             if !state.can_spawn_new(args.max_concurrent) {
                 break;
             }
-            if pending.discovered_at.elapsed() < delay {
+            // Retries have pre-fetched game info and skip the discovery delay.
+            if pending.retry_info.is_none() && pending.discovered_at.elapsed() < delay {
                 break;
             }
 
             let pending = state.pending_games.pop_front().unwrap();
             let game_index = pending.game_index;
 
+            // Retry fast-path: skip RPC calls, use pre-fetched game info.
+            if let Some(ref retry_info) = pending.retry_info {
+                let game_address = retry_info.game_address;
+                let start_block = retry_info.start_block;
+                let end_block = retry_info.end_block;
+
+                let log_file = if pending.retries > 0 {
+                    args.logs_dir.join(format!(
+                        "cost-estimator-{}-{}-retry{}.log",
+                        game_index, game_address, pending.retries
+                    ))
+                } else {
+                    args.logs_dir
+                        .join(format!("cost-estimator-{}-{}.log", game_index, game_address))
+                };
+
+                match spawn_cost_estimator(
+                    &args.cost_estimator_binary_path,
+                    &args.env_file,
+                    &log_file,
+                    start_block,
+                    end_block,
+                    end_block - start_block,
+                ) {
+                    Ok(child) => {
+                        info!(
+                            "Started cost estimator for game {} at index {} (blocks {}-{}) [retry {}]",
+                            game_address, game_index, start_block, end_block, pending.retries
+                        );
+                        state.running_processes.insert(
+                            game_index,
+                            RunningEstimator {
+                                started_at: Instant::now(),
+                                process: child,
+                                log_file,
+                                block_range: end_block.saturating_sub(start_block),
+                                retries: pending.retries,
+                                game_address,
+                                start_block,
+                                end_block,
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to spawn cost estimator for game {} (retry {}): {}",
+                            game_address, pending.retries, e
+                        );
+                        if pending.retries < MAX_RETRIES {
+                            let new_retries = pending.retries + 1;
+                            warn!(
+                                "Re-queuing game {} for retry {}/{} after spawn failure",
+                                game_index, new_retries, MAX_RETRIES
+                            );
+                            state.pending_games.push_back(PendingGame {
+                                discovered_at: Instant::now(),
+                                game_index,
+                                retries: new_retries,
+                                retry_info: Some(RetryInfo {
+                                    game_address,
+                                    start_block,
+                                    end_block,
+                                }),
+                            });
+                        } else {
+                            error!(
+                                "Game {} failed after {} retries (spawn failure), giving up.",
+                                game_index, MAX_RETRIES
+                            );
+                        }
+                    }
+                }
+                continue;
+            }
+
             let game_info = match factory.gameAtIndex(U256::from(game_index)).call().await {
                 Ok(info) => info,
                 Err(e) => {
-                    error!("Failed to get game at index {}: {}. Skipping.", game_index, e);
+                    if pending.retries < MAX_RETRIES {
+                        let new_retries = pending.retries + 1;
+                        warn!(
+                            "Failed to get game at index {}: {}. Retry {}/{}",
+                            game_index, e, new_retries, MAX_RETRIES
+                        );
+                        state.pending_games.push_back(PendingGame {
+                            discovered_at: Instant::now(),
+                            game_index,
+                            retries: new_retries,
+                            retry_info: None,
+                        });
+                    } else {
+                        error!(
+                            "Failed to get game at index {} after {} retries: {}. Skipping.",
+                            game_index, MAX_RETRIES, e
+                        );
+                    }
                     continue;
                 }
             };
@@ -403,10 +703,24 @@ async fn main() -> Result<()> {
             let l2_block_number = match game.l2BlockNumber().call().await {
                 Ok(block) => block.to::<u64>(),
                 Err(e) => {
-                    error!(
-                        "Failed to get L2 block number for game {} at index {}: {}. Skipping.",
-                        game_address, game_index, e
-                    );
+                    if pending.retries < MAX_RETRIES {
+                        let new_retries = pending.retries + 1;
+                        warn!(
+                            "Failed to get L2 block number for game {} at index {}: {}. Retry {}/{}",
+                            game_address, game_index, e, new_retries, MAX_RETRIES
+                        );
+                        state.pending_games.push_back(PendingGame {
+                            discovered_at: Instant::now(),
+                            game_index,
+                            retries: new_retries,
+                            retry_info: None,
+                        });
+                    } else {
+                        error!(
+                            "Failed to get L2 block number for game {} after {} retries: {}. Skipping.",
+                            game_address, MAX_RETRIES, e
+                        );
+                    }
                     continue;
                 }
             };
@@ -422,8 +736,14 @@ async fn main() -> Result<()> {
 
             info!("Game {} covers L2 blocks {} to {}", game_address, start_block, end_block);
 
-            let log_file =
-                args.logs_dir.join(format!("cost-estimator-{}-{}.log", game_index, game_address));
+            let log_file = if pending.retries > 0 {
+                args.logs_dir.join(format!(
+                    "cost-estimator-{}-{}-retry{}.log",
+                    game_index, game_address, pending.retries
+                ))
+            } else {
+                args.logs_dir.join(format!("cost-estimator-{}-{}.log", game_index, game_address))
+            };
 
             match spawn_cost_estimator(
                 &args.cost_estimator_binary_path,
@@ -440,11 +760,38 @@ async fn main() -> Result<()> {
                     );
                     state.running_processes.insert(
                         game_index,
-                        RunningEstimator { started_at: Instant::now(), process: child, log_file },
+                        RunningEstimator {
+                            started_at: Instant::now(),
+                            process: child,
+                            log_file,
+                            block_range: end_block.saturating_sub(start_block),
+                            retries: pending.retries,
+                            game_address,
+                            start_block,
+                            end_block,
+                        },
                     );
                 }
                 Err(e) => {
                     error!("Failed to spawn cost estimator for game {}: {}", game_address, e);
+                    if pending.retries < MAX_RETRIES {
+                        let new_retries = pending.retries + 1;
+                        warn!(
+                            "Re-queuing game {} for retry {}/{} after spawn failure",
+                            game_index, new_retries, MAX_RETRIES
+                        );
+                        state.pending_games.push_back(PendingGame {
+                            discovered_at: Instant::now(),
+                            game_index,
+                            retries: new_retries,
+                            retry_info: Some(RetryInfo { game_address, start_block, end_block }),
+                        });
+                    } else {
+                        error!(
+                            "Game {} failed after {} retries (spawn failure), giving up.",
+                            game_index, MAX_RETRIES
+                        );
+                    }
                 }
             }
         }
@@ -459,9 +806,12 @@ async fn main() -> Result<()> {
                 "Discovered new game at index {}, queuing for processing after {:?} delay",
                 game_index, delay
             );
-            state
-                .pending_games
-                .push_back(PendingGame { discovered_at: Instant::now(), game_index });
+            state.pending_games.push_back(PendingGame {
+                discovered_at: Instant::now(),
+                game_index,
+                retries: 0,
+                retry_info: None,
+            });
         }
 
         sleep(poll_interval).await;
