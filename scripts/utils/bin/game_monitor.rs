@@ -97,11 +97,7 @@ struct MonitorState {
 
 impl MonitorState {
     fn new(next_game_index: u64) -> Self {
-        Self {
-            running_processes: HashMap::new(),
-            pending_games: VecDeque::new(),
-            next_game_index,
-        }
+        Self { running_processes: HashMap::new(), pending_games: VecDeque::new(), next_game_index }
     }
 
     /// Clean up finished processes and return their results.
@@ -350,10 +346,7 @@ async fn main() -> Result<()> {
             let start_block = match game.startingBlockNumber().call().await {
                 Ok(block) => block.to::<u64>(),
                 Err(e) => {
-                    warn!(
-                        "Failed to get starting block number for game {}: {}",
-                        game_address, e
-                    );
+                    warn!("Failed to get starting block number for game {}: {}", game_address, e);
                     0
                 }
             };
@@ -361,10 +354,8 @@ async fn main() -> Result<()> {
 
             info!("Game {} covers L2 blocks {} to {}", game_address, start_block, end_block);
 
-            let log_file = args.logs_dir.join(format!(
-                "cost-estimator-{}-{}.log",
-                game_index, game_address
-            ));
+            let log_file =
+                args.logs_dir.join(format!("cost-estimator-{}-{}.log", game_index, game_address));
 
             match spawn_cost_estimator(
                 &args.cost_estimator_binary_path,
@@ -381,18 +372,11 @@ async fn main() -> Result<()> {
                     );
                     state.running_processes.insert(
                         game_index,
-                        RunningEstimator {
-                            started_at: Instant::now(),
-                            process: child,
-                            log_file,
-                        },
+                        RunningEstimator { started_at: Instant::now(), process: child, log_file },
                     );
                 }
                 Err(e) => {
-                    error!(
-                        "Failed to spawn cost estimator for game {}: {}",
-                        game_address, e
-                    );
+                    error!("Failed to spawn cost estimator for game {}: {}", game_address, e);
                 }
             }
         }
