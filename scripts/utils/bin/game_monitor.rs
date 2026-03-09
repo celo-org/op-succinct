@@ -7,7 +7,7 @@ use fault_proof::contract::{
 };
 use log::{error, info, warn};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     env,
     fs::{self, File},
     io::Write,
@@ -20,6 +20,7 @@ use tokio::time::sleep;
 const GAME_TYPE: u32 = 42;
 // How long should we let a cost estimator run before killing it?
 const VALID_ESTIMATOR_DURATION_IN_SECONDS: u64 = 60 * 60 * 3; // 3 hours
+const MAX_RETRIES: u32 = 3;
 
 /// Arguments for the game monitor.
 #[derive(Debug, Clone, Parser)]
@@ -64,10 +65,11 @@ pub struct GameMonitorArgs {
     #[arg(long, default_value = None)]
     pub start_index: Option<u64>,
 
-    /// The time in seconds to wait between seeing a game and running the cost estimator for a
-    /// game. This exists to mitigate node-desync issues. Which can occur when we access the L2
-    /// via a proxy with multiple backends. The default value of 10 minutes is a value that
-    /// should be safe given the default values used when running op stack nodes.
+    /// The time in seconds to wait between discovering a game index and fetching its details
+    /// from L1/L2. This delay mitigates node-desync issues that occur when accessing L1 or L2
+    /// via a proxy with multiple backends (e.g. gameCount sees a game on one backend but
+    /// gameAtIndex fails on another). The default value of 10 minutes should be safe given the
+    /// default values used when running op stack nodes.
     #[arg(long, default_value = "600")]
     pub delay: u64,
 }
@@ -79,32 +81,23 @@ struct RunningEstimator {
     log_file: PathBuf,
 }
 
-/// A game that has been discovered but is waiting for its delay to elapse before
-/// spawning the cost estimator.
+/// A game index discovered from the factory, waiting for its delay to elapse before
+/// fetching game details and spawning the cost estimator.
 struct PendingGame {
     discovered_at: Instant,
     game_index: u64,
-    game_address: Address,
-    start_block: u64,
-    end_block: u64,
+    retries: u32,
 }
 
-/// Tracks the state of the game monitor.
 struct MonitorState {
-    /// Set of game addresses we've already seen.
-    processed_games: HashSet<Address>,
-    /// Currently running estimator processes.
     running_processes: HashMap<u64, RunningEstimator>,
-    /// Games waiting for their delay to elapse before spawning.
     pending_games: VecDeque<PendingGame>,
-    /// The next game index to check.
     next_game_index: u64,
 }
 
 impl MonitorState {
     fn new(next_game_index: u64) -> Self {
         Self {
-            processed_games: HashSet::new(),
             running_processes: HashMap::new(),
             pending_games: VecDeque::new(),
             next_game_index,
@@ -157,63 +150,6 @@ impl MonitorState {
     /// Check if we can spawn a new process.
     fn can_spawn_new(&self, max_concurrent: usize) -> bool {
         self.running_processes.len() < max_concurrent
-    }
-
-    /// Spawn pending games whose delay has elapsed, respecting the concurrency limit.
-    ///
-    /// Games are spawned in discovery order (FIFO). Since all games share the same delay,
-    /// we can stop at the first game that isn't ready yet.
-    fn spawn_ready_games(
-        &mut self,
-        delay: Duration,
-        max_concurrent: usize,
-        cost_estimator_binary_path: &PathBuf,
-        env_file: &Path,
-        logs_dir: &Path,
-    ) {
-        while let Some(pending) = self.pending_games.front() {
-            if !self.can_spawn_new(max_concurrent) {
-                break;
-            }
-            if pending.discovered_at.elapsed() < delay {
-                break;
-            }
-
-            let pending = self.pending_games.pop_front().unwrap();
-            let log_file = logs_dir.join(format!(
-                "cost-estimator-{}-{}.log",
-                pending.game_index, pending.game_address
-            ));
-
-            match spawn_cost_estimator(
-                cost_estimator_binary_path,
-                env_file,
-                &log_file,
-                pending.start_block,
-                pending.end_block,
-                pending.end_block - pending.start_block,
-            ) {
-                Ok(child) => {
-                    info!(
-                        "Started cost estimator {} for game {} (blocks {}-{})",
-                        pending.game_index,
-                        pending.game_address,
-                        pending.start_block,
-                        pending.end_block
-                    );
-                    self.running_processes.insert(
-                        pending.game_index,
-                        RunningEstimator { started_at: Instant::now(), process: child, log_file },
-                    );
-                }
-                Err(e) => {
-                    error!(
-                        "Failed to spawn cost estimator for game {}: {}",
-                        pending.game_address, e
-                    );
-                }
-            }
-        }
     }
 }
 
@@ -342,25 +278,35 @@ async fn main() -> Result<()> {
             state.pending_games.len()
         );
 
-        // Spawn any pending games whose delay has elapsed
-        state.spawn_ready_games(
-            delay,
-            args.max_concurrent,
-            &args.cost_estimator_binary_path,
-            &args.env_file,
-            &args.logs_dir,
-        );
+        // Process pending games whose delay has elapsed: fetch game info and spawn.
+        while let Some(pending) = state.pending_games.front() {
+            if !state.can_spawn_new(args.max_concurrent) {
+                break;
+            }
+            if pending.discovered_at.elapsed() < delay {
+                break;
+            }
 
-        // Detect new games and queue them for deferred spawning
-        let current_game_count = factory.gameCount().call().await?.to::<u64>();
-        while state.next_game_index < current_game_count {
-            let game_index = state.next_game_index;
-            state.next_game_index += 1;
+            let mut pending = state.pending_games.pop_front().unwrap();
+            let game_index = pending.game_index;
 
             let game_info = match factory.gameAtIndex(U256::from(game_index)).call().await {
                 Ok(info) => info,
                 Err(e) => {
-                    error!("Failed to get game at index {}: {}", game_index, e);
+                    if pending.retries < MAX_RETRIES {
+                        pending.retries += 1;
+                        pending.discovered_at = Instant::now();
+                        warn!(
+                            "Failed to get game at index {}: {}. Retry {}/{}",
+                            game_index, e, pending.retries, MAX_RETRIES
+                        );
+                        state.pending_games.push_back(pending);
+                    } else {
+                        error!(
+                            "Failed to get game at index {} after {} retries: {}. Skipping.",
+                            game_index, MAX_RETRIES, e
+                        );
+                    }
                     continue;
                 }
             };
@@ -370,25 +316,33 @@ async fn main() -> Result<()> {
 
             if game_type != GAME_TYPE {
                 info!(
-                    "Skipping game {} at index {} (type {} != {})",
-                    game_address, game_index, game_type, GAME_TYPE
+                    "Skipping game at index {} (type {} != {})",
+                    game_index, game_type, GAME_TYPE
                 );
                 continue;
             }
 
-            if state.processed_games.contains(&game_address) {
-                info!("Already processed game {}, skipping", game_address);
-                continue;
-            }
-
-            info!("Found new game of type {} at index {}: {}", game_type, game_index, game_address);
+            info!("Processing game {} at index {}", game_address, game_index);
 
             let game = OPSuccinctFaultDisputeGame::new(game_address, l1_provider.clone());
 
             let l2_block_number = match game.l2BlockNumber().call().await {
                 Ok(block) => block.to::<u64>(),
                 Err(e) => {
-                    error!("Failed to get L2 block number for game {}: {}", game_address, e);
+                    if pending.retries < MAX_RETRIES {
+                        pending.retries += 1;
+                        pending.discovered_at = Instant::now();
+                        warn!(
+                            "Failed to get L2 block number for game {} at index {}: {}. Retry {}/{}",
+                            game_address, game_index, e, pending.retries, MAX_RETRIES
+                        );
+                        state.pending_games.push_back(pending);
+                    } else {
+                        error!(
+                            "Failed to get L2 block number for game {} after {} retries: {}. Skipping.",
+                            game_address, MAX_RETRIES, e
+                        );
+                    }
                     continue;
                 }
             };
@@ -396,7 +350,10 @@ async fn main() -> Result<()> {
             let start_block = match game.startingBlockNumber().call().await {
                 Ok(block) => block.to::<u64>(),
                 Err(e) => {
-                    warn!("Failed to get starting block number for game {}: {}", game_address, e);
+                    warn!(
+                        "Failed to get starting block number for game {}: {}",
+                        game_address, e
+                    );
                     0
                 }
             };
@@ -404,16 +361,57 @@ async fn main() -> Result<()> {
 
             info!("Game {} covers L2 blocks {} to {}", game_address, start_block, end_block);
 
-            state.processed_games.insert(game_address);
+            let log_file = args.logs_dir.join(format!(
+                "cost-estimator-{}-{}.log",
+                game_index, game_address
+            ));
+
+            match spawn_cost_estimator(
+                &args.cost_estimator_binary_path,
+                &args.env_file,
+                &log_file,
+                start_block,
+                end_block,
+                end_block - start_block,
+            ) {
+                Ok(child) => {
+                    info!(
+                        "Started cost estimator for game {} at index {} (blocks {}-{})",
+                        game_address, game_index, start_block, end_block
+                    );
+                    state.running_processes.insert(
+                        game_index,
+                        RunningEstimator {
+                            started_at: Instant::now(),
+                            process: child,
+                            log_file,
+                        },
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to spawn cost estimator for game {}: {}",
+                        game_address, e
+                    );
+                }
+            }
+        }
+
+        // Discover new game indices and queue them for deferred processing.
+        let current_game_count = factory.gameCount().call().await?.to::<u64>();
+        while state.next_game_index < current_game_count {
+            let game_index = state.next_game_index;
+            state.next_game_index += 1;
+
+            info!(
+                "Discovered new game at index {}, queuing for processing after {:?} delay",
+                game_index, delay
+            );
             state.pending_games.push_back(PendingGame {
                 discovered_at: Instant::now(),
                 game_index,
-                game_address,
-                start_block,
-                end_block,
+                retries: 0,
             });
-
-            info!("Queued game {} for cost estimation after {:?} delay", game_address, delay);
         }
 
         sleep(poll_interval).await;
