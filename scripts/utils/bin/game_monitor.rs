@@ -286,10 +286,7 @@ async fn main() -> Result<()> {
             let game_info = match factory.gameAtIndex(U256::from(game_index)).call().await {
                 Ok(info) => info,
                 Err(e) => {
-                    error!(
-                        "Failed to get game at index {}: {}. Skipping.",
-                        game_index, e
-                    );
+                    error!("Failed to get game at index {}: {}. Skipping.", game_index, e);
                     continue;
                 }
             };
@@ -368,10 +365,9 @@ async fn main() -> Result<()> {
                 "Discovered new game at index {}, queuing for processing after {:?} delay",
                 game_index, delay
             );
-            state.pending_games.push_back(PendingGame {
-                discovered_at: Instant::now(),
-                game_index,
-            });
+            state
+                .pending_games
+                .push_back(PendingGame { discovered_at: Instant::now(), game_index });
         }
 
         sleep(poll_interval).await;
