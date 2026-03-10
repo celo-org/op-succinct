@@ -359,7 +359,16 @@ async fn main() -> Result<()> {
         }
 
         // Discover new game indices and queue them for deferred processing.
-        let current_game_count = factory.gameCount().call().await?.to::<u64>();
+        let current_game_count = match factory.gameCount().call().await {
+            Ok(count) => count.to::<u64>(),
+            Err(e) => {
+                error!(
+                    "Failed to Fetch gameCount from factory {}: {}. Retrying",
+                    dispute_game_factory_address, e
+                );
+                continue;
+            }
+        };
         while state.next_game_index < current_game_count {
             let game_index = state.next_game_index;
             state.next_game_index += 1;
