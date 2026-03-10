@@ -5,7 +5,7 @@ use clap::Parser;
 use fault_proof::contract::{
     DisputeGameFactory::DisputeGameFactoryInstance, OPSuccinctFaultDisputeGame,
 };
-use log::{error, info, warn};
+use log::{error, info};
 use std::{
     collections::{HashMap, VecDeque},
     env,
