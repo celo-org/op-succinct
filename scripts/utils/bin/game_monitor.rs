@@ -320,8 +320,11 @@ async fn main() -> Result<()> {
             let start_block = match game.startingBlockNumber().call().await {
                 Ok(block) => block.to::<u64>(),
                 Err(e) => {
-                    warn!("Failed to get starting block number for game {}: {}", game_address, e);
-                    0
+                    error!(
+                        "Failed to get staring block number for game {} at index {}: {}. Skipping.",
+                        game_address, game_index, e
+                    );
+                    continue;
                 }
             };
             let end_block = l2_block_number;
