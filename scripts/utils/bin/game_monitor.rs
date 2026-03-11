@@ -547,15 +547,7 @@ async fn main() -> Result<()> {
     }
 
     info!("Starting game monitor for game type {}", GAME_TYPE);
-    info!("Environment file: {}", args.env_file.display());
-    info!("Polling interval: {}s", args.poll_interval);
-    info!("Max concurrent processes: {}", args.max_concurrent);
-    info!("Cost estimator binary path: {}", args.cost_estimator_binary_path.display());
-    if args.max_logs_size_mb > 0 {
-        info!("Max logs size: {} MB", args.max_logs_size_mb);
-    } else {
-        info!("Max logs size: unlimited");
-    }
+    info!("Args: {:?}", args);
 
     // Get required environment variables
     let l1_rpc = env::var("L1_RPC").context("L1_RPC not set")?;
