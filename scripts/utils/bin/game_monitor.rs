@@ -237,7 +237,7 @@ fn enforce_log_space_limit(
             let size = entry.metadata()?.len();
             total_size += size;
             // Only consider files matching our naming pattern as deletion
-            // candidates; never delete files we didn't create.
+            // candidates.
             if let Some(game_index) = extract_game_index(&path) {
                 log_files.push((path, size, game_index));
             }
