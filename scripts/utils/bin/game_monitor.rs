@@ -662,7 +662,7 @@ async fn main() -> Result<()> {
             Ok(count) => count.to::<u64>(),
             Err(e) => {
                 warn!(
-                    "Failed to Fetch gameCount from factory {}: {}. Retrying",
+                    "Failed to fetch gameCount from factory {}: {}. Retrying",
                     dispute_game_factory_address, e
                 );
                 continue;
