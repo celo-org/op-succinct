@@ -73,8 +73,8 @@ pub struct GameMonitorArgs {
     #[arg(long, default_value = "0")]
     pub max_logs_size_mb: u64,
 
-    // The index of the game to start checking from. If unset the monitor will sart with the most
-    // recently created game.
+    /// The index of the game to start checking from. If unset the monitor will start with the most
+    /// recently created game.
     #[arg(long, default_value = None)]
     pub start_index: Option<u64>,
 
@@ -143,29 +143,34 @@ impl MonitorState {
         }
     }
 
-    /// Clean up finished processes and return their results.
-    ///
-    /// If `all_log_sizes` is provided, it is used to derive per-process log sizes
-    /// for the log volume anomaly heuristic. When `None`, the heuristic is skipped.
     fn cleanup_finished_processes(
         &mut self,
         all_log_sizes: Option<&[(PathBuf, u64, Option<u64>)]>,
     ) {
-        let log_size_by_game: HashMap<u64, u64> = all_log_sizes
+        let success_log_sizes: Vec<f64> = all_log_sizes
             .map(|files| {
                 files
                     .iter()
-                    .filter_map(|(_, size, game_index)| game_index.map(|idx| (idx, *size)))
+                    .filter(|(path, _, _)| is_success_log(path))
+                    .map(|(_, size, _)| *size as f64)
                     .collect()
             })
             .unwrap_or_default();
 
-        let median_log_size: Option<f64> = if log_size_by_game.len() >= LOG_VOLUME_MIN_PEERS {
-            let sizes: Vec<f64> = log_size_by_game.values().map(|s| *s as f64).collect();
-            median(&sizes)
+        let median_log_size: Option<f64> = if success_log_sizes.len() >= LOG_VOLUME_MIN_PEERS {
+            median(&success_log_sizes)
         } else {
             None
         };
+
+        let running_log_sizes: HashMap<u64, u64> = self
+            .running_processes
+            .iter()
+            .map(|(id, est)| {
+                let size = fs::metadata(&est.log_file).map(|m| m.len()).unwrap_or(0);
+                (*id, size)
+            })
+            .collect();
 
         // Compute median time-per-block from historical completions.
         let median_tpb: Option<f64> = median(&self.completion_history);
@@ -231,7 +236,7 @@ impl MonitorState {
                     // Heuristic 3: Log volume anomaly.
                     if kill_reason.is_none() {
                         if let Some(med_log) = median_log_size {
-                            let this_size = log_size_by_game.get(id).copied().unwrap_or(0) as f64;
+                            let this_size = running_log_sizes.get(id).copied().unwrap_or(0) as f64;
                             if this_size > LOG_VOLUME_KILL_MULTIPLIER * med_log {
                                 kill_reason = Some(format!(
                                     "log size ({:.1} MB) exceeds {:.0}x median ({:.1} MB)",
@@ -262,19 +267,23 @@ impl MonitorState {
         for (id, action) in process_actions {
             match action {
                 ProcessAction::Success { tpb } => {
-                    self.running_processes.remove(&id);
-                    if let Some(t) = tpb {
-                        self.completion_history.push(t);
+                    if let Some(est) = self.running_processes.remove(&id) {
+                        rename_log(&est.log_file, "success");
+                        if let Some(t) = tpb {
+                            self.completion_history.push(t);
+                        }
                     }
                 }
                 ProcessAction::Kill { reason } => {
                     if let Some(mut est) = self.running_processes.remove(&id) {
                         let _ = est.process.kill();
+                        rename_log(&est.log_file, "failure");
                         self.maybe_requeue(id, est.retries, &reason);
                     }
                 }
                 ProcessAction::Retry { reason } => {
                     if let Some(est) = self.running_processes.remove(&id) {
+                        rename_log(&est.log_file, "failure");
                         self.maybe_requeue(id, est.retries, &reason);
                     }
                 }
@@ -422,6 +431,24 @@ fn extract_game_index(path: &Path) -> Option<u64> {
     let stripped = filename.strip_prefix("cost-estimator-")?;
     let dash_pos = stripped.find('-')?;
     stripped[..dash_pos].parse().ok()
+}
+
+fn is_success_log(path: &Path) -> bool {
+    path.file_name().and_then(|f| f.to_str()).is_some_and(|f| f.ends_with("-success.log"))
+}
+
+fn rename_log(path: &Path, suffix: &str) {
+    let Some(filename) = path.file_name().and_then(|f| f.to_str()) else {
+        return;
+    };
+    let Some(stem) = filename.strip_suffix(".log") else {
+        return;
+    };
+    let new_name = format!("{}-{}.log", stem, suffix);
+    let new_path = path.with_file_name(new_name);
+    if let Err(e) = fs::rename(path, &new_path) {
+        warn!("Failed to rename log {} to {}: {}", path.display(), new_path.display(), e);
+    }
 }
 
 fn log_sizes(logs_dir: &Path) -> Result<Vec<(PathBuf, u64, Option<u64>)>> {
@@ -583,7 +610,7 @@ async fn main() -> Result<()> {
             if !state.can_spawn_new(args.max_concurrent) {
                 break;
             }
-            // Retries have pre-fetched game info and skip the discovery delay.
+            // Retries skip the discovery delay.
             if pending.retries == 0 && pending.discovered_at.elapsed() < delay {
                 break;
             }
@@ -633,7 +660,7 @@ async fn main() -> Result<()> {
                 &log_file,
                 game_data.start_block,
                 game_data.end_block,
-                game_data.end_block - game_data.start_block,
+                game_data.end_block.saturating_sub(game_data.start_block),
             )?;
             info!(
                 "Started cost estimator for game {} at index {} (blocks {}-{})",
