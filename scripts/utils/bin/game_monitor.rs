@@ -151,7 +151,7 @@ impl MonitorState {
             .map(|files| {
                 files
                     .iter()
-                    .filter(|(path, _, _)| is_success_log(path))
+                    .filter(|(path, _, _)| LogFile::is_success(path))
                     .map(|(_, size, _)| *size as f64)
                     .collect()
             })
@@ -268,7 +268,7 @@ impl MonitorState {
             match action {
                 ProcessAction::Success { tpb } => {
                     if let Some(est) = self.running_processes.remove(&id) {
-                        rename_log(&est.log_file, "success");
+                        LogFile::mark_complete(&est.log_file, true);
                         if let Some(t) = tpb {
                             self.completion_history.push(t);
                         }
@@ -277,13 +277,13 @@ impl MonitorState {
                 ProcessAction::Kill { reason } => {
                     if let Some(mut est) = self.running_processes.remove(&id) {
                         let _ = est.process.kill();
-                        rename_log(&est.log_file, "failure");
+                        LogFile::mark_complete(&est.log_file, false);
                         self.maybe_requeue(id, est.retries, &reason);
                     }
                 }
                 ProcessAction::Retry { reason } => {
                     if let Some(est) = self.running_processes.remove(&id) {
-                        rename_log(&est.log_file, "failure");
+                        LogFile::mark_complete(&est.log_file, false);
                         self.maybe_requeue(id, est.retries, &reason);
                     }
                 }
@@ -426,28 +426,43 @@ fn spawn_cost_estimator(
     Ok(child)
 }
 
-fn extract_game_index(path: &Path) -> Option<u64> {
-    let filename = path.file_name()?.to_str()?;
-    let stripped = filename.strip_prefix("cost-estimator-")?;
-    let dash_pos = stripped.find('-')?;
-    stripped[..dash_pos].parse().ok()
-}
+struct LogFile;
 
-fn is_success_log(path: &Path) -> bool {
-    path.file_name().and_then(|f| f.to_str()).is_some_and(|f| f.ends_with("-success.log"))
-}
+impl LogFile {
+    fn path(logs_dir: &Path, game_index: u64, game_address: Address, retries: u32) -> PathBuf {
+        if retries > 0 {
+            logs_dir.join(format!(
+                "cost-estimator-{}-{}-retry{}.log",
+                game_index, game_address, retries
+            ))
+        } else {
+            logs_dir.join(format!("cost-estimator-{}-{}.log", game_index, game_address))
+        }
+    }
 
-fn rename_log(path: &Path, suffix: &str) {
-    let Some(filename) = path.file_name().and_then(|f| f.to_str()) else {
-        return;
-    };
-    let Some(stem) = filename.strip_suffix(".log") else {
-        return;
-    };
-    let new_name = format!("{}-{}.log", stem, suffix);
-    let new_path = path.with_file_name(new_name);
-    if let Err(e) = fs::rename(path, &new_path) {
-        warn!("Failed to rename log {} to {}: {}", path.display(), new_path.display(), e);
+    fn extract_game_index(path: &Path) -> Option<u64> {
+        let filename = path.file_name()?.to_str()?;
+        let stripped = filename.strip_prefix("cost-estimator-")?;
+        let dash_pos = stripped.find('-')?;
+        stripped[..dash_pos].parse().ok()
+    }
+
+    fn is_success(path: &Path) -> bool {
+        path.file_name().and_then(|f| f.to_str()).is_some_and(|f| f.ends_with("-success.log"))
+    }
+
+    fn mark_complete(path: &Path, success: bool) {
+        let Some(filename) = path.file_name().and_then(|f| f.to_str()) else {
+            return;
+        };
+        let Some(stem) = filename.strip_suffix(".log") else {
+            return;
+        };
+        let suffix = if success { "success" } else { "failure" };
+        let new_path = path.with_file_name(format!("{}-{}.log", stem, suffix));
+        if let Err(e) = fs::rename(path, &new_path) {
+            warn!("Failed to rename log {} to {}: {}", path.display(), new_path.display(), e);
+        }
     }
 }
 
@@ -461,7 +476,7 @@ fn log_sizes(logs_dir: &Path) -> Result<Vec<(PathBuf, u64, Option<u64>)>> {
             total_size += size;
             // Only consider files matching our naming pattern as deletion
             // candidates.
-            if let Some(game_index) = extract_game_index(&path) {
+            if let Some(game_index) = LogFile::extract_game_index(&path) {
                 log_files.push((path, size, game_index));
             }
         }
@@ -642,17 +657,12 @@ async fn main() -> Result<()> {
                 game_data.game_address, game_data.start_block, game_data.end_block
             );
 
-            let log_file = if pending.retries > 0 {
-                args.logs_dir.join(format!(
-                    "cost-estimator-{}-{}-retry{}.log",
-                    game_data.game_index, game_data.game_address, pending.retries
-                ))
-            } else {
-                args.logs_dir.join(format!(
-                    "cost-estimator-{}-{}.log",
-                    game_data.game_index, game_data.game_address
-                ))
-            };
+            let log_file = LogFile::path(
+                &args.logs_dir,
+                game_data.game_index,
+                game_data.game_address,
+                pending.retries,
+            );
 
             let child = spawn_cost_estimator(
                 &args.cost_estimator_binary_path,
