@@ -350,8 +350,6 @@ async fn fetch_game_data<P: alloy_provider::Provider + Clone>(
     let game_type = game_info.gameType;
     let game_address = game_info.proxy;
 
-    info!("Processing game {} at index {}", game_address, game_index);
-
     let game = OPSuccinctFaultDisputeGame::new(game_address, l1_provider);
 
     let l2_block_number =
@@ -627,6 +625,8 @@ async fn main() -> Result<()> {
                     continue 'outer;
                 }
             };
+
+            info!("Processing game {} at index {}", game_data.game_address, game_data.game_index);
 
             if game_data.game_type != GAME_TYPE {
                 info!(
