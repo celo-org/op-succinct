@@ -255,10 +255,6 @@ impl MonitorState {
                 }
                 Err(e) => {
                     error!("Error checking process {}: {}", id, e);
-                    process_actions.push((
-                        *id,
-                        ProcessAction::Retry { reason: format!("process check error: {}", e) },
-                    ));
                 }
             }
         }
