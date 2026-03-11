@@ -227,7 +227,7 @@ fn enforce_log_space_limit(
     max_size_bytes: u64,
     running_game_indices: &HashMap<u64, RunningEstimator>,
 ) -> Result<()> {
-    let mut log_files: Vec<(PathBuf, u64, Option<u64>)> = Vec::new();
+    let mut log_files: Vec<(PathBuf, u64, u64)> = Vec::new();
     let mut total_size: u64 = 0;
 
     for entry in fs::read_dir(logs_dir)? {
@@ -235,9 +235,12 @@ fn enforce_log_space_limit(
         let path = entry.path();
         if path.is_file() {
             let size = entry.metadata()?.len();
-            let game_index = extract_game_index(&path);
             total_size += size;
-            log_files.push((path, size, game_index));
+            // Only consider files matching our naming pattern as deletion
+            // candidates; never delete files we didn't create.
+            if let Some(game_index) = extract_game_index(&path) {
+                log_files.push((path, size, game_index));
+            }
         }
     }
 
@@ -251,8 +254,7 @@ fn enforce_log_space_limit(
         max_size_bytes as f64 / (1024.0 * 1024.0),
     );
 
-    // Sort by game index ascending (oldest first). Files without a parseable
-    // game index are placed at the front so they get deleted first.
+    // Sort by game index ascending (oldest first).
     log_files.sort_by_key(|(_, _, idx)| *idx);
 
     for (path, size, game_index) in &log_files {
@@ -260,10 +262,8 @@ fn enforce_log_space_limit(
             break;
         }
 
-        if let Some(idx) = game_index {
-            if running_game_indices.contains_key(idx) {
-                continue;
-            }
+        if running_game_indices.contains_key(game_index) {
+            continue;
         }
 
         match fs::remove_file(path) {
