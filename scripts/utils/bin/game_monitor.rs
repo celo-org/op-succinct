@@ -118,6 +118,12 @@ struct GameData {
     end_block: u64,
 }
 
+impl GameData {
+    fn block_range(&self) -> u64 {
+        self.end_block.saturating_sub(self.start_block)
+    }
+}
+
 enum ProcessAction {
     Success { tpb: Option<f64> },
     Kill { reason: String },
@@ -364,22 +370,19 @@ async fn fetch_game_data<P: alloy_provider::Provider + Clone>(
     Ok(GameData { game_index, game_type, game_address, start_block, end_block: l2_block_number })
 }
 
-/// Spawns a cost estimator process for the given block range.
 fn spawn_cost_estimator(
     cost_estimator_binary_path: &PathBuf,
     env_file: &Path,
     log_file: &PathBuf,
-    start_block: u64,
-    end_block: u64,
-    batch_size: u64,
+    game_data: &GameData,
 ) -> Result<Child> {
     let args = [
         "--start",
-        &start_block.to_string(),
+        &game_data.start_block.to_string(),
         "--end",
-        &end_block.to_string(),
+        &game_data.end_block.to_string(),
         "--batch-size",
-        &batch_size.to_string(),
+        &game_data.block_range().to_string(),
         "--env-file",
         env_file.to_str().unwrap(),
     ];
@@ -660,9 +663,7 @@ async fn main() -> Result<()> {
                 &args.cost_estimator_binary_path,
                 &args.env_file,
                 &log_file,
-                game_data.start_block,
-                game_data.end_block,
-                game_data.end_block.saturating_sub(game_data.start_block),
+                &game_data,
             )?;
             info!(
                 "Started cost estimator for game {} at index {} (blocks {}-{})",
@@ -677,7 +678,7 @@ async fn main() -> Result<()> {
                     started_at: Instant::now(),
                     process: child,
                     log_file,
-                    block_range: game_data.end_block.saturating_sub(game_data.start_block),
+                    block_range: game_data.block_range(),
                     retries: pending.retries,
                 },
             );
