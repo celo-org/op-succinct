@@ -467,24 +467,23 @@ impl LogFile {
             warn!("Failed to rename log {} to {}: {}", path.display(), new_path.display(), e);
         }
     }
-}
-
-fn log_sizes(logs_dir: &Path) -> Result<Vec<(PathBuf, u64, Option<u64>)>> {
-    let mut log_files: Vec<(PathBuf, u64, u64)> = Vec::new();
-    for entry in fs::read_dir(logs_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() {
-            let size = entry.metadata()?.len();
-            total_size += size;
-            // Only consider files matching our naming pattern as deletion
-            // candidates.
-            if let Some(game_index) = LogFile::extract_game_index(&path) {
-                log_files.push((path, size, game_index));
+    fn sizes(logs_dir: &Path) -> Result<Vec<(PathBuf, u64, Option<u64>)>> {
+        let mut log_files: Vec<(PathBuf, u64, u64)> = Vec::new();
+        for entry in fs::read_dir(logs_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                let size = entry.metadata()?.len();
+                total_size += size;
+                // Only consider files matching our naming pattern as deletion
+                // candidates.
+                if let Some(game_index) = Self::extract_game_index(&path) {
+                    log_files.push((path, size, game_index));
+                }
             }
         }
+        Ok(log_files)
     }
-    Ok(log_files)
 }
 
 fn enforce_log_space_limit(
@@ -588,7 +587,7 @@ async fn main() -> Result<()> {
     'outer: loop {
         sleep(poll_interval).await;
 
-        let mut log_file_info = match log_sizes(&args.logs_dir) {
+        let mut log_file_info = match LogFile::sizes(&args.logs_dir) {
             Ok(files) => Some(files),
             Err(e) => {
                 warn!("Failed to read log sizes: {}", e);
