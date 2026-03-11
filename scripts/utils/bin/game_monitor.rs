@@ -149,11 +149,8 @@ impl MonitorState {
         }
     }
 
-    fn cleanup_finished_processes(
-        &mut self,
-        all_log_sizes: Option<&[(PathBuf, u64, Option<u64>)]>,
-    ) {
-        let success_log_sizes: Vec<f64> = all_log_sizes
+    fn cleanup_finished_processes(&mut self, logs_dir: &Path) {
+        let success_log_sizes: Vec<f64> = LogFile::sizes(logs_dir)
             .map(|files| {
                 files
                     .iter()
@@ -489,8 +486,15 @@ impl LogFile {
 fn enforce_log_space_limit(
     max_size_bytes: u64,
     running_game_indices: &HashMap<u64, RunningEstimator>,
-    log_files: &mut [(PathBuf, u64, Option<u64>)],
+    logs_dir: &Path,
 ) {
+    let mut log_files = match LogFile::sizes(logs_dir) {
+        Ok(files) => files,
+        Err(e) => {
+            warn!("Failed to read log sizes for space enforcement: {}", e);
+            return;
+        }
+    };
     let mut total_size: u64 = log_files.iter().map(|t| t.1).sum();
 
     if total_size <= max_size_bytes {
@@ -587,24 +591,14 @@ async fn main() -> Result<()> {
     'outer: loop {
         sleep(poll_interval).await;
 
-        let mut log_file_info = match LogFile::sizes(&args.logs_dir) {
-            Ok(files) => Some(files),
-            Err(e) => {
-                warn!("Failed to read log sizes: {}", e);
-                None
-            }
-        };
-
-        state.cleanup_finished_processes(log_file_info.as_deref());
+        state.cleanup_finished_processes(&args.logs_dir);
 
         if args.max_logs_size_mb > 0 {
-            if let Some(ref mut log_files) = log_file_info {
-                enforce_log_space_limit(
-                    args.max_logs_size_mb * 1024 * 1024,
-                    &state.running_processes,
-                    log_files,
-                );
-            }
+            enforce_log_space_limit(
+                args.max_logs_size_mb * 1024 * 1024,
+                &state.running_processes,
+                &args.logs_dir,
+            );
         }
 
         info!(
