@@ -15,7 +15,10 @@ use std::{
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
-use tokio::time::sleep;
+use tokio::{
+    signal::unix::{signal, SignalKind},
+    time::sleep,
+};
 
 const GAME_TYPE: u32 = 42;
 const MAX_RETRIES: u32 = 3;
@@ -310,6 +313,18 @@ impl MonitorState {
     fn can_spawn_new(&self, max_concurrent: usize) -> bool {
         self.running_processes.len() < max_concurrent
     }
+
+    fn shutdown(&mut self) {
+        info!("Shutting down: killing {} running processes", self.running_processes.len());
+        for (id, mut est) in self.running_processes.drain() {
+            if let Err(e) = est.process.kill() {
+                warn!("Failed to kill process for game {}: {}", id, e);
+            }
+            if let Err(e) = fs::remove_file(&est.log_file) {
+                warn!("Failed to delete log file {}: {}", est.log_file.display(), e);
+            }
+        }
+    }
 }
 
 /// Compute the median of a slice of f64 values. Returns None if the slice is empty.
@@ -577,9 +592,23 @@ async fn main() -> Result<()> {
     let poll_interval = Duration::from_secs(args.poll_interval);
     let delay = Duration::from_secs(args.delay);
 
-    // Main monitoring loop
+    let mut sigterm =
+        signal(SignalKind::terminate()).context("Failed to register SIGTERM handler")?;
+    let mut sigint =
+        signal(SignalKind::interrupt()).context("Failed to register SIGINT handler")?;
+
     'outer: loop {
-        sleep(poll_interval).await;
+        tokio::select! {
+            _ = sleep(poll_interval) => {}
+            _ = sigterm.recv() => {
+                info!("Received SIGTERM");
+                break;
+            }
+            _ = sigint.recv() => {
+                info!("Received SIGINT");
+                break;
+            }
+        }
 
         state.cleanup_finished_processes(&args.logs_dir);
 
@@ -695,4 +724,7 @@ async fn main() -> Result<()> {
             });
         }
     }
+
+    state.shutdown();
+    Ok(())
 }
