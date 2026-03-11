@@ -212,36 +212,28 @@ impl MonitorState {
                     }
                 }
                 Ok(None) => {
-                    // Process still running — check watchdog heuristics.
-                    let mut kill_reason: Option<String> = None;
-
-                    // Heuristic 1: Absolute timeout.
-                    if elapsed.as_secs() > self.max_process_duration_secs {
-                        kill_reason = Some(format!(
-                            "exceeded maximum duration of {}s",
-                            self.max_process_duration_secs
-                        ));
-                    }
-
-                    // Heuristic 2: Runtime anomaly (time-per-block vs history).
-                    if kill_reason.is_none() && estimator.block_range > 0 {
-                        if let Some(med_tpb) = median_tpb {
-                            let current_tpb = elapsed_secs / estimator.block_range as f64;
-                            if current_tpb > RUNTIME_ANOMALY_MULTIPLIER * med_tpb {
-                                kill_reason = Some(format!(
-                                    "time per block ({:.1}s) exceeds {:.0}x median ({:.1}s)",
-                                    current_tpb, RUNTIME_ANOMALY_MULTIPLIER, med_tpb
-                                ));
+                    let kill_reason = (|| {
+                        if elapsed.as_secs() > self.max_process_duration_secs {
+                            return Some(format!(
+                                "exceeded maximum duration of {}s",
+                                self.max_process_duration_secs
+                            ));
+                        }
+                        if estimator.block_range > 0 {
+                            if let Some(med_tpb) = median_tpb {
+                                let current_tpb = elapsed_secs / estimator.block_range as f64;
+                                if current_tpb > RUNTIME_ANOMALY_MULTIPLIER * med_tpb {
+                                    return Some(format!(
+                                        "time per block ({:.1}s) exceeds {:.0}x median ({:.1}s)",
+                                        current_tpb, RUNTIME_ANOMALY_MULTIPLIER, med_tpb
+                                    ));
+                                }
                             }
                         }
-                    }
-
-                    // Heuristic 3: Log volume anomaly.
-                    if kill_reason.is_none() {
                         if let Some(med_log) = median_log_size {
                             let this_size = running_log_sizes.get(id).copied().unwrap_or(0) as f64;
                             if this_size > LOG_VOLUME_KILL_MULTIPLIER * med_log {
-                                kill_reason = Some(format!(
+                                return Some(format!(
                                     "log size ({:.1} MB) exceeds {:.0}x median ({:.1} MB)",
                                     this_size / (1024.0 * 1024.0),
                                     LOG_VOLUME_KILL_MULTIPLIER,
@@ -249,7 +241,8 @@ impl MonitorState {
                                 ));
                             }
                         }
-                    }
+                        None
+                    })();
 
                     if let Some(reason) = kill_reason {
                         error!(
