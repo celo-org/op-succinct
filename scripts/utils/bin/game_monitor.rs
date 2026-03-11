@@ -553,7 +553,6 @@ async fn main() -> Result<()> {
     }
 
     info!("Starting game monitor for game type {}", GAME_TYPE);
-    info!("Args: {:?}", args);
 
     // Get required environment variables
     let l1_rpc = env::var("L1_RPC").context("L1_RPC not set")?;
