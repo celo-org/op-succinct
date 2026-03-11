@@ -73,7 +73,8 @@ pub struct GameMonitorArgs {
     #[arg(long, default_value = "0")]
     pub max_logs_size_mb: u64,
 
-    // The index of the game to start checking from. If unset the monitor will
+    // The index of the game to start checking from. If unset the monitor will sart with the most
+    // recently created game.
     #[arg(long, default_value = None)]
     pub start_index: Option<u64>,
 
