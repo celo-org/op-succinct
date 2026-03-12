@@ -6,6 +6,7 @@ use fault_proof::contract::{
     DisputeGameFactory::DisputeGameFactoryInstance, OPSuccinctFaultDisputeGame,
 };
 use log::{error, info, warn};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, VecDeque},
     env,
@@ -24,7 +25,7 @@ const GAME_TYPE: u32 = 42;
 const MAX_RETRIES: u32 = 3;
 /// Kill a process if its log file is this many times larger than the median of peers.
 const LOG_VOLUME_KILL_MULTIPLIER: f64 = 10.0;
-/// Minimum number of running processes required to perform log volume comparison.
+/// Minimum number of completion history entries required to perform log volume comparison.
 const LOG_VOLUME_MIN_PEERS: usize = 3;
 /// Kill a process if its time-per-block exceeds this multiplier of the median of completed
 /// processes.
@@ -94,6 +95,15 @@ pub struct GameMonitorArgs {
     /// vs completed processes) may kill sooner. This value acts as the absolute ceiling.
     #[arg(long, default_value = "10800")]
     pub max_process_duration_secs: u64,
+
+    /// Maximum number of entries retained in the completion history used for anomaly
+    /// detection (time-per-block and log-size outliers). Older entries are discarded first.
+    #[arg(long, default_value = "50")]
+    pub max_history_length: usize,
+
+    /// Path to the completion history file. Defaults to `<logs_dir>/completion_history.json`.
+    #[arg(long)]
+    pub history_file: Option<PathBuf>,
 }
 
 /// Represents a running cost estimator process for a game.
@@ -133,38 +143,101 @@ enum ProcessAction {
     Retry { reason: String },
 }
 
+/// A record of a successfully completed cost estimator process, used for anomaly detection.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct CompletionRecord {
+    /// Time per block in seconds.
+    time_per_block: f64,
+    /// Final log file size in bytes.
+    log_size: u64,
+}
+
 struct MonitorState {
     running_processes: HashMap<u64, RunningEstimator>,
     pending_games: VecDeque<PendingGame>,
     next_game_index: u64,
-    completion_history: Vec<f64>,
+    completion_history: VecDeque<CompletionRecord>,
     max_process_duration_secs: u64,
+    max_history_length: usize,
+    history_file: PathBuf,
 }
 
 impl MonitorState {
-    fn new(next_game_index: u64, max_process_duration_secs: u64) -> Self {
+    fn new(
+        next_game_index: u64,
+        max_process_duration_secs: u64,
+        max_history_length: usize,
+        history_file: PathBuf,
+    ) -> Self {
+        let completion_history = Self::load_history(&history_file, max_history_length);
+        info!(
+            "Loaded {} completion history entries from {}",
+            completion_history.len(),
+            history_file.display()
+        );
         Self {
             running_processes: HashMap::new(),
             pending_games: VecDeque::new(),
             next_game_index,
-            completion_history: Vec::new(),
+            completion_history,
             max_process_duration_secs,
+            max_history_length,
+            history_file,
         }
     }
 
-    fn cleanup_finished_processes(&mut self, logs_dir: &Path) {
-        let success_log_sizes: Vec<f64> = LogFile::sizes(logs_dir)
-            .map(|files| {
-                files
-                    .iter()
-                    .filter(|(path, _, _)| LogFile::is_success(path))
-                    .map(|(_, size, _)| *size as f64)
-                    .collect()
-            })
-            .unwrap_or_default();
+    fn load_history(path: &Path, max_length: usize) -> VecDeque<CompletionRecord> {
+        let data = match fs::read_to_string(path) {
+            Ok(data) => data,
+            Err(_) => return VecDeque::new(),
+        };
+        let mut records: VecDeque<CompletionRecord> = match serde_json::from_str(&data) {
+            Ok(records) => records,
+            Err(e) => {
+                warn!("Failed to parse completion history from {}: {}", path.display(), e);
+                return VecDeque::new();
+            }
+        };
+        while records.len() > max_length {
+            records.pop_front();
+        }
+        records
+    }
 
-        let median_log_size: Option<f64> = if success_log_sizes.len() >= LOG_VOLUME_MIN_PEERS {
-            median(&success_log_sizes)
+    fn save_history(&self) {
+        match serde_json::to_string(&self.completion_history) {
+            Ok(data) => {
+                if let Err(e) = fs::write(&self.history_file, data) {
+                    warn!(
+                        "Failed to write completion history to {}: {}",
+                        self.history_file.display(),
+                        e
+                    );
+                }
+            }
+            Err(e) => {
+                warn!("Failed to serialize completion history: {}", e);
+            }
+        }
+    }
+
+    fn push_completion(&mut self, record: CompletionRecord) {
+        if self.max_history_length == 0 {
+            return;
+        }
+        if self.completion_history.len() >= self.max_history_length {
+            self.completion_history.pop_front();
+        }
+        self.completion_history.push_back(record);
+        self.save_history();
+    }
+
+    fn cleanup_finished_processes(&mut self) {
+        let history_log_sizes: Vec<f64> =
+            self.completion_history.iter().map(|r| r.log_size as f64).collect();
+
+        let median_log_size: Option<f64> = if history_log_sizes.len() >= LOG_VOLUME_MIN_PEERS {
+            median(&history_log_sizes)
         } else {
             None
         };
@@ -178,8 +251,9 @@ impl MonitorState {
             })
             .collect();
 
-        // Compute median time-per-block from historical completions.
-        let median_tpb: Option<f64> = median(&self.completion_history);
+        let tpb_values: Vec<f64> =
+            self.completion_history.iter().map(|r| r.time_per_block).collect();
+        let median_tpb: Option<f64> = median(&tpb_values);
 
         let mut process_actions: Vec<(u64, ProcessAction)> = Vec::new();
 
@@ -267,9 +341,13 @@ impl MonitorState {
             match action {
                 ProcessAction::Success { tpb } => {
                     if let Some(est) = self.running_processes.remove(&id) {
+                        let log_size = fs::metadata(&est.log_file).map(|m| m.len()).unwrap_or(0);
                         LogFile::mark_complete(&est.log_file, true);
-                        if let Some(t) = tpb {
-                            self.completion_history.push(t);
+                        if let Some(tpb) = tpb {
+                            self.push_completion(CompletionRecord {
+                                time_per_block: tpb,
+                                log_size,
+                            });
                         }
                     }
                 }
@@ -453,10 +531,6 @@ impl LogFile {
         stripped[..dash_pos].parse().ok()
     }
 
-    fn is_success(path: &Path) -> bool {
-        path.file_name().and_then(|f| f.to_str()).is_some_and(|f| f.ends_with("-success.log"))
-    }
-
     fn mark_complete(path: &Path, success: bool) {
         let Some(filename) = path.file_name().and_then(|f| f.to_str()) else {
             return;
@@ -587,7 +661,14 @@ async fn main() -> Result<()> {
             }
         }
     };
-    let mut state = MonitorState::new(next_game_index, args.max_process_duration_secs);
+    let history_file =
+        args.history_file.clone().unwrap_or_else(|| args.logs_dir.join("completion_history.json"));
+    let mut state = MonitorState::new(
+        next_game_index,
+        args.max_process_duration_secs,
+        args.max_history_length,
+        history_file,
+    );
 
     let poll_interval = Duration::from_secs(args.poll_interval);
     let delay = Duration::from_secs(args.delay);
@@ -610,7 +691,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        state.cleanup_finished_processes(&args.logs_dir);
+        state.cleanup_finished_processes();
 
         if args.max_logs_size_mb > 0 {
             enforce_log_space_limit(
