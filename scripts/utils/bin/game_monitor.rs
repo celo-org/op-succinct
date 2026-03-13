@@ -5,7 +5,7 @@ use clap::Parser;
 use fault_proof::contract::{
     DisputeGameFactory::DisputeGameFactoryInstance, OPSuccinctFaultDisputeGame,
 };
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, VecDeque},
@@ -125,7 +125,6 @@ struct PendingGame {
 
 struct GameData {
     game_index: u64,
-    game_type: u32,
     game_address: Address,
     start_block: u64,
     end_block: u64,
@@ -420,11 +419,19 @@ fn median(values: &[f64]) -> Option<f64> {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+enum FetchGameError {
+    #[error("game {game_index} has type {game_type}, expected {expected}")]
+    WrongGameType { game_index: u64, game_type: u32, expected: u32 },
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
 async fn fetch_game_data<P: alloy_provider::Provider + Clone>(
     pending: &PendingGame,
     factory: &DisputeGameFactoryInstance<P>,
     l1_provider: P,
-) -> Result<GameData> {
+) -> Result<GameData, FetchGameError> {
     let game_index = pending.game_index;
 
     let game_info = factory
@@ -434,6 +441,14 @@ async fn fetch_game_data<P: alloy_provider::Provider + Clone>(
         .context("failed to get game at index")?;
 
     let game_type = game_info.gameType;
+    if game_type != GAME_TYPE {
+        return Err(FetchGameError::WrongGameType {
+            game_index,
+            game_type,
+            expected: GAME_TYPE,
+        });
+    }
+
     let game_address = game_info.proxy;
 
     let game = OPSuccinctFaultDisputeGame::new(game_address, l1_provider);
@@ -448,7 +463,7 @@ async fn fetch_game_data<P: alloy_provider::Provider + Clone>(
         .context("failed to get starting block number")?
         .to::<u64>();
 
-    Ok(GameData { game_index, game_type, game_address, start_block, end_block: l2_block_number })
+    Ok(GameData { game_index, game_address, start_block, end_block: l2_block_number })
 }
 
 fn spawn_cost_estimator(
@@ -719,6 +734,14 @@ async fn main() -> Result<()> {
 
             let game_data = match fetch_game_data(pending, &factory, l1_provider.clone()).await {
                 Ok(data) => data,
+                Err(FetchGameError::WrongGameType { game_index, game_type, expected }) => {
+                    debug!(
+                        "Skipping game at index {} (type {} != {})",
+                        game_index, game_type, expected
+                    );
+                    state.pending_games.pop_front();
+                    continue;
+                }
                 Err(e) => {
                     warn!(
                         "Failed to fetch game data for index {}: {:#}. Retrying",
@@ -727,17 +750,6 @@ async fn main() -> Result<()> {
                     continue 'outer;
                 }
             };
-
-            info!("Processing game {} at index {}", game_data.game_address, game_data.game_index);
-
-            if game_data.game_type != GAME_TYPE {
-                info!(
-                    "Skipping game at index {} (type {} != {})",
-                    game_data.game_index, game_data.game_type, GAME_TYPE
-                );
-                state.pending_games.pop_front();
-                continue;
-            }
 
             let pending = state.pending_games.pop_front().unwrap();
 
