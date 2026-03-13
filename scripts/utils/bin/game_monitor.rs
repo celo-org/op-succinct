@@ -544,14 +544,13 @@ impl LogFile {
             warn!("Failed to rename log {} to {}: {}", path.display(), new_path.display(), e);
         }
     }
-    fn sizes(logs_dir: &Path) -> Result<Vec<(PathBuf, u64, Option<u64>)>> {
+    fn sizes(logs_dir: &Path) -> Result<Vec<(PathBuf, u64, u64)>> {
         let mut log_files: Vec<(PathBuf, u64, u64)> = Vec::new();
         for entry in fs::read_dir(logs_dir)? {
             let entry = entry?;
             let path = entry.path();
             if path.is_file() {
                 let size = entry.metadata()?.len();
-                total_size += size;
                 // Only consider files matching our naming pattern as deletion
                 // candidates.
                 if let Some(game_index) = Self::extract_game_index(&path) {
