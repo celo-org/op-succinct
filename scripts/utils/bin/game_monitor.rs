@@ -25,11 +25,11 @@ const GAME_TYPE: u32 = 42;
 const MAX_RETRIES: u32 = 3;
 /// Kill a process if its log file is this many times larger than the median of peers.
 const LOG_VOLUME_KILL_MULTIPLIER: f64 = 10.0;
-/// Minimum number of completion history entries required to perform log volume comparison.
-const LOG_VOLUME_MIN_PEERS: usize = 3;
+/// Minimum number of completion history entries required to perform median comparison.
+const MEDIAN_THRESHOLD: usize = 3;
 /// Kill a process if its time-per-block exceeds this multiplier of the median of completed
 /// processes.
-const RUNTIME_ANOMALY_MULTIPLIER: f64 = 5.0;
+const RUNTIME_KILL_MULTIPLIER: f64 = 5.0;
 
 /// Arguments for the game monitor.
 #[derive(Debug, Clone, Parser)]
@@ -137,7 +137,7 @@ impl GameData {
 }
 
 enum ProcessAction {
-    Success { tpb: Option<f64> },
+    Success { duration: Duration, block_range: u64 },
     Kill { reason: String },
     Retry { reason: String },
 }
@@ -145,10 +145,12 @@ enum ProcessAction {
 /// A record of a successfully completed cost estimator process, used for anomaly detection.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct CompletionRecord {
-    /// Time per block in seconds.
-    time_per_block: f64,
+    /// Execution duration.
+    duration: Duration,
     /// Final log file size in bytes.
     log_size: u64,
+    /// Block count
+    block_range: u64,
 }
 
 struct MonitorState {
@@ -232,14 +234,21 @@ impl MonitorState {
     }
 
     fn cleanup_finished_processes(&mut self) {
-        let history_log_sizes: Vec<f64> =
-            self.completion_history.iter().map(|r| r.log_size as f64).collect();
+        // Calculate median log size per block
+        let lpb_values: Vec<f64> = self
+            .completion_history
+            .iter()
+            .map(|r| r.log_size as f64 / r.block_range as f64)
+            .collect();
+        let median_lpb: Option<f64> = median(&lpb_values, MEDIAN_THRESHOLD);
 
-        let median_log_size: Option<f64> = if history_log_sizes.len() >= LOG_VOLUME_MIN_PEERS {
-            median(&history_log_sizes)
-        } else {
-            None
-        };
+        // Calculate median time per block
+        let tpb_values: Vec<f64> = self
+            .completion_history
+            .iter()
+            .map(|r| r.duration.as_secs_f64() / r.block_range as f64)
+            .collect();
+        let median_tpb: Option<f64> = median(&tpb_values, MEDIAN_THRESHOLD);
 
         let running_log_sizes: HashMap<u64, u64> = self
             .running_processes
@@ -250,30 +259,26 @@ impl MonitorState {
             })
             .collect();
 
-        let tpb_values: Vec<f64> =
-            self.completion_history.iter().map(|r| r.time_per_block).collect();
-        let median_tpb: Option<f64> = median(&tpb_values);
-
         let mut process_actions: Vec<(u64, ProcessAction)> = Vec::new();
 
         for (id, estimator) in self.running_processes.iter_mut() {
             let elapsed = estimator.started_at.elapsed();
-            let elapsed_secs = elapsed.as_secs_f64();
 
             match estimator.process.try_wait() {
                 Ok(Some(status)) => {
                     if status.success() {
-                        let tpb = if estimator.block_range > 0 {
-                            Some(elapsed_secs / estimator.block_range as f64)
-                        } else {
-                            None
-                        };
                         info!(
                             "Cost estimator {} completed successfully, log file: {}",
                             id,
                             estimator.log_file.display(),
                         );
-                        process_actions.push((*id, ProcessAction::Success { tpb }));
+                        process_actions.push((
+                            *id,
+                            ProcessAction::Success {
+                                duration: elapsed,
+                                block_range: estimator.block_range,
+                            },
+                        ));
                     } else {
                         error!(
                             "Cost estimator {} failed with status {:?}, log file: {}",
@@ -297,24 +302,27 @@ impl MonitorState {
                         }
                         if estimator.block_range > 0 {
                             if let Some(med_tpb) = median_tpb {
-                                let current_tpb = elapsed_secs / estimator.block_range as f64;
-                                if current_tpb > RUNTIME_ANOMALY_MULTIPLIER * med_tpb {
+                                let current_tpb =
+                                    elapsed.as_secs_f64() / estimator.block_range as f64;
+                                if current_tpb > RUNTIME_KILL_MULTIPLIER * med_tpb {
                                     return Some(format!(
                                         "time per block ({:.1}s) exceeds {:.0}x median ({:.1}s)",
-                                        current_tpb, RUNTIME_ANOMALY_MULTIPLIER, med_tpb
+                                        current_tpb, RUNTIME_KILL_MULTIPLIER, med_tpb
                                     ));
                                 }
                             }
-                        }
-                        if let Some(med_log) = median_log_size {
-                            let this_size = running_log_sizes.get(id).copied().unwrap_or(0) as f64;
-                            if this_size > LOG_VOLUME_KILL_MULTIPLIER * med_log {
-                                return Some(format!(
-                                    "log size ({:.1} MB) exceeds {:.0}x median ({:.1} MB)",
-                                    this_size / (1024.0 * 1024.0),
-                                    LOG_VOLUME_KILL_MULTIPLIER,
-                                    med_log / (1024.0 * 1024.0)
-                                ));
+                            if let Some(med_lpb) = median_lpb {
+                                let current_lpb = running_log_sizes.get(id).copied().unwrap_or(0)
+                                    as f64 /
+                                    estimator.block_range as f64;
+                                if current_lpb > LOG_VOLUME_KILL_MULTIPLIER * med_lpb {
+                                    return Some(format!(
+                                        "log size ({:.1} MB) exceeds {:.0}x median ({:.1} MB)",
+                                        current_lpb / (1024.0 * 1024.0),
+                                        LOG_VOLUME_KILL_MULTIPLIER,
+                                        med_lpb / (1024.0 * 1024.0)
+                                    ));
+                                }
                             }
                         }
                         None
@@ -338,14 +346,15 @@ impl MonitorState {
 
         for (id, action) in process_actions {
             match action {
-                ProcessAction::Success { tpb } => {
+                ProcessAction::Success { duration, block_range } => {
                     if let Some(est) = self.running_processes.remove(&id) {
                         let log_size = fs::metadata(&est.log_file).map(|m| m.len()).unwrap_or(0);
                         LogFile::mark_complete(&est.log_file, true);
-                        if let Some(tpb) = tpb {
+                        if block_range > 0 {
                             self.push_completion(CompletionRecord {
-                                time_per_block: tpb,
+                                duration,
                                 log_size,
+                                block_range,
                             });
                         }
                     }
@@ -404,9 +413,10 @@ impl MonitorState {
     }
 }
 
-/// Compute the median of a slice of f64 values. Returns None if the slice is empty.
-fn median(values: &[f64]) -> Option<f64> {
-    if values.is_empty() {
+/// Compute the median of a slice of f64 values. Returns if the length of the slice is below the
+/// threshold.
+fn median(values: &[f64], threshold: usize) -> Option<f64> {
+    if values.len() < threshold {
         return None;
     }
     let mut sorted = values.to_vec();
@@ -442,11 +452,7 @@ async fn fetch_game_data<P: alloy_provider::Provider + Clone>(
 
     let game_type = game_info.gameType;
     if game_type != GAME_TYPE {
-        return Err(FetchGameError::WrongGameType {
-            game_index,
-            game_type,
-            expected: GAME_TYPE,
-        });
+        return Err(FetchGameError::WrongGameType { game_index, game_type, expected: GAME_TYPE });
     }
 
     let game_address = game_info.proxy;
