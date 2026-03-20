@@ -812,7 +812,8 @@ async fn main() -> Result<()> {
         }
 
         // Discover new game indices and queue them for deferred processing.
-        let current_game_count = match factory.gameCount().call().await {
+        let current_game_count = match factory.gameCount().call().block(BlockId::finalized()).await
+        {
             Ok(count) => count.to::<u64>(),
             Err(e) => {
                 warn!(
