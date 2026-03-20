@@ -111,7 +111,7 @@ pub struct GameMonitorArgs {
 struct RunningEstimator {
     started_at: Instant,
     process: Child,
-    log_file: PathBuf,
+    log_file: LogFile,
     block_range: u64,
     retries: u32,
 }
@@ -255,7 +255,7 @@ impl MonitorState {
             .running_processes
             .iter()
             .map(|(id, est)| {
-                let size = fs::metadata(&est.log_file).map(|m| m.len()).unwrap_or(0);
+                let size = fs::metadata(&est.log_file.path).map(|m| m.len()).unwrap_or(0);
                 (*id, size)
             })
             .collect();
@@ -267,11 +267,13 @@ impl MonitorState {
 
             match estimator.process.try_wait() {
                 Ok(Some(status)) => {
-                    if status.success() {
+                    let success = status.success();
+                    estimator.log_file.mark_complete(success);
+                    if success {
                         info!(
                             "Cost estimator {} completed successfully, log file: {}",
                             id,
-                            estimator.log_file.display(),
+                            estimator.log_file.path.display(),
                         );
                         process_actions.push((
                             *id,
@@ -285,7 +287,7 @@ impl MonitorState {
                             "Cost estimator {} failed with status {:?}, log file: {}",
                             id,
                             status,
-                            estimator.log_file.display(),
+                            estimator.log_file.path.display(),
                         );
                         process_actions.push((
                             *id,
@@ -330,11 +332,12 @@ impl MonitorState {
                     })();
 
                     if let Some(reason) = kill_reason {
+                        estimator.log_file.mark_complete(false);
                         error!(
                             "Cost estimator {} is out of control ({}), log file: {}. Killing it.",
                             id,
                             reason,
-                            estimator.log_file.display()
+                            estimator.log_file.path.display()
                         );
                         process_actions.push((*id, ProcessAction::Kill { reason }));
                     }
@@ -349,8 +352,8 @@ impl MonitorState {
             match action {
                 ProcessAction::Success { duration, block_range } => {
                     if let Some(est) = self.running_processes.remove(&id) {
-                        let log_size = fs::metadata(&est.log_file).map(|m| m.len()).unwrap_or(0);
-                        LogFile::mark_complete(&est.log_file, true);
+                        let log_size =
+                            fs::metadata(&est.log_file.path).map(|m| m.len()).unwrap_or(0);
                         if block_range > 0 {
                             self.push_completion(CompletionRecord {
                                 duration,
@@ -363,13 +366,11 @@ impl MonitorState {
                 ProcessAction::Kill { reason } => {
                     if let Some(mut est) = self.running_processes.remove(&id) {
                         let _ = est.process.kill();
-                        LogFile::mark_complete(&est.log_file, false);
                         self.maybe_requeue(id, est.retries, &reason);
                     }
                 }
                 ProcessAction::Retry { reason } => {
                     if let Some(est) = self.running_processes.remove(&id) {
-                        LogFile::mark_complete(&est.log_file, false);
                         self.maybe_requeue(id, est.retries, &reason);
                     }
                 }
@@ -407,8 +408,8 @@ impl MonitorState {
             if let Err(e) = est.process.kill() {
                 warn!("Failed to kill process for game {}: {}", id, e);
             }
-            if let Err(e) = fs::remove_file(&est.log_file) {
-                warn!("Failed to delete log file {}: {}", est.log_file.display(), e);
+            if let Err(e) = fs::remove_file(&est.log_file.path) {
+                warn!("Failed to delete log file {}: {}", est.log_file.path.display(), e);
             }
         }
     }
@@ -476,7 +477,7 @@ async fn fetch_game_data<P: alloy_provider::Provider + Clone>(
 fn spawn_cost_estimator(
     cost_estimator_binary_path: &PathBuf,
     env_file: &Path,
-    log_file: &PathBuf,
+    log_file: &LogFile,
     game_data: &GameData,
 ) -> Result<Child> {
     let args = [
@@ -493,7 +494,7 @@ fn spawn_cost_estimator(
     let cmd = format!("{} {}", cost_estimator_binary_path.display(), args.join(" "));
 
     // Write command and env to log file to facilitate easy re-running of the command.
-    let mut log_file_handle = File::create(log_file)?;
+    let mut log_file_handle = File::create(&log_file.path)?;
     writeln!(log_file_handle, "=== Cost Estimator Command ===")?;
     writeln!(log_file_handle, "{}", cmd)?;
     writeln!(log_file_handle, "=== Cost Estimator ENV ===")?;
@@ -520,7 +521,7 @@ fn spawn_cost_estimator(
     let stderr_file = log_file_handle.try_clone()?;
 
     info!("Running cost estimator: {}", cmd);
-    info!("Logging to: {}", log_file.display());
+    info!("Logging to: {}", log_file.path.display());
 
     let child = Command::new(cost_estimator_binary_path)
         .args(args)
@@ -532,18 +533,21 @@ fn spawn_cost_estimator(
     Ok(child)
 }
 
-struct LogFile;
+struct LogFile {
+    path: PathBuf,
+}
 
 impl LogFile {
-    fn path(logs_dir: &Path, game_index: u64, game_address: Address, retries: u32) -> PathBuf {
-        if retries > 0 {
+    fn new(logs_dir: &Path, game_index: u64, game_address: Address, retries: u32) -> Self {
+        let path = if retries > 0 {
             logs_dir.join(format!(
                 "cost-estimator-{}-{}-retry{}.log",
                 game_index, game_address, retries
             ))
         } else {
             logs_dir.join(format!("cost-estimator-{}-{}.log", game_index, game_address))
-        }
+        };
+        Self { path }
     }
 
     fn extract_game_index(path: &Path) -> Option<u64> {
@@ -553,17 +557,19 @@ impl LogFile {
         stripped[..dash_pos].parse().ok()
     }
 
-    fn mark_complete(path: &Path, success: bool) {
-        let Some(filename) = path.file_name().and_then(|f| f.to_str()) else {
+    fn mark_complete(&mut self, success: bool) {
+        let Some(filename) = self.path.file_name().and_then(|f| f.to_str()) else {
             return;
         };
         let Some(stem) = filename.strip_suffix(".log") else {
             return;
         };
         let suffix = if success { "success" } else { "failure" };
-        let new_path = path.with_file_name(format!("{}-{}.log", stem, suffix));
-        if let Err(e) = fs::rename(path, &new_path) {
-            warn!("Failed to rename log {} to {}: {}", path.display(), new_path.display(), e);
+        let new_path = self.path.with_file_name(format!("{}-{}.log", stem, suffix));
+        if let Err(e) = fs::rename(&self.path, &new_path) {
+            warn!("Failed to rename log {} to {}: {}", self.path.display(), new_path.display(), e);
+        } else {
+            self.path = new_path;
         }
     }
     fn sizes(logs_dir: &Path) -> Result<Vec<(PathBuf, u64, u64)>> {
@@ -766,7 +772,7 @@ async fn main() -> Result<()> {
                 game_data.game_address, game_data.start_block, game_data.end_block
             );
 
-            let log_file = LogFile::path(
+            let log_file = LogFile::new(
                 &args.logs_dir,
                 game_data.game_index,
                 game_data.game_address,
