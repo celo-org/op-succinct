@@ -23,7 +23,6 @@ use tokio::{
 };
 
 const GAME_TYPE: u32 = 42;
-const MAX_RETRIES: u32 = 3;
 /// Kill a process if its log file is this many times larger than the median of peers.
 const LOG_VOLUME_KILL_MULTIPLIER: f64 = 10.0;
 /// Minimum number of completion history entries required to perform median comparison.
@@ -105,6 +104,10 @@ pub struct GameMonitorArgs {
     /// Path to the completion history file. Defaults to `<logs_dir>/completion_history.json`.
     #[arg(long)]
     pub history_file: Option<PathBuf>,
+
+    /// Maximum number of retries for a failed cost estimator process before giving up.
+    #[arg(long, default_value = "1")]
+    pub cost_estimator_retries: u32,
 }
 
 /// Represents a running cost estimator process for a game.
@@ -161,6 +164,7 @@ struct MonitorState {
     completion_history: VecDeque<CompletionRecord>,
     max_process_duration_secs: u64,
     max_history_length: usize,
+    max_retries: u32,
     history_file: PathBuf,
 }
 
@@ -169,6 +173,7 @@ impl MonitorState {
         next_game_index: u64,
         max_process_duration_secs: u64,
         max_history_length: usize,
+        max_retries: u32,
         history_file: PathBuf,
     ) -> Self {
         let completion_history = Self::load_history(&history_file, max_history_length);
@@ -184,6 +189,7 @@ impl MonitorState {
             completion_history,
             max_process_duration_secs,
             max_history_length,
+            max_retries,
             history_file,
         }
     }
@@ -379,11 +385,11 @@ impl MonitorState {
     }
 
     fn maybe_requeue(&mut self, game_index: u64, retries: u32, reason: &str) {
-        if retries < MAX_RETRIES {
+        if retries < self.max_retries {
             let new_retries = retries + 1;
             warn!(
                 "Re-queuing game {} for retry {}/{} ({})",
-                game_index, new_retries, MAX_RETRIES, reason
+                game_index, new_retries, self.max_retries, reason
             );
             self.pending_games.push_back(PendingGame {
                 discovered_at: Instant::now(),
@@ -393,7 +399,7 @@ impl MonitorState {
         } else {
             error!(
                 "Game {} failed after {} retries ({}), giving up.",
-                game_index, MAX_RETRIES, reason
+                game_index, self.max_retries, reason
             );
         }
     }
@@ -695,6 +701,7 @@ async fn main() -> Result<()> {
         next_game_index,
         args.max_process_duration_secs,
         args.max_history_length,
+        args.cost_estimator_retries,
         history_file,
     );
 
