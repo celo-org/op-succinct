@@ -1,3 +1,4 @@
+use alloy_eips::BlockId;
 use alloy_primitives::{Address, U256};
 use alloy_provider::ProviderBuilder;
 use anyhow::{Context, Result};
@@ -674,7 +675,8 @@ async fn main() -> Result<()> {
     let next_game_index = match args.start_index {
         Some(index) => index,
         None => {
-            let initial_game_count = factory.gameCount().call().await?.to::<u64>();
+            let initial_game_count =
+                factory.gameCount().call().block(BlockId::finalized()).await?.to::<u64>();
             match initial_game_count {
                 0 => 0,
                 n => n - 1,
