@@ -7,6 +7,7 @@ use fault_proof::contract::{
     DisputeGameFactory::DisputeGameFactoryInstance, OPSuccinctFaultDisputeGame,
 };
 use log::{debug, error, info, warn};
+use op_succinct_common::SequenceTracker;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, VecDeque},
@@ -108,6 +109,10 @@ pub struct GameMonitorArgs {
     /// Maximum number of retries for a failed cost estimator process before giving up.
     #[arg(long, default_value = "1")]
     pub cost_estimator_retries: u32,
+
+    /// Path to the progress file. Defaults to `<logs_dir>/progress.json`.
+    #[arg(long)]
+    pub progress_file: Option<PathBuf>,
 }
 
 /// Represents a running cost estimator process for a game.
@@ -157,6 +162,11 @@ struct CompletionRecord {
     block_range: u64,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ProgressState {
+    last_contiguous: u64,
+}
+
 struct MonitorState {
     running_processes: HashMap<u64, RunningEstimator>,
     pending_games: VecDeque<PendingGame>,
@@ -166,6 +176,8 @@ struct MonitorState {
     max_history_length: usize,
     max_retries: u32,
     history_file: PathBuf,
+    sequence_tracker: SequenceTracker,
+    progress_file: PathBuf,
 }
 
 impl MonitorState {
@@ -175,6 +187,7 @@ impl MonitorState {
         max_history_length: usize,
         max_retries: u32,
         history_file: PathBuf,
+        progress_file: PathBuf,
     ) -> Self {
         let completion_history = Self::load_history(&history_file, max_history_length);
         info!(
@@ -191,6 +204,46 @@ impl MonitorState {
             max_history_length,
             max_retries,
             history_file,
+            sequence_tracker: SequenceTracker::new(next_game_index),
+            progress_file,
+        }
+    }
+
+    fn load_progress(path: &Path) -> Option<ProgressState> {
+        let data = match fs::read_to_string(path) {
+            Ok(data) => data,
+            Err(_) => return None,
+        };
+        match serde_json::from_str(&data) {
+            Ok(state) => Some(state),
+            Err(e) => {
+                warn!("Failed to parse progress file {}: {}", path.display(), e);
+                None
+            }
+        }
+    }
+
+    fn mark_game_completed(&mut self, game_index: u64) {
+        let old_end = self.sequence_tracker.end();
+        self.sequence_tracker.add(game_index);
+        let new_end = self.sequence_tracker.end();
+        if new_end != old_end {
+            info!("Last contiguous advanced from {} to {}", old_end, new_end);
+            self.save_progress();
+        }
+    }
+
+    fn save_progress(&self) {
+        let state = ProgressState { last_contiguous: self.sequence_tracker.end() };
+        match serde_json::to_string(&state) {
+            Ok(data) => {
+                if let Err(e) = fs::write(&self.progress_file, data) {
+                    warn!("Failed to write progress to {}: {}", self.progress_file.display(), e);
+                }
+            }
+            Err(e) => {
+                warn!("Failed to serialize progress state: {}", e);
+            }
         }
     }
 
@@ -367,6 +420,7 @@ impl MonitorState {
                                 block_range,
                             });
                         }
+                        self.mark_game_completed(id);
                     }
                 }
                 ProcessAction::Kill { reason } => {
@@ -401,6 +455,7 @@ impl MonitorState {
                 "Game {} failed after {} retries ({}), giving up.",
                 game_index, self.max_retries, reason
             );
+            self.mark_game_completed(game_index);
         }
     }
 
@@ -682,19 +737,24 @@ async fn main() -> Result<()> {
     let factory =
         DisputeGameFactoryInstance::new(dispute_game_factory_address, l1_provider.clone());
 
-    // If start_index is unset start from the most recent game, or game at index 0 if there are no
-    // games. Otherwise use the start_index.
-    let next_game_index = match args.start_index {
-        Some(index) => index,
-        None => {
-            let initial_game_count =
-                factory.gameCount().call().block(BlockId::finalized()).await?.to::<u64>();
-            match initial_game_count {
-                0 => 0,
-                n => n - 1,
-            }
+    let progress_file =
+        args.progress_file.clone().unwrap_or_else(|| args.logs_dir.join("progress.json"));
+
+    let next_game_index = if let Some(index) = args.start_index {
+        index
+    } else if let Some(progress) = MonitorState::load_progress(&progress_file) {
+        let next = progress.last_contiguous + 1;
+        info!("Resuming from persisted last contiguous {}", progress.last_contiguous);
+        next
+    } else {
+        let initial_game_count =
+            factory.gameCount().call().block(BlockId::finalized()).await?.to::<u64>();
+        match initial_game_count {
+            0 => 0,
+            n => n - 1,
         }
     };
+
     let history_file =
         args.history_file.clone().unwrap_or_else(|| args.logs_dir.join("completion_history.json"));
     let mut state = MonitorState::new(
@@ -703,6 +763,7 @@ async fn main() -> Result<()> {
         args.max_history_length,
         args.cost_estimator_retries,
         history_file,
+        progress_file,
     );
 
     let poll_interval = Duration::from_secs(args.poll_interval);
@@ -761,6 +822,7 @@ async fn main() -> Result<()> {
                         game_index, game_type, expected
                     );
                     state.pending_games.pop_front();
+                    state.mark_game_completed(game_index);
                     continue;
                 }
                 Err(e) => {

@@ -7679,6 +7679,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "op-succinct-common"
+version = "4.0.1"
+
+[[package]]
 name = "op-succinct-eigenda-client-utils"
 version = "0.1.0"
 dependencies = [
@@ -7984,6 +7988,7 @@ dependencies = [
  "log",
  "op-succinct-build-utils",
  "op-succinct-client-utils",
+ "op-succinct-common",
  "op-succinct-elfs",
  "op-succinct-fp",
  "op-succinct-host-utils",
