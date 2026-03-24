@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "utils/client",
+    "utils/common",
     "utils/host",
     "utils/build",
     "utils/celestia/client",
@@ -146,6 +147,7 @@ op-succinct-eigenda-host-utils = { path = "utils/eigenda/host" }
 celo-eigenda-registry = { path = "utils/eigenda/registry" }
 op-succinct-proof-utils = { path = "utils/proof" }
 op-succinct-signer-utils = { path = "utils/signer" }
+op-succinct-common = { path = "utils/common" }
 op-succinct-signer-gcp-utils = { path = "utils/signer-gcp" }
 op-succinct-range-utils = { path = "programs/range/utils" }
 op-succinct-bindings = { path = "bindings" }
