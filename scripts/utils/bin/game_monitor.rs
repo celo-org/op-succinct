@@ -557,6 +557,7 @@ fn spawn_cost_estimator(
         &effective_batch_size,
         "--env-file",
         env_file.to_str().unwrap(),
+        "--log-only",
     ];
 
     let cmd = format!("{} {}", cost_estimator_binary_path.display(), args.join(" "));
