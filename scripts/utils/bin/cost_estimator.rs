@@ -15,8 +15,11 @@ use op_succinct_host_utils::{
 };
 use op_succinct_proof_utils::{get_range_elf_embedded, initialize_host};
 use op_succinct_scripts::HostExecutorArgs;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use sp1_sdk::{utils, ProverClient};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use sp1_sdk::{
+    blocking::{CpuProver, Prover},
+    utils, Elf,
+};
 use std::{
     cmp::{max, min},
     fs::{self, OpenOptions},
@@ -76,8 +79,6 @@ where
         None
     };
 
-    let prover = ProverClient::builder().cpu().build();
-
     // Run the host tasks in parallel using join_all
     let handles = host_args.iter().zip(ranges.iter()).map(|(host_args, range)| {
         let host_args = host_args.clone();
@@ -125,32 +126,37 @@ where
         .map(|r| r.unwrap())
         .collect::<Vec<_>>();
 
-    let execution_inputs = stdins.iter().zip(block_data.iter()).collect::<Vec<_>>();
+    let execution_inputs = stdins.into_iter().zip(block_data.into_iter()).collect::<Vec<_>>();
 
     // Execute the program for each block range in parallel.
-    execution_inputs.par_iter().for_each(|(sp1_stdin, (range, block_data))| {
+    // CpuProver creates its own tokio runtime, so run it outside the async context.
+    let report_path_clone = report_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let prover = CpuProver::new();
+        execution_inputs.into_par_iter().for_each(|(sp1_stdin, (range, block_data))| {
         let stdin_bytes = bincode::serialize(&sp1_stdin).unwrap();
         let stdin_len = stdin_bytes.len();
         info!("SP1 stdin for blocks {:?} to {:?}, number: {:?}, size: {stdin_len} bytes", range.start, range.end, range.end - range.start);
+            let result = prover
+                .execute(Elf::Static(get_range_elf_embedded()), sp1_stdin)
+                .deferred_proof_verification(false)
+                .run();
 
-        let result = prover.execute(get_range_elf_embedded(), sp1_stdin).deferred_proof_verification(false).run();
+            if let Some(err) = result.as_ref().err() {
+                log::warn!(
+                    "Failed to execute blocks {:?} - {:?} because of {:?}. Reduce your `batch-size` if you're running into OOM issues on SP1.",
+                    range.start,
+                    range.end,
+                    err
+                );
+                panic!("Execution failed for blocks {:?} - {:?}: {:?}", range.start, range.end, err);
+            }
 
-        if let Some(err) = result.as_ref().err() {
-            log::error!(
-                "Failed to execute blocks {:?} - {:?} because of {:?}. Reduce your `batch-size` if you're running into OOM issues on SP1.",
-                range.start,
-                range.end,
-                err
-            );
+            let (_, report) = result.unwrap();
 
-            panic!("Execution failed for blocks {:?} - {:?}: {:?}", range.start, range.end, err);
-        }
+            let execution_stats = ExecutionStats::new(0, &block_data, &report, 0, 0);
 
-        let (_, report) = result.unwrap();
-
-        let execution_stats = ExecutionStats::new(0, block_data, &report, 0, 0);
-
-        if let Some(ref report_path) = report_path {
+        if let Some(ref report_path) = report_path_clone {
             // Write to CSV file
             let mut file = OpenOptions::new()
                 .read(true)
@@ -179,6 +185,8 @@ where
             );
         }
     });
+    })
+    .await?;
 
     info!("Execution is complete.");
 
@@ -276,9 +284,10 @@ async fn main() -> Result<()> {
     let safe_db_activated = data_fetcher.is_safe_db_activated().await?;
 
     let split_ranges = if safe_db_activated {
-        split_range_based_on_safe_heads(l2_start_block, l2_end_block, args.batch_size).await?
+        split_range_based_on_safe_heads(l2_start_block, l2_end_block, args.effective_batch_size())
+            .await?
     } else {
-        split_range_basic(l2_start_block, l2_end_block, args.batch_size)
+        split_range_basic(l2_start_block, l2_end_block, args.effective_batch_size())
     };
 
     info!("The span batch ranges which will be executed: {split_ranges:?}");

@@ -1,4 +1,4 @@
-use std::{env, fs, path::PathBuf, str::FromStr, sync::Arc};
+use std::{env, path::PathBuf, str::FromStr, sync::Arc};
 
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_network::EthereumWallet;
@@ -20,10 +20,11 @@ use op_succinct_host_utils::{
     get_agg_proof_stdin,
     host::OPSuccinctHost,
     network::{determine_network_mode, get_network_signer, parse_fulfillment_strategy},
+    proof_cache::{save_agg_proof, save_range_proof},
     witness_generation::WitnessGenerator,
 };
 use op_succinct_proof_utils::{get_range_elf_embedded, initialize_host};
-use sp1_sdk::{utils, Prover, ProverClient, SP1ProofMode};
+use sp1_sdk::{utils, Elf, ProveRequest, Prover, ProverClient, ProvingKey, SP1ProofMode};
 use tracing::info;
 
 #[derive(Parser, Debug)]
@@ -217,36 +218,34 @@ async fn main() -> Result<()> {
     // Initialize the network prover.
     let network_signer = get_network_signer(use_kms_requester).await?;
 
-    let range_proof_strategy = parse_fulfillment_strategy(env::var("RANGE_PROOF_STRATEGY")?);
+    let range_proof_strategy = parse_fulfillment_strategy(env::var("RANGE_PROOF_STRATEGY")?)?;
     info!("Range proof strategy: {:?}", range_proof_strategy);
 
-    let agg_proof_strategy = parse_fulfillment_strategy(env::var("AGG_PROOF_STRATEGY")?);
+    let agg_proof_strategy = parse_fulfillment_strategy(env::var("AGG_PROOF_STRATEGY")?)?;
     info!("Aggregation proof strategy: {:?}", agg_proof_strategy);
 
     let network_mode = determine_network_mode(range_proof_strategy, agg_proof_strategy)
         .context("failed to determine network mode from range and agg fulfillment strategies")?;
-    let network_prover =
-        ProverClient::builder().network_for(network_mode).signer(network_signer.clone()).build();
+    let network_prover = ProverClient::builder()
+        .network_for(network_mode)
+        .signer(network_signer.clone())
+        .build()
+        .await;
     info!("Initialized network prover successfully");
 
-    let (range_pk, _range_vk) = network_prover.setup(get_range_elf_embedded());
+    let range_pk = network_prover.setup(Elf::Static(get_range_elf_embedded())).await?;
     let mut range_proof = network_prover
-        .prove(&range_pk, &range_proof_stdin)
+        .prove(&range_pk, range_proof_stdin)
         .compressed()
         .strategy(range_proof_strategy)
-        .run()
+        .await
         .unwrap();
 
     // Save the proof to the proof directory corresponding to the chain ID.
-    let range_proof_dir =
-        format!("data/{}/proofs/range", data_fetcher.get_l2_chain_id().await.unwrap());
-    if !std::path::Path::new(&range_proof_dir).exists() {
-        fs::create_dir_all(&range_proof_dir).unwrap();
-    }
-    range_proof
-        .save(format!("{range_proof_dir}/{l2_start_block}-{l2_end_block}.bin"))
-        .expect("saving proof failed");
-    info!("Range proof saved to {range_proof_dir}/{l2_start_block}-{l2_end_block}.bin");
+    let l2_chain_id = data_fetcher.get_l2_chain_id().await?;
+    let range_proof_path =
+        save_range_proof(l2_chain_id, l2_start_block, l2_end_block, &range_proof)?;
+    info!("Range proof saved to {}", range_proof_path.display());
 
     // 3. Generate the aggregation proof.
     let boot_info: BootInfoStruct = range_proof.public_values.read();
@@ -254,10 +253,11 @@ async fn main() -> Result<()> {
 
     // Initialize the network prover.
     let network_prover =
-        ProverClient::builder().network_for(network_mode).signer(network_signer).build();
+        ProverClient::builder().network_for(network_mode).signer(network_signer).build().await;
     info!("Initialized network prover successfully");
 
-    let (_, range_vk) = network_prover.setup(get_range_elf_embedded());
+    let range_pk = network_prover.setup(Elf::Static(get_range_elf_embedded())).await?;
+    let range_vk = range_pk.verifying_key().clone();
 
     let agg_proof_stdin = get_agg_proof_stdin(
         vec![range_proof.proof],
@@ -285,22 +285,16 @@ async fn main() -> Result<()> {
     };
     info!("Aggregation proof mode: {:?}", agg_proof_mode);
 
-    let (agg_pk, _) = network_prover.setup(AGGREGATION_ELF);
+    let agg_pk = network_prover.setup(Elf::Static(AGGREGATION_ELF)).await?;
     let agg_proof = network_prover
-        .prove(&agg_pk, &agg_proof_stdin)
+        .prove(&agg_pk, agg_proof_stdin)
         .mode(agg_proof_mode)
         .strategy(agg_proof_strategy)
-        .run()
+        .await
         .unwrap();
 
-    let agg_proof_dir =
-        format!("data/{}/proofs/agg", data_fetcher.get_l2_chain_id().await.unwrap());
-    if !std::path::Path::new(&agg_proof_dir).exists() {
-        fs::create_dir_all(&agg_proof_dir).unwrap();
-    }
-
-    agg_proof.save(format!("{agg_proof_dir}/agg.bin")).expect("saving proof failed");
-    info!("Agg proof saved to {agg_proof_dir}/agg.bin");
+    let agg_proof_path = save_agg_proof(l2_chain_id, "agg", &agg_proof)?;
+    info!("Agg proof saved to {}", agg_proof_path.display());
 
     // 4. Spin up anvil.
     let l1_head_number =

@@ -26,7 +26,6 @@ tokio.workspace = true
 tokio-stream = "0.1.17"
 futures.workspace = true
 clap.workspace = true
-cargo_metadata.workspace = true
 anyhow.workspace = true
 dotenv.workspace = true
 csv.workspace = true
@@ -59,6 +58,7 @@ alloy-sol-macro.workspace = true
 
 # sp1
 sp1-sdk.workspace = true
+sp1-cluster-utils.workspace = true
 
 rustls = { version = "0.23.23", features = ["ring"] }
 bincode.workspace = true
