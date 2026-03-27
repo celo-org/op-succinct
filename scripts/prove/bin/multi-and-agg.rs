@@ -37,46 +37,6 @@ use tracing::info;
 /// ```
 ///
 /// See [`Args`] for CLI options and [`Config`] for environment variable configuration.
-
-macro_rules! maybe_set {
-    ($builder:expr, $opt:expr, $method:ident) => {
-        match $opt {
-            Some(val) => $builder.$method(val),
-            None => $builder,
-        }
-    };
-}
-
-/// Submit a proof request to the network and wait for the result.
-async fn request_and_wait_proof(
-    sp1_stdin: SP1Stdin,
-    pk: &SP1ProvingKey,
-    prover: &NetworkProver,
-    config: &ProvingConfig,
-) -> Result<SP1ProofWithPublicValues> {
-    let builder = prover.prove(pk, sp1_stdin);
-    let builder = maybe_set!(builder, config.strategy, strategy);
-    let builder = maybe_set!(builder, config.mode, mode);
-    let builder = maybe_set!(builder, config.cycle_limit, cycle_limit);
-    let builder = maybe_set!(builder, config.gas_limit, gas_limit);
-    let builder = maybe_set!(builder, config.max_price_per_pgu, max_price_per_pgu);
-    let builder = builder.skip_simulation(config.skip_simulation);
-    let builder = maybe_set!(builder, config.proving_timeout, timeout);
-    let builder = maybe_set!(builder, config.min_auction_period, min_auction_period);
-    let builder = maybe_set!(builder, config.auction_timeout, auction_timeout);
-    let builder = builder.whitelist(config.whitelist.clone());
-    let builder = maybe_set!(builder, config.auctioneer, auctioneer);
-    let builder = maybe_set!(builder, config.executor, executor);
-    let builder = maybe_set!(builder, config.verifier, verifier);
-
-    let proof_id = builder.request().await?;
-    tracing::info!(proof_id = %proof_id, "Proof request submitted");
-    prover
-        .wait_proof(proof_id, config.proving_timeout, config.auction_timeout)
-        .await
-        .context("Failed waiting for proof")
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     rustls::crypto::ring::default_provider().install_default().unwrap();
@@ -353,4 +313,43 @@ sol! {
         bytes calldata proofBytes
     ) view;
   }
+}
+
+macro_rules! maybe_set {
+    ($builder:expr, $opt:expr, $method:ident) => {
+        match $opt {
+            Some(val) => $builder.$method(val),
+            None => $builder,
+        }
+    };
+}
+
+/// Submit a proof request to the network and wait for the result.
+async fn request_and_wait_proof(
+    sp1_stdin: SP1Stdin,
+    pk: &SP1ProvingKey,
+    prover: &NetworkProver,
+    config: &ProvingConfig,
+) -> Result<SP1ProofWithPublicValues> {
+    let builder = prover.prove(pk, sp1_stdin);
+    let builder = maybe_set!(builder, config.strategy, strategy);
+    let builder = maybe_set!(builder, config.mode, mode);
+    let builder = maybe_set!(builder, config.cycle_limit, cycle_limit);
+    let builder = maybe_set!(builder, config.gas_limit, gas_limit);
+    let builder = maybe_set!(builder, config.max_price_per_pgu, max_price_per_pgu);
+    let builder = builder.skip_simulation(config.skip_simulation);
+    let builder = maybe_set!(builder, config.proving_timeout, timeout);
+    let builder = maybe_set!(builder, config.min_auction_period, min_auction_period);
+    let builder = maybe_set!(builder, config.auction_timeout, auction_timeout);
+    let builder = builder.whitelist(config.whitelist.clone());
+    let builder = maybe_set!(builder, config.auctioneer, auctioneer);
+    let builder = maybe_set!(builder, config.executor, executor);
+    let builder = maybe_set!(builder, config.verifier, verifier);
+
+    let proof_id = builder.request().await?;
+    tracing::info!(proof_id = %proof_id, "Proof request submitted");
+    prover
+        .wait_proof(proof_id, config.proving_timeout, config.auction_timeout)
+        .await
+        .context("Failed waiting for proof")
 }
