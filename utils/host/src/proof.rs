@@ -3,9 +3,7 @@ use alloy_consensus::Header;
 use alloy_primitives::{Address, B256};
 use anyhow::{Context, Result};
 use op_succinct_client_utils::{boot::BootInfoStruct, types::AggregationInputs};
-use sp1_sdk::{
-    network::FulfillmentStrategy, HashableKey, SP1Proof, SP1ProofMode, SP1Stdin,
-};
+use sp1_sdk::{network::FulfillmentStrategy, HashableKey, SP1Proof, SP1ProofMode, SP1Stdin};
 use std::env;
 use tokio::time::Duration;
 

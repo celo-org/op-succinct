@@ -201,7 +201,8 @@ async fn main() -> Result<()> {
     let agg_pk = network_prover.setup(Elf::Static(AGGREGATION_ELF)).await?;
     let agg_vk = agg_pk.verifying_key().clone();
     let agg_proof =
-        request_and_wait_proof(sp1_stdin, &agg_pk, &network_prover, &config.agg_proving_config).await?;
+        request_and_wait_proof(sp1_stdin, &agg_pk, &network_prover, &config.agg_proving_config)
+            .await?;
     tracing::info!("Aggregation proof generated successfully.");
 
     if args.verify {
