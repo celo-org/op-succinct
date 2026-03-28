@@ -42,7 +42,7 @@ WORKDIR /app
 
 # Create configs directories and copy pre-existing configs from fault-proof/configs/ for custom L1 (local devnet)
 RUN mkdir -p ./configs/L1
-COPY --from=builder /usr/src/app/fault-proof/configs/L1/ ./configs/L1/
+COPY --from=builder /app/fault-proof/configs/L1/ ./configs/L1/
 
 COPY resources/ ./resources/
 
