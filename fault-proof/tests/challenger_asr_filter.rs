@@ -6,7 +6,7 @@ mod tests {
         constants::{CHALLENGER_PRIVATE_KEY, TEST_GAME_TYPE},
         new_challenger, TestEnvironment,
     };
-    use alloy_primitives::{address, U256};
+    use alloy_primitives::address;
     use anyhow::Result;
 
     const M: u32 = u32::MAX;
