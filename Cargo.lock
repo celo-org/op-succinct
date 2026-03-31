@@ -111,7 +111,7 @@ dependencies = [
 [[package]]
 name = "alloy-celo-evm"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0df6b49#0df6b49fe1ab61250546652a62a570aa09e37b2e"
+source = "git+https://github.com/celo-org/celo-kona?rev=87b7eef#87b7eefe1b8c44a25290bb5de9ac68e62b08ac65"
 dependencies = [
  "alloy-consensus",
  "alloy-evm 0.24.2",
@@ -2755,7 +2755,7 @@ dependencies = [
 [[package]]
 name = "canoe-bindings"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.6#95cebce45c81f2aa67910c719d2038d69ed5bf89"
+source = "git+https://github.com/celo-org/hokulea?branch=kona-proof-fix#0d420bb3dd05865b9b43faa306ae0729c7db3674"
 dependencies = [
  "alloy-sol-types",
  "serde",
@@ -2764,7 +2764,7 @@ dependencies = [
 [[package]]
 name = "canoe-provider"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.6#95cebce45c81f2aa67910c719d2038d69ed5bf89"
+source = "git+https://github.com/celo-org/hokulea?branch=kona-proof-fix#0d420bb3dd05865b9b43faa306ae0729c7db3674"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -2778,7 +2778,7 @@ dependencies = [
 [[package]]
 name = "canoe-sp1-cc-host"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.6#95cebce45c81f2aa67910c719d2038d69ed5bf89"
+source = "git+https://github.com/celo-org/hokulea?branch=kona-proof-fix#0d420bb3dd05865b9b43faa306ae0729c7db3674"
 dependencies = [
  "alloy-primitives",
  "alloy-rpc-client",
@@ -2801,7 +2801,7 @@ dependencies = [
 [[package]]
 name = "canoe-sp1-cc-verifier"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.6#95cebce45c81f2aa67910c719d2038d69ed5bf89"
+source = "git+https://github.com/celo-org/hokulea?branch=kona-proof-fix#0d420bb3dd05865b9b43faa306ae0729c7db3674"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -2820,7 +2820,7 @@ dependencies = [
 [[package]]
 name = "canoe-verifier"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.6#95cebce45c81f2aa67910c719d2038d69ed5bf89"
+source = "git+https://github.com/celo-org/hokulea?branch=kona-proof-fix#0d420bb3dd05865b9b43faa306ae0729c7db3674"
 dependencies = [
  "alloy-genesis",
  "alloy-primitives",
@@ -2836,7 +2836,7 @@ dependencies = [
 [[package]]
 name = "canoe-verifier-address-fetcher"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.6#95cebce45c81f2aa67910c719d2038d69ed5bf89"
+source = "git+https://github.com/celo-org/hokulea?branch=kona-proof-fix#0d420bb3dd05865b9b43faa306ae0729c7db3674"
 dependencies = [
  "alloy-primitives",
  "eigenda-cert",
@@ -2948,7 +2948,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-consensus"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0df6b49#0df6b49fe1ab61250546652a62a570aa09e37b2e"
+source = "git+https://github.com/celo-org/celo-kona?rev=87b7eef#87b7eefe1b8c44a25290bb5de9ac68e62b08ac65"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -2963,7 +2963,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-network"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0df6b49#0df6b49fe1ab61250546652a62a570aa09e37b2e"
+source = "git+https://github.com/celo-org/celo-kona?rev=87b7eef#87b7eefe1b8c44a25290bb5de9ac68e62b08ac65"
 dependencies = [
  "alloy-consensus",
  "alloy-network",
@@ -2977,7 +2977,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-rpc-types"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0df6b49#0df6b49fe1ab61250546652a62a570aa09e37b2e"
+source = "git+https://github.com/celo-org/celo-kona?rev=87b7eef#87b7eefe1b8c44a25290bb5de9ac68e62b08ac65"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -2996,7 +2996,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-rpc-types-engine"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0df6b49#0df6b49fe1ab61250546652a62a570aa09e37b2e"
+source = "git+https://github.com/celo-org/celo-kona?rev=87b7eef#87b7eefe1b8c44a25290bb5de9ac68e62b08ac65"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3012,7 +3012,7 @@ dependencies = [
 [[package]]
 name = "celo-client"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0df6b49#0df6b49fe1ab61250546652a62a570aa09e37b2e"
+source = "git+https://github.com/celo-org/celo-kona?rev=87b7eef#87b7eefe1b8c44a25290bb5de9ac68e62b08ac65"
 dependencies = [
  "alloy-celo-evm",
  "alloy-consensus",
@@ -3037,7 +3037,7 @@ dependencies = [
 [[package]]
 name = "celo-driver"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0df6b49#0df6b49fe1ab61250546652a62a570aa09e37b2e"
+source = "git+https://github.com/celo-org/celo-kona?rev=87b7eef#87b7eefe1b8c44a25290bb5de9ac68e62b08ac65"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -3067,7 +3067,7 @@ dependencies = [
 [[package]]
 name = "celo-executor"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0df6b49#0df6b49fe1ab61250546652a62a570aa09e37b2e"
+source = "git+https://github.com/celo-org/celo-kona?rev=87b7eef#87b7eefe1b8c44a25290bb5de9ac68e62b08ac65"
 dependencies = [
  "alloy-celo-evm",
  "alloy-consensus",
@@ -3095,7 +3095,7 @@ dependencies = [
 [[package]]
 name = "celo-genesis"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0df6b49#0df6b49fe1ab61250546652a62a570aa09e37b2e"
+source = "git+https://github.com/celo-org/celo-kona?rev=87b7eef#87b7eefe1b8c44a25290bb5de9ac68e62b08ac65"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3115,7 +3115,7 @@ dependencies = [
 [[package]]
 name = "celo-host"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0df6b49#0df6b49fe1ab61250546652a62a570aa09e37b2e"
+source = "git+https://github.com/celo-org/celo-kona?rev=87b7eef#87b7eefe1b8c44a25290bb5de9ac68e62b08ac65"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3153,7 +3153,7 @@ dependencies = [
 [[package]]
 name = "celo-proof"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0df6b49#0df6b49fe1ab61250546652a62a570aa09e37b2e"
+source = "git+https://github.com/celo-org/celo-kona?rev=87b7eef#87b7eefe1b8c44a25290bb5de9ac68e62b08ac65"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3188,7 +3188,7 @@ dependencies = [
 [[package]]
 name = "celo-protocol"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0df6b49#0df6b49fe1ab61250546652a62a570aa09e37b2e"
+source = "git+https://github.com/celo-org/celo-kona?rev=87b7eef#87b7eefe1b8c44a25290bb5de9ac68e62b08ac65"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3217,7 +3217,7 @@ dependencies = [
 [[package]]
 name = "celo-registry"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0df6b49#0df6b49fe1ab61250546652a62a570aa09e37b2e"
+source = "git+https://github.com/celo-org/celo-kona?rev=87b7eef#87b7eefe1b8c44a25290bb5de9ac68e62b08ac65"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -3231,7 +3231,7 @@ dependencies = [
 [[package]]
 name = "celo-revm"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=0df6b49#0df6b49fe1ab61250546652a62a570aa09e37b2e"
+source = "git+https://github.com/celo-org/celo-kona?rev=87b7eef#87b7eefe1b8c44a25290bb5de9ac68e62b08ac65"
 dependencies = [
  "alloy-eips",
  "alloy-evm 0.24.2",
@@ -4278,7 +4278,7 @@ dependencies = [
 [[package]]
 name = "eigenda-cert"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.6#95cebce45c81f2aa67910c719d2038d69ed5bf89"
+source = "git+https://github.com/celo-org/hokulea?branch=kona-proof-fix#0d420bb3dd05865b9b43faa306ae0729c7db3674"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -5126,7 +5126,7 @@ dependencies = [
 [[package]]
 name = "hana-blobstream"
 version = "0.1.0"
-source = "git+https://github.com/celestiaorg/hana?tag=1.5.0-mocha#5d98991ceb715f0246d34e5c0973487d57f6e069"
+source = "git+https://github.com/succinctlabs/hana?rev=6626aee#6626aee7782d6a190f197a9e084e2a428de663cb"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -5144,7 +5144,7 @@ dependencies = [
 [[package]]
 name = "hana-celestia"
 version = "0.1.0"
-source = "git+https://github.com/celestiaorg/hana?tag=1.5.0-mocha#5d98991ceb715f0246d34e5c0973487d57f6e069"
+source = "git+https://github.com/succinctlabs/hana?rev=6626aee#6626aee7782d6a190f197a9e084e2a428de663cb"
 dependencies = [
  "alloy-primitives",
  "async-trait",
@@ -5157,7 +5157,7 @@ dependencies = [
 [[package]]
 name = "hana-client"
 version = "0.1.0"
-source = "git+https://github.com/celestiaorg/hana?tag=1.5.0-mocha#5d98991ceb715f0246d34e5c0973487d57f6e069"
+source = "git+https://github.com/succinctlabs/hana?rev=6626aee#6626aee7782d6a190f197a9e084e2a428de663cb"
 dependencies = [
  "alloy-consensus",
  "alloy-evm 0.22.6",
@@ -5184,7 +5184,7 @@ dependencies = [
 [[package]]
 name = "hana-host"
 version = "0.1.0"
-source = "git+https://github.com/celestiaorg/hana?tag=1.5.0-mocha#5d98991ceb715f0246d34e5c0973487d57f6e069"
+source = "git+https://github.com/succinctlabs/hana?rev=6626aee#6626aee7782d6a190f197a9e084e2a428de663cb"
 dependencies = [
  "alloy-primitives",
  "alloy-provider",
@@ -5214,7 +5214,7 @@ dependencies = [
 [[package]]
 name = "hana-oracle"
 version = "0.1.0"
-source = "git+https://github.com/celestiaorg/hana?tag=1.5.0-mocha#5d98991ceb715f0246d34e5c0973487d57f6e069"
+source = "git+https://github.com/succinctlabs/hana?rev=6626aee#6626aee7782d6a190f197a9e084e2a428de663cb"
 dependencies = [
  "alloy-primitives",
  "async-trait",
@@ -5231,7 +5231,7 @@ dependencies = [
 [[package]]
 name = "hana-proofs"
 version = "0.1.0"
-source = "git+https://github.com/celestiaorg/hana?tag=1.5.0-mocha#5d98991ceb715f0246d34e5c0973487d57f6e069"
+source = "git+https://github.com/succinctlabs/hana?rev=6626aee#6626aee7782d6a190f197a9e084e2a428de663cb"
 dependencies = [
  "alloy-primitives",
  "alloy-provider",
@@ -5342,7 +5342,7 @@ dependencies = [
 [[package]]
 name = "hokulea-client"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.6#95cebce45c81f2aa67910c719d2038d69ed5bf89"
+source = "git+https://github.com/celo-org/hokulea?branch=kona-proof-fix#0d420bb3dd05865b9b43faa306ae0729c7db3674"
 dependencies = [
  "alloy-consensus",
  "alloy-evm 0.24.2",
@@ -5363,7 +5363,7 @@ dependencies = [
 [[package]]
 name = "hokulea-client-bin"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.6#95cebce45c81f2aa67910c719d2038d69ed5bf89"
+source = "git+https://github.com/celo-org/hokulea?branch=kona-proof-fix#0d420bb3dd05865b9b43faa306ae0729c7db3674"
 dependencies = [
  "alloy-evm 0.24.2",
  "alloy-op-evm 0.24.2",
@@ -5383,7 +5383,7 @@ dependencies = [
 [[package]]
 name = "hokulea-compute-proof"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.6#95cebce45c81f2aa67910c719d2038d69ed5bf89"
+source = "git+https://github.com/celo-org/hokulea?branch=kona-proof-fix#0d420bb3dd05865b9b43faa306ae0729c7db3674"
 dependencies = [
  "alloy-primitives",
  "ark-bn254",
@@ -5398,7 +5398,7 @@ dependencies = [
 [[package]]
 name = "hokulea-eigenda"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.6#95cebce45c81f2aa67910c719d2038d69ed5bf89"
+source = "git+https://github.com/celo-org/hokulea?branch=kona-proof-fix#0d420bb3dd05865b9b43faa306ae0729c7db3674"
 dependencies = [
  "alloy-primitives",
  "async-trait",
@@ -5414,7 +5414,7 @@ dependencies = [
 [[package]]
 name = "hokulea-host-bin"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.6#95cebce45c81f2aa67910c719d2038d69ed5bf89"
+source = "git+https://github.com/celo-org/hokulea?branch=kona-proof-fix#0d420bb3dd05865b9b43faa306ae0729c7db3674"
 dependencies = [
  "alloy-primitives",
  "anyhow",
@@ -5441,7 +5441,7 @@ dependencies = [
 [[package]]
 name = "hokulea-proof"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.6#95cebce45c81f2aa67910c719d2038d69ed5bf89"
+source = "git+https://github.com/celo-org/hokulea?branch=kona-proof-fix#0d420bb3dd05865b9b43faa306ae0729c7db3674"
 dependencies = [
  "alloy-primitives",
  "ark-bn254",
@@ -5463,7 +5463,7 @@ dependencies = [
 [[package]]
 name = "hokulea-witgen"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.6#95cebce45c81f2aa67910c719d2038d69ed5bf89"
+source = "git+https://github.com/celo-org/hokulea?branch=kona-proof-fix#0d420bb3dd05865b9b43faa306ae0729c7db3674"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -5483,7 +5483,7 @@ dependencies = [
 [[package]]
 name = "hokulea-zkvm-verification"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.6#95cebce45c81f2aa67910c719d2038d69ed5bf89"
+source = "git+https://github.com/celo-org/hokulea?branch=kona-proof-fix#0d420bb3dd05865b9b43faa306ae0729c7db3674"
 dependencies = [
  "canoe-verifier",
  "canoe-verifier-address-fetcher",
@@ -6342,7 +6342,7 @@ dependencies = [
 [[package]]
 name = "kona-cli"
 version = "0.3.2"
-source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
+source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -6362,7 +6362,7 @@ dependencies = [
 [[package]]
 name = "kona-client"
 version = "1.0.2"
-source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
+source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -6384,8 +6384,8 @@ dependencies = [
  "kona-proof-interop",
  "kona-protocol",
  "kona-registry",
- "kona-std-fpvm 0.2.0 (git+https://github.com/celo-org/kona?rev=ce6c778e)",
- "kona-std-fpvm-proc 0.2.0 (git+https://github.com/celo-org/kona?rev=ce6c778e)",
+ "kona-std-fpvm 0.2.0 (git+https://github.com/celo-org/kona?rev=cf790b7)",
+ "kona-std-fpvm-proc 0.2.0 (git+https://github.com/celo-org/kona?rev=cf790b7)",
  "lru 0.16.3",
  "op-alloy-consensus",
  "op-alloy-rpc-types-engine",
@@ -6401,7 +6401,7 @@ dependencies = [
 [[package]]
 name = "kona-derive"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
+source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -6422,7 +6422,7 @@ dependencies = [
 [[package]]
 name = "kona-driver"
 version = "0.4.0"
-source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
+source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
 dependencies = [
  "alloy-consensus",
  "alloy-evm 0.24.2",
@@ -6443,7 +6443,7 @@ dependencies = [
 [[package]]
 name = "kona-executor"
 version = "0.4.0"
-source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
+source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -6467,7 +6467,7 @@ dependencies = [
 [[package]]
 name = "kona-genesis"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
+source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -6487,7 +6487,7 @@ dependencies = [
 [[package]]
 name = "kona-hardforks"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
+source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -6498,7 +6498,7 @@ dependencies = [
 [[package]]
 name = "kona-host"
 version = "1.0.2"
-source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
+source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -6516,7 +6516,7 @@ dependencies = [
  "ark-ff 0.5.0",
  "async-trait",
  "clap",
- "kona-cli 0.3.2 (git+https://github.com/celo-org/kona?rev=ce6c778e)",
+ "kona-cli 0.3.2 (git+https://github.com/celo-org/kona?rev=cf790b7)",
  "kona-client",
  "kona-derive",
  "kona-driver",
@@ -6529,7 +6529,7 @@ dependencies = [
  "kona-protocol",
  "kona-providers-alloy",
  "kona-registry",
- "kona-std-fpvm 0.2.0 (git+https://github.com/celo-org/kona?rev=ce6c778e)",
+ "kona-std-fpvm 0.2.0 (git+https://github.com/celo-org/kona?rev=cf790b7)",
  "op-alloy-network",
  "op-alloy-rpc-types-engine",
  "reqwest 0.12.28",
@@ -6546,7 +6546,7 @@ dependencies = [
 [[package]]
 name = "kona-interop"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
+source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -6568,12 +6568,12 @@ dependencies = [
 [[package]]
 name = "kona-macros"
 version = "0.1.2"
-source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
+source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
 
 [[package]]
 name = "kona-mpt"
 version = "0.3.0"
-source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
+source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -6585,7 +6585,7 @@ dependencies = [
 [[package]]
 name = "kona-preimage"
 version = "0.3.0"
-source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
+source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
 dependencies = [
  "alloy-primitives",
  "async-channel",
@@ -6599,7 +6599,7 @@ dependencies = [
 [[package]]
 name = "kona-proof"
 version = "0.3.0"
-source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
+source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -6635,7 +6635,7 @@ dependencies = [
 [[package]]
 name = "kona-proof-interop"
 version = "0.2.0"
-source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
+source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -6667,7 +6667,7 @@ dependencies = [
 [[package]]
 name = "kona-protocol"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
+source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
 dependencies = [
  "alloc-no-stdlib",
  "alloy-consensus",
@@ -6697,7 +6697,7 @@ dependencies = [
 [[package]]
 name = "kona-providers-alloy"
 version = "0.3.3"
-source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
+source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -6728,7 +6728,7 @@ dependencies = [
 [[package]]
 name = "kona-registry"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
+source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
 dependencies = [
  "alloy-chains",
  "alloy-eips",
@@ -6759,7 +6759,7 @@ dependencies = [
 [[package]]
 name = "kona-std-fpvm"
 version = "0.2.0"
-source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
+source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
 dependencies = [
  "async-trait",
  "buddy_system_allocator",
@@ -6783,10 +6783,10 @@ dependencies = [
 [[package]]
 name = "kona-std-fpvm-proc"
 version = "0.2.0"
-source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
+source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
 dependencies = [
  "cfg-if",
- "kona-std-fpvm 0.2.0 (git+https://github.com/celo-org/kona?rev=ce6c778e)",
+ "kona-std-fpvm 0.2.0 (git+https://github.com/celo-org/kona?rev=cf790b7)",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
