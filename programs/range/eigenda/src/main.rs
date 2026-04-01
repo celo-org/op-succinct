@@ -14,7 +14,6 @@ use celo_eigenda_registry::CeloCanoeVerifierAddressFetcher;
 use celo_proof::CeloBootInfo;
 use hokulea_proof::eigenda_witness::EigenDAWitness;
 use hokulea_zkvm_verification::eigenda_witness_to_preloaded_provider;
-use kona_proof::BootInfo;
 use op_succinct_client_utils::witness::{EigenDAWitnessData, WitnessData};
 use op_succinct_eigenda_client_utils::executor::EigenDAWitnessExecutor;
 use op_succinct_range_utils::run_range_program;
@@ -45,8 +44,6 @@ fn main() {
             &witness_data.eigenda_data.clone().expect("eigenda witness data is not present"),
         )
         .expect("cannot deserialize eigenda witness");
-        let _boot_info = BootInfo::load(oracle.as_ref()).await.expect("Failed to load boot info");
-
         let preloaded_preimage_provider = eigenda_witness_to_preloaded_provider(
             oracle.clone(),
             &celo_boot.op_boot_info,
