@@ -10,12 +10,12 @@ use op_succinct_client_utils::boot::BootInfoStruct;
 use op_succinct_elfs::AGGREGATION_ELF;
 use op_succinct_host_utils::{
     block_range::get_validated_block_range, fetcher::OPSuccinctDataFetcher, get_agg_proof_stdin,
-    get_range_proof_stdin, ProvingConfig,
+    get_range_proof_stdin, network::build_network_prover_from_env, ProvingConfig,
 };
 use op_succinct_proof_utils::{get_range_elf_embedded, initialize_host};
 use sp1_sdk::{
-    utils, Elf, HashableKey, NetworkProver, ProveRequest, Prover, ProverClient, ProvingKey,
-    SP1ProofMode, SP1ProofWithPublicValues, SP1ProvingKey, SP1Stdin,
+    network::FulfillmentStrategy, utils, Elf, HashableKey, NetworkProver, ProveRequest, Prover,
+    ProvingKey, SP1ProofMode, SP1ProofWithPublicValues, SP1ProvingKey, SP1Stdin,
 };
 use std::{env, num::NonZeroUsize, path::PathBuf, str::FromStr, sync::Arc};
 use tracing::info;
@@ -75,7 +75,9 @@ async fn main() -> Result<()> {
         l2_start_block, l2_end_block, num_ranges, max_concurrent
     );
 
-    let network_prover = Arc::new(ProverClient::builder().network().build().await);
+    let range_strategy =
+        config.range_proving_config.strategy.unwrap_or(FulfillmentStrategy::Reserved);
+    let network_prover = Arc::new(build_network_prover_from_env(range_strategy).await?);
     let range_pk = network_prover.setup(Elf::Static(get_range_elf_embedded())).await?;
     let range_vk = range_pk.verifying_key().clone();
 
