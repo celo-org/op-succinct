@@ -13,7 +13,14 @@ RUN apt-get update && apt-get install -y \
     git \
     pkg-config \
     libssl-dev \
+    protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Go 1.24 (required for sp1-recursion-gnark-ffi)
+RUN curl -LO https://go.dev/dl/go1.24.0.linux-amd64.tar.gz && \
+    tar -C /usr/local -xzf go1.24.0.linux-amd64.tar.gz && \
+    rm go1.24.0.linux-amd64.tar.gz
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 # Install Rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -22,7 +29,7 @@ RUN rustup install stable && rustup default stable
 
 # Install SP1
 RUN curl -L https://sp1.succinct.xyz | bash && \
-    ~/.sp1/bin/sp1up -v 5.2.4 && \
+    ~/.sp1/bin/sp1up -v 6.0.2 && \
     ~/.sp1/bin/cargo-prove prove --version
 
 # Build stage
@@ -39,9 +46,10 @@ FROM ubuntu:24.04
 
 WORKDIR /app
 
-# Create configs directories and copy pre-existing configs from fault-proof/configs/ for custom L1 (local devnet)
-RUN mkdir -p ./configs/L1
-COPY --from=builder /usr/src/app/fault-proof/configs/L1/ ./configs/L1/
+# TODO find out why this was failing
+# # Create configs directories and copy pre-existing configs from fault-proof/configs/ for custom L1 (local devnet)
+# RUN mkdir -p ./configs/L1
+# COPY --from=builder /usr/src/app/fault-proof/configs/L1/ ./configs/L1/
 
 # Install only necessary runtime dependencies
 RUN apt-get update && apt-get install -y \

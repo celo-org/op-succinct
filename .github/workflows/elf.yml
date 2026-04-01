@@ -42,10 +42,12 @@ jobs:
 
           echo "After cleanup:"
           df -h /
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: Install SP1 toolchain
         run: |
           curl -L https://sp1.succinct.xyz | bash
-          ~/.sp1/bin/sp1up -v 5.2.4
+          ~/.sp1/bin/sp1up -v 6.0.2
           ~/.sp1/bin/cargo-prove prove --version
           source ~/.bashrc
       - name: Setup Docker Buildx

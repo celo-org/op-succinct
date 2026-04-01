@@ -3,10 +3,7 @@ use alloy_consensus::Header;
 use alloy_primitives::{Address, B256};
 use anyhow::{Context, Result};
 use op_succinct_client_utils::{boot::BootInfoStruct, types::AggregationInputs};
-use sp1_sdk::{
-    network::FulfillmentStrategy, HashableKey, NetworkProver, SP1Proof, SP1ProofMode,
-    SP1ProofWithPublicValues, SP1ProvingKey, SP1Stdin,
-};
+use sp1_sdk::{network::FulfillmentStrategy, HashableKey, SP1Proof, SP1ProofMode, SP1Stdin};
 use std::env;
 use tokio::time::Duration;
 
@@ -19,7 +16,7 @@ pub fn get_agg_proof_stdin(
     latest_checkpoint_head: B256,
     prover_address: Address,
 ) -> Result<SP1Stdin> {
-    let mut stdin = SP1Stdin::new();
+    let mut stdin = SP1Stdin::default();
     for proof in proofs {
         let SP1Proof::Compressed(compressed_proof) = proof else {
             return Err(anyhow::anyhow!("Invalid proof passed as compressed proof!"));
@@ -94,53 +91,6 @@ where
     Ok(sp1_stdin)
 }
 
-macro_rules! maybe_set {
-    ($builder:expr, $opt:expr, $method:ident) => {
-        match $opt {
-            Some(val) => $builder.$method(val),
-            None => $builder,
-        }
-    };
-}
-
-/// Submits a proof request to the SP1 prover network and awaits the result.
-///
-/// # Arguments
-/// * `sp1_stdin` - The SP1 stdin data containing the program inputs
-/// * `range_pk` - The proving key for the range/aggregation program
-/// * `prover` - The SP1 network prover client
-/// * `config` - Configuration controlling proof generation parameters
-///
-/// # Returns
-/// The generated proof with its public values on success.
-///
-/// # Errors
-/// Returns an error if the proof request fails or times out.
-pub async fn get_network_proof(
-    sp1_stdin: SP1Stdin,
-    range_pk: &SP1ProvingKey,
-    prover: &NetworkProver,
-    config: &ProvingConfig,
-) -> Result<SP1ProofWithPublicValues> {
-    let builder = prover.prove(range_pk, &sp1_stdin);
-
-    let builder = maybe_set!(builder, config.strategy, strategy);
-    let builder = maybe_set!(builder, config.mode, mode);
-    let builder = maybe_set!(builder, config.cycle_limit, cycle_limit);
-    let builder = maybe_set!(builder, config.gas_limit, gas_limit);
-    let builder = maybe_set!(builder, config.max_price_per_pgu, max_price_per_pgu);
-    let builder = builder.skip_simulation(config.skip_simulation);
-    let builder = maybe_set!(builder, config.proving_timeout, timeout);
-    let builder = maybe_set!(builder, config.min_auction_period, min_auction_period);
-    let builder = maybe_set!(builder, config.auction_timeout, auction_timeout);
-    let builder = builder.whitelist(config.whitelist.clone());
-    let builder = maybe_set!(builder, config.auctioneer, auctioneer);
-    let builder = maybe_set!(builder, config.executor, executor);
-    let builder = maybe_set!(builder, config.verifier, verifier);
-
-    let proof = builder.run_async().await?;
-    Ok(proof)
-}
 #[derive(Debug, Clone)]
 pub struct ProvingConfig {
     pub strategy: Option<FulfillmentStrategy>,
