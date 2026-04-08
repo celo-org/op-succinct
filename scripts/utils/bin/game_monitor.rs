@@ -110,6 +110,11 @@ pub struct GameMonitorArgs {
     #[arg(long, default_value = "1")]
     pub cost_estimator_retries: u32,
 
+    /// Batch size passed to the cost estimator, caps the per-execution chunk size to control SP1
+    /// guest memory usage. Note smaller games still execute as a single chunk.
+    #[arg(long, default_value = "200")]
+    pub batch_size: u64,
+
     /// Path to the progress file. Defaults to `<logs_dir>/progress.json`.
     #[arg(long)]
     pub progress_file: Option<PathBuf>,
@@ -537,17 +542,19 @@ async fn fetch_game_data<P: alloy_provider::Provider + Clone>(
 
 fn spawn_cost_estimator(
     cost_estimator_binary_path: &PathBuf,
+    batch_size: u64,
     env_file: &Path,
     log_file: &LogFile,
     game_data: &GameData,
 ) -> Result<Child> {
+    let effective_batch_size = std::cmp::min(batch_size, game_data.block_range()).to_string();
     let args = [
         "--start",
         &game_data.start_block.to_string(),
         "--end",
         &game_data.end_block.to_string(),
         "--batch-size",
-        &game_data.block_range().to_string(),
+        &effective_batch_size,
         "--env-file",
         env_file.to_str().unwrap(),
     ];
@@ -850,6 +857,7 @@ async fn main() -> Result<()> {
 
             let child = spawn_cost_estimator(
                 &args.cost_estimator_binary_path,
+                args.batch_size,
                 &args.env_file,
                 &log_file,
                 &game_data,
