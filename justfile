@@ -1,3 +1,5 @@
+import 'ci.just'
+
 default:
   @just --list
 
