@@ -78,6 +78,13 @@ pub struct ProposerConfig {
 
     /// Optional path to backup file for persisting proposer state across restarts.
     pub backup_path: Option<PathBuf>,
+
+    /// Maximum time (in seconds) to wait for an L1 transaction submitted by the proposer to
+    /// reach the required number of confirmations before the watcher gives up. Setting this
+    /// too low risks declaring "confirmation timeout" on transactions that actually land on
+    /// chain, which can produce duplicate sibling games on retry. Defaults to 180 to leave
+    /// comfortable headroom for mempool inclusion plus the configured confirmation depth.
+    pub tx_confirmation_timeout: u64,
 }
 
 /// Helper function to parse a comma-separated list of addresses
@@ -139,6 +146,9 @@ impl ProposerConfig {
                 .parse()?,
             proof_provider: ProofProviderConfig::from_env()?,
             backup_path: env::var("BACKUP_PATH").ok().map(PathBuf::from),
+            tx_confirmation_timeout: env::var("TX_CONFIRMATION_TIMEOUT")
+                .unwrap_or("180".to_string())
+                .parse()?,
         })
     }
 
@@ -175,6 +185,7 @@ impl ProposerConfig {
             min_auction_period = self.proof_provider.min_auction_period,
             whitelist = ?self.proof_provider.whitelist,
             backup_path = ?self.backup_path,
+            tx_confirmation_timeout = self.tx_confirmation_timeout,
             "Proposer configuration loaded"
         );
     }
