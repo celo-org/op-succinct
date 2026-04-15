@@ -8,19 +8,31 @@
 //! (WitnessData) are DA-specific. Cache files are compatible between Ethereum DA and Celestia DA
 //! (both use DefaultWitnessData), but NOT compatible with EigenDA (uses EigenDAWitnessData).
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Result;
 use sp1_sdk::SP1Stdin;
 
-/// Returns the cache directory path for a given chain ID.
-pub fn get_cache_dir(chain_id: u64) -> PathBuf {
-    PathBuf::from(format!("data/{}/witness-cache", chain_id))
+/// The default base directory under which witness caches are stored when no explicit
+/// `base_dir` is passed by the caller.
+pub const DEFAULT_CACHE_BASE_DIR: &str = "data";
+
+/// Returns the cache directory path for a given chain ID, rooted at `base_dir`.
+pub fn get_cache_dir(base_dir: &Path, chain_id: u64) -> PathBuf {
+    base_dir.join(chain_id.to_string()).join("witness-cache")
 }
 
-/// Returns the stdin cache file path for a given block range.
-pub fn get_stdin_cache_path(chain_id: u64, start_block: u64, end_block: u64) -> PathBuf {
-    get_cache_dir(chain_id).join(format!("{}-{}-stdin.bin", start_block, end_block))
+/// Returns the stdin cache file path for a given block range, rooted at `base_dir`.
+pub fn get_stdin_cache_path(
+    base_dir: &Path,
+    chain_id: u64,
+    start_block: u64,
+    end_block: u64,
+) -> PathBuf {
+    get_cache_dir(base_dir, chain_id).join(format!("{}-{}-stdin.bin", start_block, end_block))
 }
 
 /// Save SP1Stdin to cache using bincode.
@@ -28,17 +40,18 @@ pub fn get_stdin_cache_path(chain_id: u64, start_block: u64, end_block: u64) -> 
 /// Creates the cache directory if it doesn't exist and serializes the stdin using bincode.
 /// Note: Cache files are only compatible within the same DA type family (see module docs).
 pub fn save_stdin_to_cache(
+    base_dir: &Path,
     chain_id: u64,
     start_block: u64,
     end_block: u64,
     stdin: &SP1Stdin,
 ) -> Result<PathBuf> {
-    let cache_dir = get_cache_dir(chain_id);
+    let cache_dir = get_cache_dir(base_dir, chain_id);
     if !cache_dir.exists() {
         fs::create_dir_all(&cache_dir)?;
     }
 
-    let cache_path = get_stdin_cache_path(chain_id, start_block, end_block);
+    let cache_path = get_stdin_cache_path(base_dir, chain_id, start_block, end_block);
     let bytes = bincode::serialize(stdin)?;
     fs::write(&cache_path, &bytes)?;
 
@@ -50,11 +63,12 @@ pub fn save_stdin_to_cache(
 /// Returns `Ok(Some(stdin))` if the cache file exists and was successfully deserialized,
 /// `Ok(None)` if the cache file doesn't exist, or an error if deserialization failed.
 pub fn load_stdin_from_cache(
+    base_dir: &Path,
     chain_id: u64,
     start_block: u64,
     end_block: u64,
 ) -> Result<Option<SP1Stdin>> {
-    let cache_path = get_stdin_cache_path(chain_id, start_block, end_block);
+    let cache_path = get_stdin_cache_path(base_dir, chain_id, start_block, end_block);
 
     if !cache_path.exists() {
         return Ok(None);

@@ -1,4 +1,5 @@
 use clap::Parser;
+use op_succinct_host_utils::witness_cache::DEFAULT_CACHE_BASE_DIR;
 use std::path::PathBuf;
 
 pub mod config_common;
@@ -18,6 +19,10 @@ pub struct HostExecutorArgs {
     /// Enable caching: load from cache if available, save to cache if not.
     #[arg(long)]
     pub cache: bool,
+    /// Base directory under which witness caches are stored. Cache files are written to
+    /// `<cache_dir>/<chain_id>/witness-cache/`.
+    #[arg(long, default_value = DEFAULT_CACHE_BASE_DIR)]
+    pub cache_dir: PathBuf,
     /// Use a fixed recent range.
     #[arg(long)]
     pub rolling: bool,

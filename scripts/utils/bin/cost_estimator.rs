@@ -37,6 +37,7 @@ async fn execute_blocks_and_write_stats_csv<H>(
     start: u64,
     end: u64,
     cache_enabled: bool,
+    cache_dir: PathBuf,
     log_only: bool,
 ) -> Result<()>
 where
@@ -84,10 +85,11 @@ where
         let host = host.clone();
         let start = range.start;
         let end = range.end;
+        let cache_dir = cache_dir.clone();
         tokio::spawn(async move {
             // Try loading SP1Stdin from cache
             if cache_enabled {
-                match load_stdin_from_cache(l2_chain_id, start, end) {
+                match load_stdin_from_cache(&cache_dir, l2_chain_id, start, end) {
                     Ok(Some(stdin)) => {
                         info!("Loaded stdin from cache for range {}-{}", start, end);
                         return stdin;
@@ -105,7 +107,7 @@ where
 
             // Save SP1Stdin to cache
             if cache_enabled {
-                match save_stdin_to_cache(l2_chain_id, start, end, &stdin) {
+                match save_stdin_to_cache(&cache_dir, l2_chain_id, start, end, &stdin) {
                     Ok(cache_path) => {
                         info!("Saved stdin to cache: {}", cache_path.display());
                     }
@@ -301,6 +303,7 @@ async fn main() -> Result<()> {
         l2_start_block,
         l2_end_block,
         args.cache,
+        args.cache_dir.clone(),
         args.log_only,
     )
     .await?;

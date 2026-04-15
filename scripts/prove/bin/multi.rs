@@ -62,7 +62,13 @@ async fn main() -> Result<()> {
 
         // Save to cache if enabled
         if args.cache {
-            match save_stdin_to_cache(l2_chain_id, l2_start_block, l2_end_block, &stdin) {
+            match save_stdin_to_cache(
+                &args.cache_dir,
+                l2_chain_id,
+                l2_start_block,
+                l2_end_block,
+                &stdin,
+            ) {
                 Ok(cache_path) => {
                     info!("Saved stdin to cache: {}", cache_path.display());
                 }
@@ -77,7 +83,7 @@ async fn main() -> Result<()> {
 
     // Check cache first if enabled (with graceful fallback)
     let (sp1_stdin, witness_generation_duration) = if args.cache {
-        match load_stdin_from_cache(l2_chain_id, l2_start_block, l2_end_block) {
+        match load_stdin_from_cache(&args.cache_dir, l2_chain_id, l2_start_block, l2_end_block) {
             Ok(Some(stdin)) => {
                 info!("Loaded stdin from cache");
                 (stdin, Duration::ZERO)

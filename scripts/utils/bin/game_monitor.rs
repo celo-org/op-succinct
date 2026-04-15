@@ -115,6 +115,17 @@ pub struct GameMonitorArgs {
     #[arg(long, default_value = "200")]
     pub batch_size: u64,
 
+    /// Enable the cost estimator's witness cache (`--cache`). When set, the cost estimator will
+    /// load SP1Stdin from disk if present and save it after generation, skipping witness
+    /// generation on subsequent runs for the same range.
+    #[arg(long)]
+    pub cache: bool,
+
+    /// Base directory passed through to the cost estimator as `--cache-dir`. Cache files are
+    /// written to `<cache_dir>/<chain_id>/witness-cache/`. Only used when `--cache` is set.
+    #[arg(long, default_value = op_succinct_host_utils::witness_cache::DEFAULT_CACHE_BASE_DIR)]
+    pub cache_dir: PathBuf,
+
     /// Path to the progress file. Defaults to `<logs_dir>/progress.json`.
     #[arg(long)]
     pub progress_file: Option<PathBuf>,
@@ -543,21 +554,30 @@ async fn fetch_game_data<P: alloy_provider::Provider + Clone>(
 fn spawn_cost_estimator(
     cost_estimator_binary_path: &PathBuf,
     batch_size: u64,
+    cache: bool,
+    cache_dir: &Path,
     env_file: &Path,
     log_file: &LogFile,
     game_data: &GameData,
 ) -> Result<Child> {
     let effective_batch_size = std::cmp::min(batch_size, game_data.block_range()).to_string();
-    let args = [
+    let start_block_str = game_data.start_block.to_string();
+    let end_block_str = game_data.end_block.to_string();
+    let mut args: Vec<&str> = vec![
         "--start",
-        &game_data.start_block.to_string(),
+        &start_block_str,
         "--end",
-        &game_data.end_block.to_string(),
+        &end_block_str,
         "--batch-size",
         &effective_batch_size,
         "--env-file",
         env_file.to_str().unwrap(),
     ];
+    if cache {
+        args.push("--cache");
+        args.push("--cache-dir");
+        args.push(cache_dir.to_str().unwrap());
+    }
 
     let cmd = format!("{} {}", cost_estimator_binary_path.display(), args.join(" "));
 
@@ -858,6 +878,8 @@ async fn main() -> Result<()> {
             let child = spawn_cost_estimator(
                 &args.cost_estimator_binary_path,
                 args.batch_size,
+                args.cache,
+                &args.cache_dir,
                 &args.env_file,
                 &log_file,
                 &game_data,
