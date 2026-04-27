@@ -111,18 +111,19 @@ dependencies = [
 [[package]]
 name = "alloy-celo-evm"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=1cd5ef4#1cd5ef45185723cea41505ad81de1d0d5bb5af6a"
+source = "git+https://github.com/celo-org/celo-kona?rev=a0c2f13#a0c2f13029d33b41df2177b5614855d33ab75d87"
 dependencies = [
  "alloy-consensus",
- "alloy-evm 0.24.2",
- "alloy-op-evm 0.24.2",
+ "alloy-evm 0.27.3",
+ "alloy-op-evm",
  "alloy-primitives",
  "celo-alloy-consensus",
  "celo-revm",
- "op-alloy-consensus",
- "op-revm 14.1.0",
- "revm 33.1.0",
+ "op-alloy-consensus 0.23.1",
+ "op-revm 15.0.0",
+ "revm 34.0.0",
  "spin 0.10.0",
+ "tracing",
 ]
 
 [[package]]
@@ -284,8 +285,8 @@ dependencies = [
 
 [[package]]
 name = "alloy-eips"
-version = "1.5.2"
-source = "git+https://github.com/celo-org/alloy?branch=fix-fake-exponential-v1.5.2#1d86810e44cfb9a915926c3b8f846b68d47e33fa"
+version = "1.6.3"
+source = "git+https://github.com/celo-org/alloy?branch=fix-fake-exponential-v1.6.3#1c9404378b0c92496ecd0d601c9e1107e703353d"
 dependencies = [
  "alloy-eip2124",
  "alloy-eip2930",
@@ -763,8 +764,8 @@ dependencies = [
 
 [[package]]
 name = "alloy-serde"
-version = "1.5.2"
-source = "git+https://github.com/celo-org/alloy?branch=fix-fake-exponential-v1.5.2#1d86810e44cfb9a915926c3b8f846b68d47e33fa"
+version = "1.6.3"
+source = "git+https://github.com/celo-org/alloy?branch=fix-fake-exponential-v1.6.3#1c9404378b0c92496ecd0d601c9e1107e703353d"
 dependencies = [
  "alloy-primitives",
  "serde",
@@ -773,9 +774,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-signer"
-version = "1.5.2"
+version = "1.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f7481dc8316768f042495eaf305d450c32defbc9bce09d8bf28afcd956895bb"
+checksum = "97f40010b5e8f79b70bf163b38cd15f529b18ca88c4427c0e43441ee54e4ed82"
 dependencies = [
  "alloy-primitives",
  "async-trait",
@@ -948,6 +949,7 @@ dependencies = [
  "hyper 1.8.1",
  "hyper-tls 0.6.0",
  "hyper-util",
+ "itertools 0.14.0",
  "jsonwebtoken",
  "opentelemetry 0.31.0",
  "opentelemetry-http",
@@ -2920,7 +2922,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-consensus"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=1cd5ef4#1cd5ef45185723cea41505ad81de1d0d5bb5af6a"
+source = "git+https://github.com/celo-org/celo-kona?rev=a0c2f13#a0c2f13029d33b41df2177b5614855d33ab75d87"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -2928,14 +2930,14 @@ dependencies = [
  "alloy-rlp",
  "alloy-rpc-types-eth",
  "alloy-serde",
- "op-alloy-consensus",
+ "op-alloy-consensus 0.23.1",
  "serde",
 ]
 
 [[package]]
 name = "celo-alloy-network"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=1cd5ef4#1cd5ef45185723cea41505ad81de1d0d5bb5af6a"
+source = "git+https://github.com/celo-org/celo-kona?rev=a0c2f13#a0c2f13029d33b41df2177b5614855d33ab75d87"
 dependencies = [
  "alloy-consensus",
  "alloy-network",
@@ -2949,7 +2951,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-rpc-types"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=1cd5ef4#1cd5ef45185723cea41505ad81de1d0d5bb5af6a"
+source = "git+https://github.com/celo-org/celo-kona?rev=a0c2f13#a0c2f13029d33b41df2177b5614855d33ab75d87"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -2959,7 +2961,7 @@ dependencies = [
  "alloy-serde",
  "celo-alloy-consensus",
  "derive_more 2.1.1",
- "op-alloy-consensus",
+ "op-alloy-consensus 0.23.1",
  "op-alloy-rpc-types",
  "serde",
  "serde_json",
@@ -2968,7 +2970,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-rpc-types-engine"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=1cd5ef4#1cd5ef45185723cea41505ad81de1d0d5bb5af6a"
+source = "git+https://github.com/celo-org/celo-kona?rev=a0c2f13#a0c2f13029d33b41df2177b5614855d33ab75d87"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -2976,15 +2978,15 @@ dependencies = [
  "alloy-rlp",
  "alloy-rpc-types-engine",
  "celo-alloy-consensus",
- "op-alloy-consensus",
- "op-alloy-rpc-types-engine",
+ "op-alloy-consensus 0.23.1",
+ "op-alloy-rpc-types-engine 0.23.1",
  "serde",
 ]
 
 [[package]]
 name = "celo-client"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=1cd5ef4#1cd5ef45185723cea41505ad81de1d0d5bb5af6a"
+source = "git+https://github.com/celo-org/celo-kona?rev=a0c2f13#a0c2f13029d33b41df2177b5614855d33ab75d87"
 dependencies = [
  "alloy-celo-evm",
  "alloy-consensus",
@@ -3001,15 +3003,15 @@ dependencies = [
  "kona-executor",
  "kona-preimage",
  "kona-proof",
- "kona-std-fpvm 0.2.0 (git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.2.7)",
- "kona-std-fpvm-proc 0.2.0 (git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.2.7)",
+ "kona-std-fpvm",
+ "kona-std-fpvm-proc",
  "tracing",
 ]
 
 [[package]]
 name = "celo-driver"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=1cd5ef4#1cd5ef45185723cea41505ad81de1d0d5bb5af6a"
+source = "git+https://github.com/celo-org/celo-kona?rev=a0c2f13#a0c2f13029d33b41df2177b5614855d33ab75d87"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -3039,13 +3041,13 @@ dependencies = [
 [[package]]
 name = "celo-executor"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=1cd5ef4#1cd5ef45185723cea41505ad81de1d0d5bb5af6a"
+source = "git+https://github.com/celo-org/celo-kona?rev=a0c2f13#a0c2f13029d33b41df2177b5614855d33ab75d87"
 dependencies = [
  "alloy-celo-evm",
  "alloy-consensus",
  "alloy-eips",
- "alloy-evm 0.24.2",
- "alloy-op-evm 0.24.2",
+ "alloy-evm 0.27.3",
+ "alloy-op-evm",
  "alloy-primitives",
  "alloy-trie",
  "celo-alloy-consensus",
@@ -3057,17 +3059,17 @@ dependencies = [
  "kona-genesis",
  "kona-mpt",
  "kona-protocol",
- "op-alloy-consensus",
- "op-alloy-rpc-types-engine",
- "op-revm 14.1.0",
- "revm 33.1.0",
+ "op-alloy-consensus 0.23.1",
+ "op-alloy-rpc-types-engine 0.23.1",
+ "op-revm 15.0.0",
+ "revm 34.0.0",
  "tracing",
 ]
 
 [[package]]
 name = "celo-genesis"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=1cd5ef4#1cd5ef45185723cea41505ad81de1d0d5bb5af6a"
+source = "git+https://github.com/celo-org/celo-kona?rev=a0c2f13#a0c2f13029d33b41df2177b5614855d33ab75d87"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3077,7 +3079,7 @@ dependencies = [
  "alloy-sol-types",
  "derive_more 2.1.1",
  "kona-genesis",
- "op-revm 14.1.0",
+ "op-revm 15.0.0",
  "serde",
  "serde_json",
  "serde_repr",
@@ -3087,7 +3089,7 @@ dependencies = [
 [[package]]
 name = "celo-host"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=1cd5ef4#1cd5ef45185723cea41505ad81de1d0d5bb5af6a"
+source = "git+https://github.com/celo-org/celo-kona?rev=a0c2f13#a0c2f13029d33b41df2177b5614855d33ab75d87"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3096,7 +3098,6 @@ dependencies = [
  "alloy-rlp",
  "alloy-rpc-types",
  "anyhow",
- "ark-ff 0.5.0",
  "async-trait",
  "celo-alloy-network",
  "celo-alloy-rpc-types-engine",
@@ -3105,16 +3106,16 @@ dependencies = [
  "clap",
  "hokulea-host-bin",
  "hokulea-proof",
- "kona-cli 0.3.2 (git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.2.7)",
+ "kona-cli",
  "kona-host",
  "kona-mpt",
  "kona-preimage",
  "kona-proof",
  "kona-protocol",
  "kona-providers-alloy",
- "kona-std-fpvm 0.2.0 (git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.2.7)",
- "reqwest 0.12.28",
- "revm 33.1.0",
+ "kona-std-fpvm",
+ "reqwest 0.13.2",
+ "revm 34.0.0",
  "serde",
  "serde_json",
  "tokio",
@@ -3125,11 +3126,11 @@ dependencies = [
 [[package]]
 name = "celo-proof"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=1cd5ef4#1cd5ef45185723cea41505ad81de1d0d5bb5af6a"
+source = "git+https://github.com/celo-org/celo-kona?rev=a0c2f13#a0c2f13029d33b41df2177b5614855d33ab75d87"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
- "alloy-evm 0.24.2",
+ "alloy-evm 0.27.3",
  "alloy-primitives",
  "async-trait",
  "celo-alloy-consensus",
@@ -3148,9 +3149,9 @@ dependencies = [
  "kona-proof",
  "kona-protocol",
  "kona-registry",
- "op-alloy-consensus",
- "op-alloy-rpc-types-engine",
- "op-revm 14.1.0",
+ "op-alloy-consensus 0.23.1",
+ "op-alloy-rpc-types-engine 0.23.1",
+ "op-revm 15.0.0",
  "serde",
  "serde_json",
  "spin 0.10.0",
@@ -3160,7 +3161,7 @@ dependencies = [
 [[package]]
 name = "celo-protocol"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=1cd5ef4#1cd5ef45185723cea41505ad81de1d0d5bb5af6a"
+source = "git+https://github.com/celo-org/celo-kona?rev=a0c2f13#a0c2f13029d33b41df2177b5614855d33ab75d87"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3177,9 +3178,9 @@ dependencies = [
  "kona-genesis",
  "kona-proof",
  "kona-protocol",
- "miniz_oxide",
- "op-alloy-consensus",
- "op-alloy-rpc-types-engine",
+ "miniz_oxide 0.9.1",
+ "op-alloy-consensus 0.23.1",
+ "op-alloy-rpc-types-engine 0.23.1",
  "rand 0.9.2",
  "thiserror 2.0.18",
  "tracing",
@@ -3189,7 +3190,7 @@ dependencies = [
 [[package]]
 name = "celo-registry"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=1cd5ef4#1cd5ef45185723cea41505ad81de1d0d5bb5af6a"
+source = "git+https://github.com/celo-org/celo-kona?rev=a0c2f13#a0c2f13029d33b41df2177b5614855d33ab75d87"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -3203,20 +3204,20 @@ dependencies = [
 [[package]]
 name = "celo-revm"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=1cd5ef4#1cd5ef45185723cea41505ad81de1d0d5bb5af6a"
+source = "git+https://github.com/celo-org/celo-kona?rev=a0c2f13#a0c2f13029d33b41df2177b5614855d33ab75d87"
 dependencies = [
  "alloy-eips",
- "alloy-evm 0.24.2",
- "alloy-op-evm 0.24.2",
+ "alloy-evm 0.27.3",
+ "alloy-op-evm",
  "alloy-primitives",
  "alloy-sol-types",
  "auto_impl",
  "celo-alloy-consensus",
  "lazy_static",
- "op-alloy-consensus",
- "op-revm 14.1.0",
- "revm 33.1.0",
- "revm-context-interface 13.1.0",
+ "op-alloy-consensus 0.23.1",
+ "op-revm 15.0.0",
+ "revm 34.0.0",
+ "revm-context-interface 14.0.0",
  "spin 0.10.0",
  "thiserror 2.0.18",
  "tracing",
@@ -5178,13 +5179,13 @@ dependencies = [
  "hana-client",
  "hana-oracle",
  "hana-proofs",
- "kona-cli 0.3.2 (git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.2.7)",
+ "kona-cli",
  "kona-genesis",
  "kona-host",
  "kona-preimage",
  "kona-proof",
  "kona-providers-alloy",
- "kona-std-fpvm 0.2.0 (git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.2.7)",
+ "kona-std-fpvm",
  "op-alloy-network",
  "serde",
  "serde_json",
@@ -5406,12 +5407,12 @@ dependencies = [
  "hokulea-client-bin",
  "hokulea-eigenda",
  "hokulea-proof",
- "kona-cli 0.3.2 (git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.2.7)",
+ "kona-cli",
  "kona-client",
  "kona-host",
  "kona-preimage",
  "kona-proof",
- "kona-std-fpvm 0.2.0 (git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.2.7)",
+ "kona-std-fpvm",
  "reqwest 0.12.28",
  "serde",
  "thiserror 2.0.18",
@@ -6346,8 +6347,8 @@ dependencies = [
  "kona-proof-interop",
  "kona-protocol",
  "kona-registry",
- "kona-std-fpvm 0.2.0 (git+https://github.com/celo-org/kona?rev=cf790b7)",
- "kona-std-fpvm-proc 0.2.0 (git+https://github.com/celo-org/kona?rev=cf790b7)",
+ "kona-std-fpvm",
+ "kona-std-fpvm-proc",
  "lru 0.16.3",
  "op-alloy-consensus 0.23.1",
  "op-alloy-rpc-types-engine 0.23.1",
@@ -6479,7 +6480,7 @@ dependencies = [
  "ark-ff 0.5.0",
  "async-trait",
  "clap",
- "kona-cli 0.3.2 (git+https://github.com/celo-org/kona?rev=cf790b7)",
+ "kona-cli",
  "kona-client",
  "kona-derive",
  "kona-driver",
@@ -6492,7 +6493,7 @@ dependencies = [
  "kona-protocol",
  "kona-providers-alloy",
  "kona-registry",
- "kona-std-fpvm 0.2.0 (git+https://github.com/celo-org/kona?rev=cf790b7)",
+ "kona-std-fpvm",
  "op-alloy-network",
  "op-alloy-rpc-types-engine 0.23.1",
  "op-revm 15.0.0",
@@ -6726,19 +6727,7 @@ version = "0.2.0"
 source = "git+https://github.com/ethereum-optimism/optimism?tag=kona-client%2Fv1.2.13#348e12919d270b600bc26863f8223c529aacc90c"
 dependencies = [
  "cfg-if",
- "kona-std-fpvm 0.2.0 (git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.2.7)",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "kona-std-fpvm-proc"
-version = "0.2.0"
-source = "git+https://github.com/celo-org/kona?rev=cf790b7#cf790b7405b16510f1fb023bd8e4f0eca9ac8eb7"
-dependencies = [
- "cfg-if",
- "kona-std-fpvm 0.2.0 (git+https://github.com/celo-org/kona?rev=cf790b7)",
+ "kona-std-fpvm",
  "proc-macro2",
  "quote",
  "syn 2.0.117",

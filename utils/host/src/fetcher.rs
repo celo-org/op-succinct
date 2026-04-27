@@ -40,7 +40,7 @@ const L2_TO_L1_MESSAGE_PASSER: Address = address!("0x420000000000000000000000000
 /// so we fall back to `eth_getProof`.
 /// Ref: <https://specs.optimism.io/protocol/isthmus/exec-engine.html>
 async fn l2_to_l1_message_passer_storage_root(
-    provider: &RootProvider<Optimism>,
+    provider: &RootProvider<Celo>,
     header: &Header,
     block_number: u64,
 ) -> Result<B256> {
@@ -351,9 +351,8 @@ impl OPSuccinctDataFetcher {
         }
     }
 
-    /// Load rollup config from cache (`{L2_CONFIG_DIR}/{chain_id}.json`) if available,
-    /// otherwise fetch from RPC and cache it. Compares cached vs RPC to detect hardfork
-    /// transitions.
+    /// Fetch rollup config from celo-registry if available, otherwise fetch from node RPC and save it to a file.
+    /// Compares registry vs node RPC to detect hardfork transitions.
     async fn fetch_and_save_rollup_config(
         rpc_config: &RPCConfig,
     ) -> Result<(CeloRollupConfig, PathBuf)> {
@@ -428,11 +427,13 @@ impl OPSuccinctDataFetcher {
         Ok((rollup_config, rollup_config_path))
     }
 
+    /// Celo is using celo-registry for rollup config instead of relying on cached config.
+    #[allow(unused)]
     /// Best-effort: compare cached config against node RPC, warn on mismatch (5s timeout).
     /// Intentionally warn-only — mismatches are expected during hardfork transitions and the
     /// on-chain vkey check is the authoritative gate for game creation.
-    async fn compare_config_with_rpc(cached: &RollupConfig, rpc_config: &RPCConfig) {
-        let rpc_fetch = Self::fetch_rpc_data::<RollupConfig>(
+    async fn compare_config_with_rpc(cached: &CeloRollupConfig, rpc_config: &RPCConfig) {
+        let rpc_fetch = Self::fetch_rpc_data::<CeloRollupConfig>(
             &rpc_config.l2_node_rpc,
             "optimism_rollupConfig",
             vec![],
@@ -893,8 +894,8 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn test_rollup_config(chain_id: u64) -> RollupConfig {
-        RollupConfig { l2_chain_id: chain_id.into(), ..Default::default() }
+    fn test_rollup_config(chain_id: u64) -> CeloRollupConfig {
+        CeloRollupConfig(RollupConfig { l2_chain_id: chain_id.into(), ..Default::default() })
     }
 
     #[test]
@@ -905,7 +906,7 @@ mod tests {
 
         let path = dir.path().join("42220.json");
         fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
-        let loaded: RollupConfig =
+        let loaded: CeloRollupConfig =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
 
         assert_eq!(hash_before, hash_rollup_config(&loaded));
