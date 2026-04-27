@@ -80,7 +80,7 @@ Depending on the one you choose, you must provide the corresponding environment 
 | Variable | Description | Default Value |
 |----------|-------------|---------------|
 | `L1_CONFIG_DIR` | The directory containing the L1 chain configuration files. | `<project-root>/configs/L1` |
-| `L2_CONFIG_DIR` | Directory containing L2 chain configuration files | `<project-root>/configs/L2` |
+| `L2_CONFIG_DIR` | Directory containing L2 chain configuration files. On first run, the rollup config is fetched from the node RPC and cached here. On subsequent runs, the cached file is used. Delete the cached file and restart to force a refresh (e.g., after a hardfork activates). | `<project-root>/configs/L2` |
 | `MOCK_MODE` | Whether to use mock mode | `false` |
 | `FAST_FINALITY_MODE` | Whether to use fast finality mode | `false` |
 | `RANGE_PROOF_STRATEGY` | Proof fulfillment strategy for range proofs. Set to `hosted` to use the hosted proof strategy. | `reserved` |
@@ -108,6 +108,7 @@ Depending on the one you choose, you must provide the corresponding environment 
 | `AGG_GAS_LIMIT` | The gas limit to use for aggregation proofs. | `1,000,000,000,000` |
 | `WHITELIST` | The list of prover addresses that are allowed to bid on proof requests. | `` |
 | `BACKUP_PATH` | Path to backup file for persisting proposer state across restarts. Enables faster recovery by restoring cached state instead of re-syncing from the factory. | (disabled) |
+| `TX_CONFIRMATION_TIMEOUT` | Maximum time (in seconds) to wait for an L1 transaction to reach the required number of confirmations. Setting this too low risks timeout-triggered retries that can produce duplicate sibling games. | `60` |
 
 ```env
 # Required Configuration
@@ -133,6 +134,7 @@ PROPOSAL_INTERVAL_IN_BLOCKS=1800 # Number of L2 blocks between proposals
 FETCH_INTERVAL=30                # Polling interval in seconds
 PROPOSER_METRICS_PORT=9000       # The port to expose metrics on
 BACKUP_PATH=                     # persist state across restarts (e.g. /backup/proposer_state.json)
+TX_CONFIRMATION_TIMEOUT=60       # L1 tx confirmation timeout in seconds (raise for congested L1s)
 ```
 
 ### Configuration Steps
@@ -170,6 +172,22 @@ The proposer will run indefinitely, creating new games and optionally resolving 
 All long-running work executes in dedicated Tokio tasks stored in a `TaskMap`, preventing duplicate submissions while allowing creation/defense/resolution/bond claiming to progress in parallel. Fast finality mode additionally enforces `FAST_FINALITY_PROVING_LIMIT` before spawning new fast finality proving tasks.
 
 Metrics are published by a separate background collector that samples the canonical head, finalized head, and active proving task count.
+
+### Proposer Metrics
+
+Use `op_succinct_fp_canonical_head_game_index` as the primary signal for whether the proposer has a cached canonical head.
+
+Values:
+- `>= 0`: cached canonical head game index
+- `-1`: no canonical head game is currently cached
+
+Do not use the canonical-head / latest-game L2 block metric as the head-clear signal. The proposer may preserve an anchor-derived L2 block baseline even when `op_succinct_fp_canonical_head_game_index = -1`, so it can create the first proposal.
+
+Useful dashboards and alerts:
+- sustained `op_succinct_fp_canonical_head_game_index = -1` after games should exist
+- decreases in `op_succinct_fp_canonical_head_game_index`, which can indicate canonical head rewind or orphaning
+- the gap between `op_succinct_fp_anchor_game_index` and `op_succinct_fp_canonical_head_game_index`
+- `op_succinct_fp_finalized_l2_block_number = 0`, which indicates that finalized lookup is currently unavailable
 
 ## Features
 
@@ -338,6 +356,16 @@ To perform a hardfork with zero downtime:
    Once the old proposer has no remaining owned games (all resolved and bonds claimed), it can be safely shut down.
 
 **Timeline**: Games may take up to `MAX_CHALLENGE_DURATION + MAX_PROVE_DURATION` to fully resolve after the hardfork. Plan for the old proposer to run for this duration.
+
+### Rollup Config During Hardforks
+
+The proposer caches the rollup config to `{L2_CONFIG_DIR}/{chain_id}.json` on first run and reuses the cached file on subsequent startups. This prevents the proposer from picking up a premature post-hardfork config when the node is upgraded before hardfork activation.
+
+**Normal operation**: No action needed. The config is fetched once and cached.
+
+**During hardfork transition**: If the node is upgraded before hardfork activation, the cached config protects the proposer from receiving the wrong config. A `WARN` log will appear if the cached config differs from the node RPC. The proposer's on-chain vkey check (`on_chain_vkeys_match`) independently prevents it from creating games with a mismatched config, so no operator action is needed.
+
+**New proposer setup**: When standing up a new proposer for a hardfork, it fetches the config fresh from RPC. If the node has already been upgraded but the hardfork hasn't activated yet, manually place the correct pre-hardfork config at `configs/L2/{chain_id}.json` before starting.
 
 ### Logging and Monitoring
 

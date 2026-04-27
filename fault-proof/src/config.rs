@@ -79,11 +79,17 @@ pub struct ProposerConfig {
     /// Optional path to backup file for persisting proposer state across restarts.
     pub backup_path: Option<PathBuf>,
 
+    /// Number of L1 blocks behind `latest` to pin reads during sync cycles.
+    /// Provides a safety margin for load-balanced RPCs where backends may lag.
+    /// Default: 0 (use latest).
+    pub sync_l1_confirmations: u64,
+
     /// Maximum time (in seconds) to wait for an L1 transaction submitted by the proposer to
     /// reach the required number of confirmations before the watcher gives up. Setting this
     /// too low risks declaring "confirmation timeout" on transactions that actually land on
-    /// chain, which can produce duplicate sibling games on retry. Defaults to 180 to leave
-    /// comfortable headroom for mempool inclusion plus the configured confirmation depth.
+    /// chain, which can produce duplicate sibling games on retry. Defaults to 60 to preserve
+    /// the historical signer behavior; raise it (e.g. 180) on networks where mempool inclusion
+    /// plus the configured confirmation depth needs more headroom.
     pub tx_confirmation_timeout: u64,
 }
 
@@ -146,8 +152,11 @@ impl ProposerConfig {
                 .parse()?,
             proof_provider: ProofProviderConfig::from_env()?,
             backup_path: env::var("BACKUP_PATH").ok().map(PathBuf::from),
+            sync_l1_confirmations: env::var("SYNC_L1_CONFIRMATIONS")
+                .unwrap_or("0".to_string())
+                .parse()?,
             tx_confirmation_timeout: env::var("TX_CONFIRMATION_TIMEOUT")
-                .unwrap_or("180".to_string())
+                .unwrap_or("60".to_string())
                 .parse()?,
         })
     }
@@ -185,6 +194,7 @@ impl ProposerConfig {
             min_auction_period = self.proof_provider.min_auction_period,
             whitelist = ?self.proof_provider.whitelist,
             backup_path = ?self.backup_path,
+            sync_l1_confirmations = self.sync_l1_confirmations,
             tx_confirmation_timeout = self.tx_confirmation_timeout,
             "Proposer configuration loaded"
         );
@@ -309,6 +319,14 @@ pub struct ChallengerConfig {
     /// Set to >0.0 for testing defense mechanisms.
     pub malicious_challenge_percentage: f64,
 
+    /// Maximum time (in seconds) to wait for an L1 transaction submitted by the challenger to
+    /// reach the required number of confirmations before the watcher gives up. Setting this
+    /// too low risks declaring "confirmation timeout" on transactions that actually land on
+    /// chain, which can lead to redundant retries. Defaults to 60 to preserve the historical
+    /// signer behavior; raise it (e.g. 180) on networks where mempool inclusion plus the
+    /// configured confirmation depth needs more headroom.
+    pub tx_confirmation_timeout: u64,
+
     /// Disables monitor-only mode so the challenger can send challenge transactions.
     pub disable_monitor_only: bool,
 }
@@ -330,6 +348,9 @@ impl ChallengerConfig {
             malicious_challenge_percentage: env::var("MALICIOUS_CHALLENGE_PERCENTAGE")
                 .unwrap_or("0.0".to_string())
                 .parse()?,
+            tx_confirmation_timeout: env::var("TX_CONFIRMATION_TIMEOUT")
+                .unwrap_or("60".to_string())
+                .parse()?,
             disable_monitor_only: env::var("DISABLE_MONITOR_ONLY")
                 .unwrap_or("false".to_string())
                 .parse()?,
@@ -347,6 +368,7 @@ impl ChallengerConfig {
             fetch_interval = self.fetch_interval,
             metrics_port = self.metrics_port,
             malicious_challenge_percentage = self.malicious_challenge_percentage,
+            tx_confirmation_timeout = self.tx_confirmation_timeout,
             disable_monitor_only = self.disable_monitor_only,
             "Challenger configuration loaded"
         );
