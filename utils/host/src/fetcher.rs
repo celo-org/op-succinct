@@ -351,8 +351,8 @@ impl OPSuccinctDataFetcher {
         }
     }
 
-    /// Fetch rollup config from celo-registry if available, otherwise fetch from node RPC and save it to a file.
-    /// Compares registry vs node RPC to detect hardfork transitions.
+    /// Fetch rollup config from celo-registry if available, otherwise fetch from node RPC and save
+    /// it to a file. Compares registry vs node RPC to detect hardfork transitions.
     async fn fetch_and_save_rollup_config(
         rpc_config: &RPCConfig,
     ) -> Result<(CeloRollupConfig, PathBuf)> {
@@ -892,6 +892,7 @@ impl OPSuccinctDataFetcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kona_genesis::RollupConfig;
     use tempfile::TempDir;
 
     fn test_rollup_config(chain_id: u64) -> CeloRollupConfig {

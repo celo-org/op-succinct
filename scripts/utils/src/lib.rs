@@ -95,6 +95,7 @@ mod tests {
             prove: false,
             safe_db_fallback: false,
             cluster_timeout: 21600,
+            log_only: false,
         }
     }
 
