@@ -54,6 +54,7 @@ alloy-consensus.workspace = true
 alloy-contract.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
+alloy-trie.workspace = true
 alloy-provider.workspace = true
 alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
@@ -96,4 +97,5 @@ opentelemetry-otlp.workspace = true
 opentelemetry-appender-tracing.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 rstest = "0.26"

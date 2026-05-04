@@ -178,7 +178,7 @@ async fn main() -> Result<()> {
             (1, Some(SP1ProofMode::Groth16)) => "0x397A5f7f3dBd538f23DE225B51f532c34448dA9B",
             (1, Some(SP1ProofMode::Plonk)) => "0x3B6041173B80E77f038f3F2C0f9744f04837185e",
             (11155111, Some(SP1ProofMode::Groth16)) => "0x397A5f7f3dBd538f23DE225B51f532c34448dA9B",
-            (11155111, Some(SP1ProofMode::Plonk)) => "0x3B6041173B80E77f038f3F2C0f9744f04837185e",
+            (11155111, Some(SP1ProofMode::Plonk)) => "0xd685a80aF2d1761648e56716af4868d850Dae49B",
             _ => anyhow::bail!(
                 "Unsupported verifier: l1_chain_id={l1_chain_id}, agg_proof_mode={:?}",
                 config.agg_proving_config.mode

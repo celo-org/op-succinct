@@ -2,15 +2,14 @@ use std::{
     cmp::{min, Ordering},
     env, fs,
     path::PathBuf,
-    str::FromStr,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use crate::rpc_types::{OutputResponse, SafeHeadResponse};
 use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::{BlockId, BlockNumberOrTag};
-use alloy_primitives::{keccak256, Address, Bytes, B256, U256, U64};
+use alloy_primitives::{address, keccak256, Address, Bytes, B256, U256, U64};
 use alloy_provider::{Provider, ProviderBuilder, RootProvider};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolValue;
@@ -30,6 +29,30 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::L2Output;
+
+/// L2ToL1MessagePasser predeploy address (OP Stack).
+const L2_TO_L1_MESSAGE_PASSER: Address = address!("0x4200000000000000000000000000000000000016");
+
+/// Resolve the L2ToL1MessagePasser storage root from a block.
+///
+/// Post-Isthmus, the header's `withdrawals_root` field carries this value directly.
+/// Pre-Isthmus (Canyon→Fjord), `withdrawals_root` is set to `EMPTY_ROOT_HASH`,
+/// so we fall back to `eth_getProof`.
+/// Ref: <https://specs.optimism.io/protocol/isthmus/exec-engine.html>
+async fn l2_to_l1_message_passer_storage_root(
+    provider: &RootProvider<Celo>,
+    header: &Header,
+    block_number: u64,
+) -> Result<B256> {
+    match header.withdrawals_root {
+        Some(root) if root != alloy_trie::EMPTY_ROOT_HASH => Ok(root),
+        _ => Ok(provider
+            .get_proof(L2_TO_L1_MESSAGE_PASSER, Vec::new())
+            .block_id(block_number.into())
+            .await?
+            .storage_hash),
+    }
+}
 
 #[derive(Clone)]
 /// The OPSuccinctDataFetcher struct is used to fetch the L2 output data and L2 claim data for a
@@ -192,20 +215,38 @@ impl OPSuccinctDataFetcher {
             .map(|block_number| async move {
                 let block =
                     self.l2_provider.get_block_by_number(block_number.into()).await?.unwrap();
-                let receipts =
-                    self.l2_provider.get_block_receipts(block_number.into()).await?.unwrap();
-                let total_l1_fees: u128 =
-                    receipts.iter().map(|tx| tx.l1_block_info.l1_fee.unwrap_or(0)).sum();
-                let total_tx_fees: u128 = receipts
-                    .iter()
-                    .map(|tx| {
-                        // tx.inner.effective_gas_price * tx.inner.gas_used +
-                        // tx.l1_block_info.l1_fee is the total fee for the transaction.
-                        // tx.inner.effective_gas_price * tx.inner.gas_used is the tx fee on L2.
-                        tx.inner.effective_gas_price * tx.inner.gas_used as u128 +
-                            tx.l1_block_info.l1_fee.unwrap_or(0)
-                    })
-                    .sum();
+                let (total_l1_fees, total_tx_fees) =
+                    match self.l2_provider.get_block_receipts(block_number.into()).await {
+                        Ok(Some(receipts)) => {
+                            let l1_fees: u128 = receipts
+                                .iter()
+                                .map(|tx| tx.l1_block_info.l1_fee.unwrap_or(0))
+                                .sum();
+                            let tx_fees: u128 = receipts
+                                .iter()
+                                .map(|tx| {
+                                    tx.inner.effective_gas_price * tx.inner.gas_used as u128 +
+                                        tx.l1_block_info.l1_fee.unwrap_or(0)
+                                })
+                                .sum();
+                            (l1_fees, tx_fees)
+                        }
+                        Ok(None) => {
+                            tracing::warn!(
+                                block_number,
+                                "eth_getBlockReceipts returned None; fee data will be zero"
+                            );
+                            (0u128, 0u128)
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                block_number,
+                                error = %e,
+                                "eth_getBlockReceipts failed; fee data will be zero"
+                            );
+                            (0u128, 0u128)
+                        }
+                    };
 
                 Ok(BlockInfo {
                     block_number,
@@ -310,7 +351,8 @@ impl OPSuccinctDataFetcher {
         }
     }
 
-    /// Fetch and save the rollup config to a temporary file.
+    /// Fetch rollup config from celo-registry if available, otherwise fetch from node RPC and save
+    /// it to a file. Compares registry vs node RPC to detect hardfork transitions.
     async fn fetch_and_save_rollup_config(
         rpc_config: &RPCConfig,
     ) -> Result<(CeloRollupConfig, PathBuf)> {
@@ -382,8 +424,43 @@ impl OPSuccinctDataFetcher {
             rollup_config_path.display()
         );
 
-        // Return both the rollup config and the path to the temporary file
         Ok((rollup_config, rollup_config_path))
+    }
+
+    /// Celo is using celo-registry for rollup config instead of relying on cached config.
+    #[allow(unused)]
+    /// Best-effort: compare cached config against node RPC, warn on mismatch (5s timeout).
+    /// Intentionally warn-only — mismatches are expected during hardfork transitions and the
+    /// on-chain vkey check is the authoritative gate for game creation.
+    async fn compare_config_with_rpc(cached: &CeloRollupConfig, rpc_config: &RPCConfig) {
+        let rpc_fetch = Self::fetch_rpc_data::<CeloRollupConfig>(
+            &rpc_config.l2_node_rpc,
+            "optimism_rollupConfig",
+            vec![],
+        );
+
+        match tokio::time::timeout(Duration::from_secs(5), rpc_fetch).await {
+            Ok(Ok(rpc_rollup_config)) => {
+                let cached_hash = hash_rollup_config(cached);
+                let rpc_hash = hash_rollup_config(&rpc_rollup_config);
+                if cached_hash == rpc_hash {
+                    tracing::info!("Cached rollup config matches node RPC");
+                } else {
+                    tracing::warn!(
+                        cached_hash = %cached_hash,
+                        rpc_hash = %rpc_hash,
+                        "Cached rollup config differs from node RPC — \
+                         expected during hardfork transitions"
+                    );
+                }
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "Could not fetch RPC config for comparison");
+            }
+            Err(_) => {
+                tracing::warn!("RPC config comparison timed out (5s)");
+            }
+        }
     }
 
     /// Fetch and save the L1 config based on the rollup config's L1 chain ID.
@@ -747,11 +824,12 @@ impl OPSuccinctDataFetcher {
             })?;
         let l2_output_state_root = l2_output_block.header.state_root;
         let agreed_l2_head_hash = l2_output_block.header.hash;
-        let l2_output_storage_hash = l2_provider
-            .get_proof(Address::from_str("0x4200000000000000000000000000000000000016")?, Vec::new())
-            .block_id(l2_start_block.into())
-            .await?
-            .storage_hash;
+        let l2_output_storage_hash = l2_to_l1_message_passer_storage_root(
+            l2_provider.as_ref(),
+            &l2_output_block.header.inner,
+            l2_start_block,
+        )
+        .await?;
 
         let l2_output_encoded = L2Output {
             zero: 0,
@@ -765,11 +843,12 @@ impl OPSuccinctDataFetcher {
         let l2_claim_block = l2_provider.get_block_by_number(l2_end_block.into()).await?.unwrap();
         let l2_claim_state_root = l2_claim_block.header.state_root;
         let l2_claim_hash = l2_claim_block.header.hash;
-        let l2_claim_storage_hash = l2_provider
-            .get_proof(Address::from_str("0x4200000000000000000000000000000000000016")?, Vec::new())
-            .block_id(l2_end_block.into())
-            .await?
-            .storage_hash;
+        let l2_claim_storage_hash = l2_to_l1_message_passer_storage_root(
+            l2_provider.as_ref(),
+            &l2_claim_block.header.inner,
+            l2_end_block,
+        )
+        .await?;
 
         let l2_claim_encoded = L2Output {
             zero: 0,
@@ -807,5 +886,39 @@ impl OPSuccinctDataFetcher {
             l1_config_path: self.l1_config_path.clone(),
             enable_experimental_witness_endpoint: false,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kona_genesis::RollupConfig;
+    use tempfile::TempDir;
+
+    fn test_rollup_config(chain_id: u64) -> CeloRollupConfig {
+        CeloRollupConfig(RollupConfig { l2_chain_id: chain_id.into(), ..Default::default() })
+    }
+
+    #[test]
+    fn config_hash_survives_round_trip() {
+        let dir = TempDir::new().unwrap();
+        let config = test_rollup_config(42220);
+        let hash_before = hash_rollup_config(&config);
+
+        let path = dir.path().join("42220.json");
+        fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+        let loaded: CeloRollupConfig =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+
+        assert_eq!(hash_before, hash_rollup_config(&loaded));
+    }
+
+    #[test]
+    fn different_configs_produce_different_hashes() {
+        let config_a = test_rollup_config(42220);
+        let mut config_b = test_rollup_config(42220);
+        config_b.block_time = config_a.block_time + 1;
+
+        assert_ne!(hash_rollup_config(&config_a), hash_rollup_config(&config_b));
     }
 }
