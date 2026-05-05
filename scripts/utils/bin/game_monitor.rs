@@ -16,7 +16,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     signal::unix::{signal, SignalKind},
@@ -144,6 +144,9 @@ struct GameData {
     game_address: Address,
     start_block: u64,
     end_block: u64,
+    /// L1 wall-clock time at which the game was created on the dispute game factory. Used for
+    /// age-based eviction in later commits.
+    created_at: SystemTime,
 }
 
 impl GameData {
@@ -550,6 +553,9 @@ async fn fetch_game_data<P: alloy_provider::Provider + Clone>(
 
     let game_address = game_info.proxy;
 
+    let created_at_secs = U256::from(game_info.timestamp).to::<u64>();
+    let created_at = UNIX_EPOCH + Duration::from_secs(created_at_secs);
+
     let game = OPSuccinctFaultDisputeGame::new(game_address, l1_provider);
 
     let l2_block_number =
@@ -562,7 +568,7 @@ async fn fetch_game_data<P: alloy_provider::Provider + Clone>(
         .context("failed to get starting block number")?
         .to::<u64>();
 
-    Ok(GameData { game_index, game_address, start_block, end_block: l2_block_number })
+    Ok(GameData { game_index, game_address, start_block, end_block: l2_block_number, created_at })
 }
 
 fn spawn_cost_estimator(
@@ -874,8 +880,11 @@ async fn main() -> Result<()> {
             };
 
             info!(
-                "Game {} covers L2 blocks {} to {}",
-                game_data.game_address, game_data.start_block, game_data.end_block
+                "Game {} covers L2 blocks {} to {} (created_at {:?})",
+                game_data.game_address,
+                game_data.start_block,
+                game_data.end_block,
+                game_data.created_at
             );
 
             let log_file = LogFile::new(
