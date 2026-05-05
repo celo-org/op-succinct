@@ -474,9 +474,8 @@ impl MonitorState {
                     if let Some(est) = self.running_processes.remove(&id) {
                         match est.kind {
                             AttemptKind::Primary { .. } => {
-                                let log_size = fs::metadata(&est.log_file.path)
-                                    .map(|m| m.len())
-                                    .unwrap_or(0);
+                                let log_size =
+                                    fs::metadata(&est.log_file.path).map(|m| m.len()).unwrap_or(0);
                                 if block_range > 0 {
                                     self.push_completion(CompletionRecord {
                                         duration,
@@ -569,10 +568,8 @@ impl MonitorState {
                 // and bump the attempt counter. The game is already in the sequence tracker
                 // from the original primary-retry exhaustion, so we do not call
                 // mark_game_completed again.
-                let Some(entry) = self
-                    .background_retries
-                    .iter_mut()
-                    .find(|bg| bg.game_index == game_index)
+                let Some(entry) =
+                    self.background_retries.iter_mut().find(|bg| bg.game_index == game_index)
                 else {
                     warn!(
                         "Background attempt {} for game {} failed ({}) but no background \
@@ -951,9 +948,8 @@ async fn main() -> Result<()> {
         }
     };
 
-    let background_retries: VecDeque<BackgroundRetry> = persisted_progress
-        .map(|p| p.background_retries.into_iter().collect())
-        .unwrap_or_default();
+    let background_retries: VecDeque<BackgroundRetry> =
+        persisted_progress.map(|p| p.background_retries.into_iter().collect()).unwrap_or_default();
     info!("Loaded {} persisted background retries", background_retries.len());
 
     let delay = Duration::from_secs(args.delay);
@@ -1008,22 +1004,12 @@ async fn main() -> Result<()> {
             );
         }
 
-        let now_sys = SystemTime::now();
-        let oldest_bg_age = state
-            .background_retries
-            .iter()
-            .filter_map(|bg| now_sys.duration_since(bg.game_created_at).ok())
-            .max();
         info!(
-            "Running: {}/{}, Pending: {}, Background: {} (oldest age: {})",
+            "Running: {}/{}, Pending: {}, Background pending: {}",
             state.running_processes.len(),
             args.max_concurrent,
             state.pending_games.len(),
             state.background_retries.len(),
-            match oldest_bg_age {
-                Some(age) => format!("{:.1}h", age.as_secs_f64() / 3600.0),
-                None => "n/a".to_string(),
-            }
         );
 
         let current_time = Instant::now();
@@ -1063,7 +1049,7 @@ async fn main() -> Result<()> {
 
             info!(
                 "Game {} covers L2 blocks {} to {} (created_at {:?})",
-                game_data.game_address,
+                pending.game_index,
                 game_data.start_block,
                 game_data.end_block,
                 game_data.created_at
@@ -1084,9 +1070,9 @@ async fn main() -> Result<()> {
                 &game_data,
             )?;
             info!(
-                "Started cost estimator for game {} at index {} (blocks {}-{})",
-                game_data.game_address,
+                "Started cost estimator for game at index {} address {} (blocks {}-{})",
                 game_data.game_index,
+                game_data.game_address,
                 game_data.start_block,
                 game_data.end_block
             );
@@ -1108,10 +1094,8 @@ async fn main() -> Result<()> {
 
         // Background-retry phase. Only consume slots if the primary queue has nothing
         // currently executable, so primary scheduling always wins on contention.
-        let primary_has_ready = state
-            .pending_games
-            .iter()
-            .any(|p| p.executable_at <= Instant::now());
+        let primary_has_ready =
+            state.pending_games.iter().any(|p| p.executable_at <= Instant::now());
         if !primary_has_ready {
             while state.can_spawn_new(args.max_concurrent) {
                 let now_sys = SystemTime::now();
@@ -1119,8 +1103,8 @@ async fn main() -> Result<()> {
                 // stays in background_retries while running so maybe_requeue can update it on
                 // failure; on success cleanup_finished_processes removes it.
                 let Some(bg_idx) = state.background_retries.iter().position(|bg| {
-                    bg.next_attempt_at <= now_sys
-                        && !state.running_processes.contains_key(&bg.game_index)
+                    bg.next_attempt_at <= now_sys &&
+                        !state.running_processes.contains_key(&bg.game_index)
                 }) else {
                     break;
                 };
@@ -1151,10 +1135,10 @@ async fn main() -> Result<()> {
 
                 let kind = AttemptKind::Background { attempts };
                 info!(
-                    "Game {} (index {}) background attempt {} starting (blocks {}-{}, \
+                    "Game at index {} address {} background attempt {} starting (blocks {}-{}, \
                      created_at {:?})",
-                    game_data.game_address,
                     game_data.game_index,
+                    game_data.game_address,
                     attempts,
                     game_data.start_block,
                     game_data.end_block,
