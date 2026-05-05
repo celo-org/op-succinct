@@ -1008,11 +1008,22 @@ async fn main() -> Result<()> {
             );
         }
 
+        let now_sys = SystemTime::now();
+        let oldest_bg_age = state
+            .background_retries
+            .iter()
+            .filter_map(|bg| now_sys.duration_since(bg.game_created_at).ok())
+            .max();
         info!(
-            "Running: {}/{}, Pending: {}",
+            "Running: {}/{}, Pending: {}, Background: {} (oldest age: {})",
             state.running_processes.len(),
             args.max_concurrent,
-            state.pending_games.len()
+            state.pending_games.len(),
+            state.background_retries.len(),
+            match oldest_bg_age {
+                Some(age) => format!("{:.1}h", age.as_secs_f64() / 3600.0),
+                None => "n/a".to_string(),
+            }
         );
 
         let current_time = Instant::now();
