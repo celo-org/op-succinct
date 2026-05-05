@@ -144,6 +144,9 @@ struct RunningEstimator {
     log_file: LogFile,
     block_range: u64,
     kind: AttemptKind,
+    /// L1 wall-clock time the game was created. Carried so that on failure we can populate a
+    /// `BackgroundRetry` with the correct creation timestamp.
+    game_created_at: SystemTime,
 }
 
 /// A game index discovered from the factory, once executable_at has passed the game can be
@@ -482,19 +485,25 @@ impl MonitorState {
                 ProcessAction::Kill { reason } => {
                     if let Some(mut est) = self.running_processes.remove(&id) {
                         let _ = est.process.kill();
-                        self.maybe_requeue(id, est.kind, &reason);
+                        self.maybe_requeue(id, est.kind, est.game_created_at, &reason);
                     }
                 }
                 ProcessAction::Retry { reason } => {
                     if let Some(est) = self.running_processes.remove(&id) {
-                        self.maybe_requeue(id, est.kind, &reason);
+                        self.maybe_requeue(id, est.kind, est.game_created_at, &reason);
                     }
                 }
             }
         }
     }
 
-    fn maybe_requeue(&mut self, game_index: u64, kind: AttemptKind, reason: &str) {
+    fn maybe_requeue(
+        &mut self,
+        game_index: u64,
+        kind: AttemptKind,
+        game_created_at: SystemTime,
+        reason: &str,
+    ) {
         let retries = kind.primary_retries();
         if retries < self.max_retries {
             let new_retries = retries + 1;
@@ -509,11 +518,28 @@ impl MonitorState {
                 kind: AttemptKind::Primary { retries: new_retries },
             });
         } else {
-            error!(
-                "Game {} failed after {} retries ({}), giving up.",
-                game_index, self.max_retries, reason
+            // Primary retries exhausted: mark the game completed so last_contiguous can advance,
+            // and move it onto the background-retry queue for low-priority long-tail attempts.
+            // The first background wait is `initial_game_delay * 2 * max_retries * 4`,
+            // continuing the primary linear schedule scaled by 4x.
+            let last_wait = self.initial_game_delay * 2 * self.max_retries * 4;
+            let next_attempt_at = SystemTime::now() + last_wait;
+            warn!(
+                "Game {} exhausted {} primary retries ({}); moving to background queue with first \
+                 attempt in {:?}",
+                game_index, self.max_retries, reason, last_wait
             );
+            self.background_retries.push_back(BackgroundRetry {
+                game_index,
+                game_created_at,
+                next_attempt_at,
+                last_wait,
+                attempts: 0,
+            });
             self.mark_game_completed(game_index);
+            // mark_game_completed already saves progress when last_contiguous advances; force a
+            // save here so the new background entry is persisted regardless.
+            self.save_progress();
         }
     }
 
@@ -969,6 +995,7 @@ async fn main() -> Result<()> {
                     log_file,
                     block_range: game_data.block_range(),
                     kind: pending.kind,
+                    game_created_at: game_data.created_at,
                 },
             );
 
