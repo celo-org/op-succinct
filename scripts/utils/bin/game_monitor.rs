@@ -118,6 +118,12 @@ pub struct GameMonitorArgs {
     /// Path to the progress file. Defaults to `<logs_dir>/progress.json`.
     #[arg(long)]
     pub progress_file: Option<PathBuf>,
+
+    /// Maximum age in seconds (relative to the L1 game creation timestamp) for background
+    /// retries. Once a background-queued game exceeds this age, it is evicted and no further
+    /// attempts are made. Default is 3.5 days (302400 seconds).
+    #[arg(long, default_value = "302400")]
+    pub background_retry_max_age_secs: u64,
 }
 
 /// Distinguishes between primary scheduling (initial attempt + bounded retries on failure) and
@@ -222,9 +228,11 @@ struct MonitorState {
     history_file: PathBuf,
     sequence_tracker: SequenceTracker,
     progress_file: PathBuf,
+    background_retry_max_age: Duration,
 }
 
 impl MonitorState {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         next_game_index: u64,
         initial_game_delay: Duration,
@@ -234,6 +242,7 @@ impl MonitorState {
         history_file: PathBuf,
         progress_file: PathBuf,
         background_retries: VecDeque<BackgroundRetry>,
+        background_retry_max_age: Duration,
     ) -> Self {
         let completion_history = Self::load_history(&history_file, max_history_length);
         info!(
@@ -254,6 +263,7 @@ impl MonitorState {
             history_file,
             sequence_tracker: SequenceTracker::new(next_game_index),
             progress_file,
+            background_retry_max_age,
         }
     }
 
@@ -585,6 +595,38 @@ impl MonitorState {
 
     fn can_spawn_new(&self, max_concurrent: usize) -> bool {
         self.running_processes.len() < max_concurrent
+    }
+
+    /// Evict any background-retry entries whose game age (relative to L1 game creation time)
+    /// exceeds `background_retry_max_age`. Currently-running entries are left in place; they
+    /// will be considered on the next sweep after they finish. Returns the number evicted.
+    fn evict_aged_background_retries(&mut self) -> usize {
+        let now = SystemTime::now();
+        let max_age = self.background_retry_max_age;
+        let running = &self.running_processes;
+        let before = self.background_retries.len();
+        self.background_retries.retain(|bg| {
+            // Don't evict an entry whose process is currently running; let it finish.
+            if running.contains_key(&bg.game_index) {
+                return true;
+            }
+            let age = now.duration_since(bg.game_created_at).unwrap_or(Duration::ZERO);
+            if age > max_age {
+                warn!(
+                    "Evicting background retry for game {} after {:?} (max age {:?}, \
+                     {} attempts)",
+                    bg.game_index, age, max_age, bg.attempts
+                );
+                false
+            } else {
+                true
+            }
+        });
+        let evicted = before - self.background_retries.len();
+        if evicted > 0 {
+            self.save_progress();
+        }
+        evicted
     }
 
     fn shutdown(&mut self) {
@@ -927,7 +969,12 @@ async fn main() -> Result<()> {
         history_file,
         progress_file,
         background_retries,
+        Duration::from_secs(args.background_retry_max_age_secs),
     );
+
+    // Run an eviction sweep up front to discard anything that aged out while the process was
+    // down.
+    state.evict_aged_background_retries();
 
     let poll_interval = Duration::from_secs(args.poll_interval);
 
@@ -950,6 +997,8 @@ async fn main() -> Result<()> {
         }
 
         state.cleanup_finished_processes();
+
+        state.evict_aged_background_retries();
 
         if args.max_logs_size_mb > 0 {
             enforce_log_space_limit(
