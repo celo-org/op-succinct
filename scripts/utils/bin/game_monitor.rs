@@ -120,13 +120,30 @@ pub struct GameMonitorArgs {
     pub progress_file: Option<PathBuf>,
 }
 
+/// Distinguishes between primary scheduling (initial attempt + bounded retries on failure) and
+/// background scheduling (long-tail retries that run only with spare capacity once primary
+/// retries are exhausted). Subsequent commits introduce the `Background` variant; this commit
+/// only refactors the existing `retries: u32` field into the `Primary` variant.
+#[derive(Clone, Copy, Debug)]
+enum AttemptKind {
+    Primary { retries: u32 },
+}
+
+impl AttemptKind {
+    fn primary_retries(&self) -> u32 {
+        match self {
+            AttemptKind::Primary { retries } => *retries,
+        }
+    }
+}
+
 /// Represents a running cost estimator process for a game.
 struct RunningEstimator {
     started_at: Instant,
     process: Child,
     log_file: LogFile,
     block_range: u64,
-    retries: u32,
+    kind: AttemptKind,
 }
 
 /// A game index discovered from the factory, once executable_at has passed the game can be
@@ -136,7 +153,7 @@ struct RunningEstimator {
 struct PendingGame {
     executable_at: Instant,
     game_index: u64,
-    retries: u32,
+    kind: AttemptKind,
 }
 
 struct GameData {
@@ -439,19 +456,20 @@ impl MonitorState {
                 ProcessAction::Kill { reason } => {
                     if let Some(mut est) = self.running_processes.remove(&id) {
                         let _ = est.process.kill();
-                        self.maybe_requeue(id, est.retries, &reason);
+                        self.maybe_requeue(id, est.kind, &reason);
                     }
                 }
                 ProcessAction::Retry { reason } => {
                     if let Some(est) = self.running_processes.remove(&id) {
-                        self.maybe_requeue(id, est.retries, &reason);
+                        self.maybe_requeue(id, est.kind, &reason);
                     }
                 }
             }
         }
     }
 
-    fn maybe_requeue(&mut self, game_index: u64, retries: u32, reason: &str) {
+    fn maybe_requeue(&mut self, game_index: u64, kind: AttemptKind, reason: &str) {
+        let retries = kind.primary_retries();
         if retries < self.max_retries {
             let new_retries = retries + 1;
             let delay = self.initial_game_delay * 2 * new_retries;
@@ -462,7 +480,7 @@ impl MonitorState {
             self.pending_games.push_front(PendingGame {
                 executable_at: Instant::now() + delay,
                 game_index,
-                retries: new_retries,
+                kind: AttemptKind::Primary { retries: new_retries },
             });
         } else {
             error!(
@@ -638,14 +656,15 @@ struct LogFile {
 }
 
 impl LogFile {
-    fn new(logs_dir: &Path, game_index: u64, game_address: Address, retries: u32) -> Self {
-        let path = if retries > 0 {
-            logs_dir.join(format!(
+    fn new(logs_dir: &Path, game_index: u64, game_address: Address, kind: AttemptKind) -> Self {
+        let path = match kind {
+            AttemptKind::Primary { retries: 0 } => {
+                logs_dir.join(format!("cost-estimator-{}-{}.log", game_index, game_address))
+            }
+            AttemptKind::Primary { retries } => logs_dir.join(format!(
                 "cost-estimator-{}-{}-retry{}.log",
                 game_index, game_address, retries
-            ))
-        } else {
-            logs_dir.join(format!("cost-estimator-{}-{}.log", game_index, game_address))
+            )),
         };
         Self { path }
     }
@@ -891,7 +910,7 @@ async fn main() -> Result<()> {
                 &args.logs_dir,
                 game_data.game_index,
                 game_data.game_address,
-                pending.retries,
+                pending.kind,
             );
 
             let child = spawn_cost_estimator(
@@ -915,7 +934,7 @@ async fn main() -> Result<()> {
                     process: child,
                     log_file,
                     block_range: game_data.block_range(),
-                    retries: pending.retries,
+                    kind: pending.kind,
                 },
             );
 
@@ -946,7 +965,7 @@ async fn main() -> Result<()> {
             state.pending_games.push_front(PendingGame {
                 executable_at: Instant::now() + state.initial_game_delay,
                 game_index,
-                retries: 0,
+                kind: AttemptKind::Primary { retries: 0 },
             });
         }
     }
