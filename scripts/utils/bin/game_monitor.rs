@@ -129,10 +129,12 @@ struct RunningEstimator {
     retries: u32,
 }
 
-/// A game index discovered from the factory, waiting for its delay to elapse before
-/// fetching game details and spawning the cost estimator.
+/// A game index discovered from the factory, once executable_at has passed the game can be
+/// executed. The delay before execution helps to reduce infrastructure synchronisation problems,
+/// such as what is the latest finalized block, and also provides a mechanism to delay re-execution
+/// when there may be some temporary infrastructure outage.
 struct PendingGame {
-    discovered_at: Instant,
+    executable_at: Instant,
     game_index: u64,
     retries: u32,
 }
@@ -176,6 +178,7 @@ struct MonitorState {
     running_processes: HashMap<u64, RunningEstimator>,
     pending_games: VecDeque<PendingGame>,
     next_game_index: u64,
+    initial_game_delay: Duration,
     completion_history: VecDeque<CompletionRecord>,
     max_process_duration_secs: u64,
     max_history_length: usize,
@@ -188,6 +191,7 @@ struct MonitorState {
 impl MonitorState {
     fn new(
         next_game_index: u64,
+        initial_game_delay: Duration,
         max_process_duration_secs: u64,
         max_history_length: usize,
         max_retries: u32,
@@ -204,6 +208,7 @@ impl MonitorState {
             running_processes: HashMap::new(),
             pending_games: VecDeque::new(),
             next_game_index,
+            initial_game_delay,
             completion_history,
             max_process_duration_secs,
             max_history_length,
@@ -446,12 +451,13 @@ impl MonitorState {
     fn maybe_requeue(&mut self, game_index: u64, retries: u32, reason: &str) {
         if retries < self.max_retries {
             let new_retries = retries + 1;
+            let delay = self.initial_game_delay * 2 * new_retries;
             warn!(
-                "Re-queuing game {} for retry {}/{} ({})",
-                game_index, new_retries, self.max_retries, reason
+                "Re-queuing game {} for retry {}/{} ({}) after {:?} delay",
+                game_index, new_retries, self.max_retries, reason, delay
             );
-            self.pending_games.push_back(PendingGame {
-                discovered_at: Instant::now(),
+            self.pending_games.push_front(PendingGame {
+                executable_at: Instant::now() + delay,
                 game_index,
                 retries: new_retries,
             });
@@ -763,10 +769,13 @@ async fn main() -> Result<()> {
         }
     };
 
+    let delay = Duration::from_secs(args.delay);
+
     let history_file =
         args.history_file.clone().unwrap_or_else(|| args.logs_dir.join("completion_history.json"));
     let mut state = MonitorState::new(
         next_game_index,
+        delay,
         args.max_process_duration_secs,
         args.max_history_length,
         args.cost_estimator_retries,
@@ -775,7 +784,6 @@ async fn main() -> Result<()> {
     );
 
     let poll_interval = Duration::from_secs(args.poll_interval);
-    let delay = Duration::from_secs(args.delay);
 
     let mut sigterm =
         signal(SignalKind::terminate()).context("Failed to register SIGTERM handler")?;
@@ -812,15 +820,18 @@ async fn main() -> Result<()> {
             state.pending_games.len()
         );
 
+        let current_time = Instant::now();
         // Process pending games whose delay has elapsed: fetch game info and spawn.
-        while let Some(pending) = state.pending_games.front() {
-            if !state.can_spawn_new(args.max_concurrent) {
-                break;
-            }
-            // Retries skip the discovery delay.
-            if pending.retries == 0 && pending.discovered_at.elapsed() < delay {
-                break;
-            }
+        while state.can_spawn_new(args.max_concurrent) {
+            // Find first executable game
+            let Some((idx, pending)) = state
+                .pending_games
+                .iter()
+                .enumerate()
+                .find(|(_, p)| p.executable_at <= current_time)
+            else {
+                break; // nothing ready in the queue
+            };
 
             let game_data = match fetch_game_data(pending, &factory, l1_provider.clone()).await {
                 Ok(data) => data,
@@ -829,7 +840,8 @@ async fn main() -> Result<()> {
                         "Skipping game at index {} (type {} != {})",
                         game_index, game_type, expected
                     );
-                    state.pending_games.pop_front();
+                    // Remove the game from pending games and mark completed.
+                    state.pending_games.remove(idx).unwrap();
                     state.mark_game_completed(game_index);
                     continue;
                 }
@@ -841,8 +853,6 @@ async fn main() -> Result<()> {
                     continue 'outer;
                 }
             };
-
-            let pending = state.pending_games.pop_front().unwrap();
 
             info!(
                 "Game {} covers L2 blocks {} to {}",
@@ -880,6 +890,9 @@ async fn main() -> Result<()> {
                     retries: pending.retries,
                 },
             );
+
+            // Remove the game from pending games
+            state.pending_games.remove(idx).unwrap();
         }
 
         // Discover new game indices and queue them for deferred processing.
@@ -900,10 +913,10 @@ async fn main() -> Result<()> {
 
             info!(
                 "Discovered new game at index {}, queuing for processing after {:?} delay",
-                game_index, delay
+                game_index, state.initial_game_delay
             );
-            state.pending_games.push_back(PendingGame {
-                discovered_at: Instant::now(),
+            state.pending_games.push_front(PendingGame {
+                executable_at: Instant::now() + state.initial_game_delay,
                 game_index,
                 retries: 0,
             });
