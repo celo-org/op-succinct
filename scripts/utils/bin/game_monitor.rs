@@ -1048,8 +1048,10 @@ async fn main() -> Result<()> {
                 };
 
             info!(
-                "Game {} covers L2 blocks {} to {} (created_at {:?})",
-                pending.game_index,
+                "Game at index {} address {} starting (blocks {}-{}, \
+                     created_at {:?})",
+                game_data.game_index,
+                game_data.game_address,
                 game_data.start_block,
                 game_data.end_block,
                 game_data.created_at
@@ -1069,13 +1071,6 @@ async fn main() -> Result<()> {
                 &log_file,
                 &game_data,
             )?;
-            info!(
-                "Started cost estimator for game at index {} address {} (blocks {}-{})",
-                game_data.game_index,
-                game_data.game_address,
-                game_data.start_block,
-                game_data.end_block
-            );
             state.running_processes.insert(
                 game_data.game_index,
                 RunningEstimator {
