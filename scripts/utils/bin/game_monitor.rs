@@ -189,14 +189,35 @@ struct CompletionRecord {
     block_range: u64,
 }
 
+/// A long-tail retry for a game whose primary retry budget has been exhausted. Background
+/// retries run only with spare capacity and survive process restarts via the persisted
+/// `ProgressState`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+struct BackgroundRetry {
+    game_index: u64,
+    /// L1 wall-clock time at which the game was created on the dispute game factory. Used to
+    /// enforce the maximum age before eviction.
+    game_created_at: SystemTime,
+    /// Wall-clock time at which the next attempt becomes eligible. `SystemTime` is used (rather
+    /// than `Instant`) so the value survives process restarts.
+    next_attempt_at: SystemTime,
+    /// Wait used before the most recent attempt; the next wait is `last_wait * 4`.
+    last_wait: Duration,
+    /// Number of background attempts performed so far for this game.
+    attempts: u32,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct ProgressState {
     last_contiguous: u64,
+    #[serde(default)]
+    background_retries: Vec<BackgroundRetry>,
 }
 
 struct MonitorState {
     running_processes: HashMap<u64, RunningEstimator>,
     pending_games: VecDeque<PendingGame>,
+    background_retries: VecDeque<BackgroundRetry>,
     next_game_index: u64,
     initial_game_delay: Duration,
     completion_history: VecDeque<CompletionRecord>,
@@ -217,6 +238,7 @@ impl MonitorState {
         max_retries: u32,
         history_file: PathBuf,
         progress_file: PathBuf,
+        background_retries: VecDeque<BackgroundRetry>,
     ) -> Self {
         let completion_history = Self::load_history(&history_file, max_history_length);
         info!(
@@ -227,6 +249,7 @@ impl MonitorState {
         Self {
             running_processes: HashMap::new(),
             pending_games: VecDeque::new(),
+            background_retries,
             next_game_index,
             initial_game_delay,
             completion_history,
@@ -264,7 +287,10 @@ impl MonitorState {
     }
 
     fn save_progress(&self) {
-        let state = ProgressState { last_contiguous: self.sequence_tracker.end() };
+        let state = ProgressState {
+            last_contiguous: self.sequence_tracker.end(),
+            background_retries: self.background_retries.iter().cloned().collect(),
+        };
         let data = match serde_json::to_string(&state) {
             Ok(data) => data,
             Err(e) => {
@@ -798,9 +824,11 @@ async fn main() -> Result<()> {
     let progress_file =
         args.progress_file.clone().unwrap_or_else(|| args.logs_dir.join("progress.json"));
 
+    let persisted_progress = MonitorState::load_progress(&progress_file);
+
     let next_game_index = if let Some(index) = args.start_index {
         index
-    } else if let Some(progress) = MonitorState::load_progress(&progress_file) {
+    } else if let Some(progress) = persisted_progress.as_ref() {
         let next = progress.last_contiguous + 1;
         info!("Resuming from persisted last contiguous {}", progress.last_contiguous);
         next
@@ -812,6 +840,11 @@ async fn main() -> Result<()> {
             n => n - 1,
         }
     };
+
+    let background_retries: VecDeque<BackgroundRetry> = persisted_progress
+        .map(|p| p.background_retries.into_iter().collect())
+        .unwrap_or_default();
+    info!("Loaded {} persisted background retries", background_retries.len());
 
     let delay = Duration::from_secs(args.delay);
 
@@ -825,6 +858,7 @@ async fn main() -> Result<()> {
         args.cost_estimator_retries,
         history_file,
         progress_file,
+        background_retries,
     );
 
     let poll_interval = Duration::from_secs(args.poll_interval);
