@@ -122,19 +122,11 @@ pub struct GameMonitorArgs {
 
 /// Distinguishes between primary scheduling (initial attempt + bounded retries on failure) and
 /// background scheduling (long-tail retries that run only with spare capacity once primary
-/// retries are exhausted). Subsequent commits introduce the `Background` variant; this commit
-/// only refactors the existing `retries: u32` field into the `Primary` variant.
+/// retries are exhausted).
 #[derive(Clone, Copy, Debug)]
 enum AttemptKind {
     Primary { retries: u32 },
-}
-
-impl AttemptKind {
-    fn primary_retries(&self) -> u32 {
-        match self {
-            AttemptKind::Primary { retries } => *retries,
-        }
-    }
+    Background { attempts: u32 },
 }
 
 /// Represents a running cost estimator process for a game.
@@ -470,16 +462,34 @@ impl MonitorState {
             match action {
                 ProcessAction::Success { duration, block_range } => {
                     if let Some(est) = self.running_processes.remove(&id) {
-                        let log_size =
-                            fs::metadata(&est.log_file.path).map(|m| m.len()).unwrap_or(0);
-                        if block_range > 0 {
-                            self.push_completion(CompletionRecord {
-                                duration,
-                                log_size,
-                                block_range,
-                            });
+                        match est.kind {
+                            AttemptKind::Primary { .. } => {
+                                let log_size = fs::metadata(&est.log_file.path)
+                                    .map(|m| m.len())
+                                    .unwrap_or(0);
+                                if block_range > 0 {
+                                    self.push_completion(CompletionRecord {
+                                        duration,
+                                        log_size,
+                                        block_range,
+                                    });
+                                }
+                                self.mark_game_completed(id);
+                            }
+                            AttemptKind::Background { attempts } => {
+                                // Game already marked completed when it entered the background
+                                // queue. Skip mark_game_completed (avoids the SequenceTracker
+                                // duplicate-add leak) and skip push_completion (delayed retries
+                                // would skew the median-based anomaly detection).
+                                info!(
+                                    "Background attempt {} for game {} succeeded; removing \
+                                     from background queue",
+                                    attempts, id
+                                );
+                                self.background_retries.retain(|bg| bg.game_index != id);
+                                self.save_progress();
+                            }
                         }
-                        self.mark_game_completed(id);
                     }
                 }
                 ProcessAction::Kill { reason } => {
@@ -504,42 +514,72 @@ impl MonitorState {
         game_created_at: SystemTime,
         reason: &str,
     ) {
-        let retries = kind.primary_retries();
-        if retries < self.max_retries {
-            let new_retries = retries + 1;
-            let delay = self.initial_game_delay * 2 * new_retries;
-            warn!(
-                "Re-queuing game {} for retry {}/{} ({}) after {:?} delay",
-                game_index, new_retries, self.max_retries, reason, delay
-            );
-            self.pending_games.push_front(PendingGame {
-                executable_at: Instant::now() + delay,
-                game_index,
-                kind: AttemptKind::Primary { retries: new_retries },
-            });
-        } else {
-            // Primary retries exhausted: mark the game completed so last_contiguous can advance,
-            // and move it onto the background-retry queue for low-priority long-tail attempts.
-            // The first background wait is `initial_game_delay * 2 * max_retries * 4`,
-            // continuing the primary linear schedule scaled by 4x.
-            let last_wait = self.initial_game_delay * 2 * self.max_retries * 4;
-            let next_attempt_at = SystemTime::now() + last_wait;
-            warn!(
-                "Game {} exhausted {} primary retries ({}); moving to background queue with first \
-                 attempt in {:?}",
-                game_index, self.max_retries, reason, last_wait
-            );
-            self.background_retries.push_back(BackgroundRetry {
-                game_index,
-                game_created_at,
-                next_attempt_at,
-                last_wait,
-                attempts: 0,
-            });
-            self.mark_game_completed(game_index);
-            // mark_game_completed already saves progress when last_contiguous advances; force a
-            // save here so the new background entry is persisted regardless.
-            self.save_progress();
+        match kind {
+            AttemptKind::Primary { retries } if retries < self.max_retries => {
+                let new_retries = retries + 1;
+                let delay = self.initial_game_delay * 2 * new_retries;
+                warn!(
+                    "Re-queuing game {} for retry {}/{} ({}) after {:?} delay",
+                    game_index, new_retries, self.max_retries, reason, delay
+                );
+                self.pending_games.push_front(PendingGame {
+                    executable_at: Instant::now() + delay,
+                    game_index,
+                    kind: AttemptKind::Primary { retries: new_retries },
+                });
+            }
+            AttemptKind::Primary { .. } => {
+                // Primary retries exhausted: mark the game completed so last_contiguous can
+                // advance, and move it onto the background-retry queue for low-priority
+                // long-tail attempts. The first background wait is
+                // `initial_game_delay * 2 * max_retries * 4`, continuing the primary linear
+                // schedule scaled by 4x. `max_retries.max(1)` guards against a 0-length wait
+                // when max_retries is configured to 0.
+                let last_wait = self.initial_game_delay * 2 * self.max_retries.max(1) * 4;
+                let next_attempt_at = SystemTime::now() + last_wait;
+                warn!(
+                    "Game {} exhausted {} primary retries ({}); moving to background queue with \
+                     first attempt in {:?}",
+                    game_index, self.max_retries, reason, last_wait
+                );
+                self.background_retries.push_back(BackgroundRetry {
+                    game_index,
+                    game_created_at,
+                    next_attempt_at,
+                    last_wait,
+                    attempts: 0,
+                });
+                self.mark_game_completed(game_index);
+                // mark_game_completed only saves when last_contiguous advances; force a save
+                // here so the new background entry is persisted regardless.
+                self.save_progress();
+            }
+            AttemptKind::Background { attempts } => {
+                // A background attempt failed. Update the existing entry with a 4x-longer wait
+                // and bump the attempt counter. The game is already in the sequence tracker
+                // from the original primary-retry exhaustion, so we do not call
+                // mark_game_completed again.
+                let Some(entry) = self
+                    .background_retries
+                    .iter_mut()
+                    .find(|bg| bg.game_index == game_index)
+                else {
+                    warn!(
+                        "Background attempt {} for game {} failed ({}) but no background \
+                         record was found; dropping",
+                        attempts, game_index, reason
+                    );
+                    return;
+                };
+                entry.last_wait *= 4;
+                entry.next_attempt_at = SystemTime::now() + entry.last_wait;
+                entry.attempts = attempts;
+                warn!(
+                    "Background attempt {} for game {} failed ({}); next attempt in {:?}",
+                    attempts, game_index, reason, entry.last_wait
+                );
+                self.save_progress();
+            }
         }
     }
 
@@ -604,12 +644,10 @@ enum FetchGameError {
 }
 
 async fn fetch_game_data<P: alloy_provider::Provider + Clone>(
-    pending: &PendingGame,
+    game_index: u64,
     factory: &DisputeGameFactoryInstance<P>,
     l1_provider: P,
 ) -> Result<GameData, FetchGameError> {
-    let game_index = pending.game_index;
-
     let game_info = factory
         .gameAtIndex(U256::from(game_index))
         .call()
@@ -716,6 +754,10 @@ impl LogFile {
             AttemptKind::Primary { retries } => logs_dir.join(format!(
                 "cost-estimator-{}-{}-retry{}.log",
                 game_index, game_address, retries
+            )),
+            AttemptKind::Background { attempts } => logs_dir.join(format!(
+                "cost-estimator-{}-{}-bg-retry{}.log",
+                game_index, game_address, attempts
             )),
         };
         Self { path }
@@ -937,26 +979,27 @@ async fn main() -> Result<()> {
                 break; // nothing ready in the queue
             };
 
-            let game_data = match fetch_game_data(pending, &factory, l1_provider.clone()).await {
-                Ok(data) => data,
-                Err(FetchGameError::WrongGameType { game_index, game_type, expected }) => {
-                    debug!(
-                        "Skipping game at index {} (type {} != {})",
-                        game_index, game_type, expected
-                    );
-                    // Remove the game from pending games and mark completed.
-                    state.pending_games.remove(idx).unwrap();
-                    state.mark_game_completed(game_index);
-                    continue;
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to fetch game data for index {}: {:#}. Retrying",
-                        pending.game_index, e
-                    );
-                    continue 'outer;
-                }
-            };
+            let game_data =
+                match fetch_game_data(pending.game_index, &factory, l1_provider.clone()).await {
+                    Ok(data) => data,
+                    Err(FetchGameError::WrongGameType { game_index, game_type, expected }) => {
+                        debug!(
+                            "Skipping game at index {} (type {} != {})",
+                            game_index, game_type, expected
+                        );
+                        // Remove the game from pending games and mark completed.
+                        state.pending_games.remove(idx).unwrap();
+                        state.mark_game_completed(game_index);
+                        continue;
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to fetch game data for index {}: {:#}. Retrying",
+                            pending.game_index, e
+                        );
+                        continue 'outer;
+                    }
+                };
 
             info!(
                 "Game {} covers L2 blocks {} to {} (created_at {:?})",
@@ -1001,6 +1044,87 @@ async fn main() -> Result<()> {
 
             // Remove the game from pending games
             state.pending_games.remove(idx).unwrap();
+        }
+
+        // Background-retry phase. Only consume slots if the primary queue has nothing
+        // currently executable, so primary scheduling always wins on contention.
+        let primary_has_ready = state
+            .pending_games
+            .iter()
+            .any(|p| p.executable_at <= Instant::now());
+        if !primary_has_ready {
+            while state.can_spawn_new(args.max_concurrent) {
+                let now_sys = SystemTime::now();
+                // Pick a ready background entry whose game isn't already running. The entry
+                // stays in background_retries while running so maybe_requeue can update it on
+                // failure; on success cleanup_finished_processes removes it.
+                let Some(bg_idx) = state.background_retries.iter().position(|bg| {
+                    bg.next_attempt_at <= now_sys
+                        && !state.running_processes.contains_key(&bg.game_index)
+                }) else {
+                    break;
+                };
+                let game_index = state.background_retries[bg_idx].game_index;
+                let attempts = state.background_retries[bg_idx].attempts + 1;
+
+                let game_data =
+                    match fetch_game_data(game_index, &factory, l1_provider.clone()).await {
+                        Ok(data) => data,
+                        Err(FetchGameError::WrongGameType { game_index, game_type, expected }) => {
+                            debug!(
+                                "Background retry for game {} skipped (type {} != {}); removing",
+                                game_index, game_type, expected
+                            );
+                            state.background_retries.remove(bg_idx);
+                            state.save_progress();
+                            continue;
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to fetch game data for background retry of index {}: \
+                                 {:#}. Retrying",
+                                game_index, e
+                            );
+                            continue 'outer;
+                        }
+                    };
+
+                let kind = AttemptKind::Background { attempts };
+                info!(
+                    "Game {} (index {}) background attempt {} starting (blocks {}-{}, \
+                     created_at {:?})",
+                    game_data.game_address,
+                    game_data.game_index,
+                    attempts,
+                    game_data.start_block,
+                    game_data.end_block,
+                    game_data.created_at
+                );
+                let log_file = LogFile::new(
+                    &args.logs_dir,
+                    game_data.game_index,
+                    game_data.game_address,
+                    kind,
+                );
+                let child = spawn_cost_estimator(
+                    &args.cost_estimator_binary_path,
+                    args.batch_size,
+                    &args.env_file,
+                    &log_file,
+                    &game_data,
+                )?;
+                state.running_processes.insert(
+                    game_data.game_index,
+                    RunningEstimator {
+                        started_at: Instant::now(),
+                        process: child,
+                        log_file,
+                        block_range: game_data.block_range(),
+                        kind,
+                        game_created_at: game_data.created_at,
+                    },
+                );
+            }
         }
 
         // Discover new game indices and queue them for deferred processing.
