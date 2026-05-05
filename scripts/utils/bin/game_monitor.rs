@@ -245,15 +245,15 @@ impl MonitorState {
 
     fn save_progress(&self) {
         let state = ProgressState { last_contiguous: self.sequence_tracker.end() };
-        match serde_json::to_string(&state) {
-            Ok(data) => {
-                if let Err(e) = fs::write(&self.progress_file, data) {
-                    warn!("Failed to write progress to {}: {}", self.progress_file.display(), e);
-                }
-            }
+        let data = match serde_json::to_string(&state) {
+            Ok(data) => data,
             Err(e) => {
                 warn!("Failed to serialize progress state: {}", e);
+                return;
             }
+        };
+        if let Err(e) = atomic_write(&self.progress_file, data.as_bytes()) {
+            warn!("Failed to write progress to {}: {}", self.progress_file.display(), e);
         }
     }
 
@@ -485,6 +485,25 @@ impl MonitorState {
             }
         }
     }
+}
+
+/// Write `data` to `path` atomically by writing to a temporary sibling file and renaming.
+fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    let tmp_path = match path.file_name() {
+        Some(name) => {
+            let mut tmp_name = name.to_os_string();
+            tmp_name.push(".tmp");
+            path.with_file_name(tmp_name)
+        }
+        None => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "path has no file name",
+            ));
+        }
+    };
+    fs::write(&tmp_path, data)?;
+    fs::rename(&tmp_path, path)
 }
 
 /// Compute the median of a slice of f64 values. Returns if the length of the slice is below the
