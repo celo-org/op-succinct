@@ -179,6 +179,32 @@ enum ProcessAction {
     Retry { reason: String },
 }
 
+/// Outcome of a single `spawn_game` invocation. Callers use this to decide whether to keep
+/// pulling from their queue or to yield back to the outer poll loop.
+#[must_use]
+#[derive(Debug, PartialEq, Eq)]
+enum SpawnOutcome {
+    /// Process started and inserted into `running_processes`. Queue-specific success cleanup
+    /// has already been performed inside `spawn_game`.
+    Spawned,
+    /// The game has the wrong type for this monitor; queue-specific cleanup has been performed.
+    WrongGameType,
+    /// Fetching game data from L1/L2 failed. Queues are unmodified so the entry will be retried
+    /// on the next poll. Callers typically `continue 'outer` to abandon the current iteration.
+    FetchFailed,
+}
+
+/// Bundles the per-spawn configuration that doesn't change across loop iterations. Built once
+/// in `main` and passed by reference to `MonitorState::spawn_game`.
+struct SpawnContext<'a, P: alloy_provider::Provider + Clone> {
+    factory: &'a DisputeGameFactoryInstance<P>,
+    l1_provider: &'a P,
+    cost_estimator_binary_path: &'a Path,
+    batch_size: u64,
+    env_file: &'a Path,
+    logs_dir: &'a Path,
+}
+
 /// A record of a successfully completed cost estimator process, used for anomaly detection.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct CompletionRecord {
@@ -637,6 +663,94 @@ impl MonitorState {
             }
         }
     }
+
+    /// Fetch game data, spawn a cost estimator, and insert into `running_processes`.
+    /// Queue-specific cleanup (on both `WrongGameType` and successful spawn) is performed
+    /// internally based on `kind`, so the call sites only have to pick a candidate and react
+    /// to the returned outcome.
+    async fn spawn_game<P: alloy_provider::Provider + Clone>(
+        &mut self,
+        game_index: u64,
+        kind: AttemptKind,
+        ctx: &SpawnContext<'_, P>,
+    ) -> Result<SpawnOutcome> {
+        let game_data =
+            match fetch_game_data(game_index, ctx.factory, ctx.l1_provider.clone()).await {
+                Ok(data) => data,
+                Err(FetchGameError::WrongGameType { game_index, game_type, expected }) => {
+                    debug!(
+                        "Skipping game at index {} (type {} != {})",
+                        game_index, game_type, expected
+                    );
+                    self.handle_wrong_game_type(game_index, kind);
+                    return Ok(SpawnOutcome::WrongGameType);
+                }
+                Err(e) => {
+                    warn!("Failed to fetch game data for index {}: {:#}. Retrying", game_index, e);
+                    return Ok(SpawnOutcome::FetchFailed);
+                }
+            };
+
+        let log_file =
+            LogFile::new(ctx.logs_dir, game_data.game_index, game_data.game_address, kind);
+        let child = spawn_cost_estimator(
+            ctx.cost_estimator_binary_path,
+            ctx.batch_size,
+            ctx.env_file,
+            &log_file,
+            &game_data,
+        )?;
+
+        let kind_descr = match kind {
+            AttemptKind::Primary { retries: 0 } => "primary".to_string(),
+            AttemptKind::Primary { retries } => format!("primary retry {}", retries),
+            AttemptKind::Background { attempts } => format!("background attempt {}", attempts),
+        };
+        info!(
+            "Starting cost estimator [{}] for game at index {} address {} (blocks {}-{}, \
+             created_at {:?})",
+            kind_descr,
+            game_data.game_index,
+            game_data.game_address,
+            game_data.start_block,
+            game_data.end_block,
+            game_data.created_at,
+        );
+
+        self.running_processes.insert(
+            game_data.game_index,
+            RunningEstimator {
+                started_at: Instant::now(),
+                process: child,
+                log_file,
+                block_range: game_data.block_range(),
+                kind,
+                game_created_at: game_data.created_at,
+            },
+        );
+
+        // On-success queue-specific cleanup. Background entries stay in `background_retries`
+        // while running so `maybe_requeue` can update them on failure.
+        if matches!(kind, AttemptKind::Primary { .. }) {
+            self.pending_games.retain(|p| p.game_index != game_data.game_index);
+        }
+
+        Ok(SpawnOutcome::Spawned)
+    }
+
+    /// WrongGameType cleanup, dispatched by `kind`.
+    fn handle_wrong_game_type(&mut self, game_index: u64, kind: AttemptKind) {
+        match kind {
+            AttemptKind::Primary { .. } => {
+                self.pending_games.retain(|p| p.game_index != game_index);
+                self.mark_game_completed(game_index);
+            }
+            AttemptKind::Background { .. } => {
+                self.background_retries.retain(|bg| bg.game_index != game_index);
+                self.save_progress();
+            }
+        }
+    }
 }
 
 /// Write `data` to `path` atomically by writing to a temporary sibling file and renaming.
@@ -719,7 +833,7 @@ async fn fetch_game_data<P: alloy_provider::Provider + Clone>(
 }
 
 fn spawn_cost_estimator(
-    cost_estimator_binary_path: &PathBuf,
+    cost_estimator_binary_path: &Path,
     batch_size: u64,
     env_file: &Path,
     log_file: &LogFile,
@@ -979,6 +1093,15 @@ async fn main() -> Result<()> {
     let mut sigint =
         signal(SignalKind::interrupt()).context("Failed to register SIGINT handler")?;
 
+    let spawn_ctx = SpawnContext {
+        factory: &factory,
+        l1_provider: &l1_provider,
+        cost_estimator_binary_path: args.cost_estimator_binary_path.as_path(),
+        batch_size: args.batch_size,
+        env_file: args.env_file.as_path(),
+        logs_dir: args.logs_dir.as_path(),
+    };
+
     'outer: loop {
         tokio::select! {
             _ = sleep(poll_interval) => {}
@@ -1013,156 +1136,48 @@ async fn main() -> Result<()> {
         );
 
         let current_time = Instant::now();
-        // Process pending games whose delay has elapsed: fetch game info and spawn.
+        // Primary phase: drain pending_games entries whose delay has elapsed.
         while state.can_spawn_new(args.max_concurrent) {
-            // Find first executable game
-            let Some((idx, pending)) = state
+            let Some((game_index, kind)) = state
                 .pending_games
                 .iter()
-                .enumerate()
-                .find(|(_, p)| p.executable_at <= current_time)
+                .find(|p| p.executable_at <= current_time)
+                .map(|p| (p.game_index, p.kind))
             else {
                 break; // nothing ready in the queue
             };
-
-            let game_data =
-                match fetch_game_data(pending.game_index, &factory, l1_provider.clone()).await {
-                    Ok(data) => data,
-                    Err(FetchGameError::WrongGameType { game_index, game_type, expected }) => {
-                        debug!(
-                            "Skipping game at index {} (type {} != {})",
-                            game_index, game_type, expected
-                        );
-                        // Remove the game from pending games and mark completed.
-                        state.pending_games.remove(idx).unwrap();
-                        state.mark_game_completed(game_index);
-                        continue;
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to fetch game data for index {}: {:#}. Retrying",
-                            pending.game_index, e
-                        );
-                        continue 'outer;
-                    }
-                };
-
-            info!(
-                "Game at index {} address {} starting (blocks {}-{}, \
-                     created_at {:?})",
-                game_data.game_index,
-                game_data.game_address,
-                game_data.start_block,
-                game_data.end_block,
-                game_data.created_at
-            );
-
-            let log_file = LogFile::new(
-                &args.logs_dir,
-                game_data.game_index,
-                game_data.game_address,
-                pending.kind,
-            );
-
-            let child = spawn_cost_estimator(
-                &args.cost_estimator_binary_path,
-                args.batch_size,
-                &args.env_file,
-                &log_file,
-                &game_data,
-            )?;
-            state.running_processes.insert(
-                game_data.game_index,
-                RunningEstimator {
-                    started_at: Instant::now(),
-                    process: child,
-                    log_file,
-                    block_range: game_data.block_range(),
-                    kind: pending.kind,
-                    game_created_at: game_data.created_at,
-                },
-            );
-
-            // Remove the game from pending games
-            state.pending_games.remove(idx).unwrap();
+            if state.spawn_game(game_index, kind, &spawn_ctx).await? == SpawnOutcome::FetchFailed {
+                continue 'outer;
+            }
         }
 
-        // Background-retry phase. Only consume slots if the primary queue has nothing
-        // currently executable, so primary scheduling always wins on contention.
+        // Background phase. Only consume slots if the primary queue has nothing currently
+        // executable, so primary scheduling always wins on contention. Entries stay in
+        // background_retries while running so maybe_requeue can update them on failure;
+        // cleanup_finished_processes removes them on success.
         let primary_has_ready =
             state.pending_games.iter().any(|p| p.executable_at <= Instant::now());
         if !primary_has_ready {
             while state.can_spawn_new(args.max_concurrent) {
                 let now_sys = SystemTime::now();
-                // Pick a ready background entry whose game isn't already running. The entry
-                // stays in background_retries while running so maybe_requeue can update it on
-                // failure; on success cleanup_finished_processes removes it.
-                let Some(bg_idx) = state.background_retries.iter().position(|bg| {
-                    bg.next_attempt_at <= now_sys &&
-                        !state.running_processes.contains_key(&bg.game_index)
-                }) else {
+                let Some((game_index, kind)) = state
+                    .background_retries
+                    .iter()
+                    .find(|bg| {
+                        bg.next_attempt_at <= now_sys &&
+                            !state.running_processes.contains_key(&bg.game_index)
+                    })
+                    .map(|bg| {
+                        (bg.game_index, AttemptKind::Background { attempts: bg.attempts + 1 })
+                    })
+                else {
                     break;
                 };
-                let game_index = state.background_retries[bg_idx].game_index;
-                let attempts = state.background_retries[bg_idx].attempts + 1;
-
-                let game_data =
-                    match fetch_game_data(game_index, &factory, l1_provider.clone()).await {
-                        Ok(data) => data,
-                        Err(FetchGameError::WrongGameType { game_index, game_type, expected }) => {
-                            debug!(
-                                "Background retry for game {} skipped (type {} != {}); removing",
-                                game_index, game_type, expected
-                            );
-                            state.background_retries.remove(bg_idx);
-                            state.save_progress();
-                            continue;
-                        }
-                        Err(e) => {
-                            warn!(
-                                "Failed to fetch game data for background retry of index {}: \
-                                 {:#}. Retrying",
-                                game_index, e
-                            );
-                            continue 'outer;
-                        }
-                    };
-
-                let kind = AttemptKind::Background { attempts };
-                info!(
-                    "Game at index {} address {} background attempt {} starting (blocks {}-{}, \
-                     created_at {:?})",
-                    game_data.game_index,
-                    game_data.game_address,
-                    attempts,
-                    game_data.start_block,
-                    game_data.end_block,
-                    game_data.created_at
-                );
-                let log_file = LogFile::new(
-                    &args.logs_dir,
-                    game_data.game_index,
-                    game_data.game_address,
-                    kind,
-                );
-                let child = spawn_cost_estimator(
-                    &args.cost_estimator_binary_path,
-                    args.batch_size,
-                    &args.env_file,
-                    &log_file,
-                    &game_data,
-                )?;
-                state.running_processes.insert(
-                    game_data.game_index,
-                    RunningEstimator {
-                        started_at: Instant::now(),
-                        process: child,
-                        log_file,
-                        block_range: game_data.block_range(),
-                        kind,
-                        game_created_at: game_data.created_at,
-                    },
-                );
+                if state.spawn_game(game_index, kind, &spawn_ctx).await? ==
+                    SpawnOutcome::FetchFailed
+                {
+                    continue 'outer;
+                }
             }
         }
 
