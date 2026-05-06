@@ -2,7 +2,7 @@ use alloy_eips::BlockId;
 use alloy_primitives::{Address, U256};
 use alloy_provider::ProviderBuilder;
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use fault_proof::contract::{
     DisputeGameFactory::DisputeGameFactoryInstance, OPSuccinctFaultDisputeGame,
 };
@@ -32,9 +32,38 @@ const MEDIAN_THRESHOLD: usize = 3;
 /// processes.
 const RUNTIME_KILL_MULTIPLIER: f64 = 5.0;
 
-/// Arguments for the game monitor.
+/// Top-level CLI for the game-monitor binary.
+///
+/// The binary historically exposed a single mode (the long-running daemon). It now multiplexes
+/// between subcommands so that one-shot operational tools can ship in the same image. New
+/// subcommands should be added to [`CliCommand`] rather than overloading [`RunArgs`].
 #[derive(Debug, Clone, Parser)]
-pub struct GameMonitorArgs {
+#[command(version, about = "Game monitor daemon and operational tools")]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: CliCommand,
+}
+
+/// Subcommands exposed by the game-monitor binary.
+///
+/// Named `CliCommand` rather than `Command` to avoid a clash with [`std::process::Command`],
+/// which is used elsewhere in this binary to spawn cost-estimator child processes.
+#[derive(Debug, Clone, Subcommand)]
+pub enum CliCommand {
+    /// Run the game monitor daemon (default behaviour prior to the subcommand split).
+    Run(RunArgs),
+    /// Generate JSON `BackgroundRetry` entries for splicing into a `progress.json` file.
+    ///
+    /// The output is a JSON array (a value suitable for the `background_retries` field of
+    /// `ProgressState`). The daemon must be stopped while editing `progress.json`; on next
+    /// startup it will load the spliced entries and schedule them through the normal
+    /// background-retry path.
+    GenBackgroundRetry(GenBackgroundRetryArgs),
+}
+
+/// Arguments for the game monitor daemon (the `run` subcommand).
+#[derive(Debug, Clone, Parser)]
+pub struct RunArgs {
     /// The environment file to use. This file should contain the following environment variables:
     ///
     /// - DISPUTE_GAME_FACTORY_ADDRESS: The address of the dispute game factory contract.
@@ -124,6 +153,44 @@ pub struct GameMonitorArgs {
     /// attempts are made. Default is 3.5 days (302400 seconds).
     #[arg(long, default_value = "302400")]
     pub background_retry_max_age_secs: u64,
+}
+
+/// Arguments for the `gen-background-retry` subcommand.
+///
+/// This subcommand is a one-shot tool: it does not write to disk, it just emits JSON to stdout.
+/// Operators are expected to redirect the output and splice it into a `progress.json` file by
+/// hand (or via `jq`).
+#[derive(Debug, Clone, Parser)]
+pub struct GenBackgroundRetryArgs {
+    /// L1 RPC URL used to look up each game's on-chain creation timestamp.
+    ///
+    /// Falls back to the `L1_RPC` environment variable if not provided. This makes it easy to
+    /// run the tool inside a deployed pod where the daemon's env is already configured.
+    #[arg(long, env = "L1_RPC")]
+    pub l1_rpc: String,
+
+    /// Address of the dispute game factory proxy on L1.
+    ///
+    /// Falls back to the `DISPUTE_GAME_FACTORY_ADDRESS` environment variable if not provided.
+    #[arg(long, env = "DISPUTE_GAME_FACTORY_ADDRESS")]
+    pub dispute_game_factory_address: Address,
+
+    /// `last_wait` value (in seconds) recorded on every emitted entry.
+    ///
+    /// This is the wait that the daemon will quadruple on the next failure. Picking a sensible
+    /// value matters: the daemon's normal exponential schedule starts at
+    /// `initial_game_delay * 2 * max_retries * 4` (about 80 minutes with default settings) and
+    /// each subsequent failure multiplies it by 4.
+    #[arg(long)]
+    pub last_wait_secs: u64,
+
+    /// One or more game indexes to emit background-retry entries for.
+    ///
+    /// Each index is fetched from the dispute game factory to populate `game_created_at`. The
+    /// command fails fast if any index can't be fetched or has the wrong game type, so a typo
+    /// is surfaced to the operator rather than silently producing a half-correct list.
+    #[arg(required = true, num_args = 1..)]
+    pub game_indexes: Vec<u64>,
 }
 
 /// Distinguishes between primary scheduling (initial attempt + bounded retries on failure) and
@@ -1011,10 +1078,27 @@ fn enforce_log_space_limit(
     }
 }
 
+/// Entry point. Parses the top-level subcommand and dispatches to the matching handler.
+///
+/// Logging setup is deferred to each subcommand: the daemon configures `sp1_sdk`'s logger so
+/// that operational logs go to stderr, while one-shot tools like `gen-background-retry`
+/// deliberately leave logging unconfigured to keep stdout clean for machine-readable output.
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = GameMonitorArgs::parse();
+    let cli = Cli::parse();
+    match cli.command {
+        CliCommand::Run(args) => run(args).await,
+        CliCommand::GenBackgroundRetry(args) => gen_background_retry(args).await,
+    }
+}
 
+/// Run the long-running game monitor daemon.
+///
+/// Loads the env file, initialises providers, restores any persisted progress from disk, then
+/// enters the poll loop until SIGINT or SIGTERM is received. On shutdown all in-flight
+/// cost-estimator processes are killed (their logs are also removed since a partial run is
+/// not useful for analysis).
+async fn run(args: RunArgs) -> Result<()> {
     // Load environment variables
     dotenv::from_path(&args.env_file).ok();
     sp1_sdk::utils::setup_logger();
@@ -1210,5 +1294,75 @@ async fn main() -> Result<()> {
     }
 
     state.shutdown();
+    Ok(())
+}
+
+/// Build a [`BackgroundRetry`] for `game_index` by fetching its on-chain creation timestamp.
+///
+/// Used by the [`gen_background_retry`] subcommand. Errors propagate from
+/// [`fetch_game_data`] including the `WrongGameType` case, so that operators see a clear
+/// failure if any of the requested indexes does not correspond to an
+/// `OPSuccinctFaultDisputeGame` of the expected `GAME_TYPE`.
+///
+/// `next_attempt_at` is set to `UNIX_EPOCH` so the entry is immediately eligible the next
+/// time the daemon starts. `attempts` is initialised to zero so the daemon's scheduling
+/// treats the first run as background attempt 1.
+async fn make_background_retry<P: alloy_provider::Provider + Clone>(
+    game_index: u64,
+    last_wait: Duration,
+    factory: &DisputeGameFactoryInstance<P>,
+    l1_provider: P,
+) -> Result<BackgroundRetry> {
+    let game = fetch_game_data(game_index, factory, l1_provider)
+        .await
+        .with_context(|| format!("failed to fetch game data for index {}", game_index))?;
+    Ok(BackgroundRetry {
+        game_index,
+        game_created_at: game.created_at,
+        next_attempt_at: UNIX_EPOCH,
+        last_wait,
+        attempts: 0,
+    })
+}
+
+/// Build [`BackgroundRetry`] entries for the supplied game indexes and print them as a JSON
+/// array on stdout.
+///
+/// The output is shaped exactly like the `background_retries` field of [`ProgressState`], so
+/// it can be spliced into a `progress.json` file (for example with `jq`):
+///
+/// ```sh
+/// game-monitor gen-background-retry \
+///     --last-wait-secs 4800 \
+///     12345 12346 > new-retries.json
+/// jq '.background_retries = $new' \
+///     --argjson new "$(cat new-retries.json)" \
+///     progress.json > progress.json.new
+/// mv progress.json.new progress.json
+/// ```
+///
+/// The daemon must be stopped while `progress.json` is being edited; on next startup it will
+/// load the spliced entries through [`MonitorState::load_progress`] and schedule them via the
+/// normal background-retry path.
+///
+/// All log output is suppressed (no logger is initialised) so that stdout contains only the
+/// JSON payload. Errors are returned to `main` and printed via `anyhow` on stderr.
+async fn gen_background_retry(args: GenBackgroundRetryArgs) -> Result<()> {
+    let l1_url = args.l1_rpc.parse().context("invalid L1 RPC URL")?;
+    let l1_provider = ProviderBuilder::new().connect_http(l1_url);
+    let factory =
+        DisputeGameFactoryInstance::new(args.dispute_game_factory_address, l1_provider.clone());
+    let last_wait = Duration::from_secs(args.last_wait_secs);
+
+    let mut entries = Vec::with_capacity(args.game_indexes.len());
+    for game_index in args.game_indexes {
+        let entry =
+            make_background_retry(game_index, last_wait, &factory, l1_provider.clone()).await?;
+        entries.push(entry);
+    }
+
+    let json = serde_json::to_string_pretty(&entries)
+        .context("failed to serialize background retries to JSON")?;
+    println!("{}", json);
     Ok(())
 }
