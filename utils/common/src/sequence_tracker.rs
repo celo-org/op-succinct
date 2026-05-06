@@ -22,6 +22,9 @@ impl SequenceTracker {
 
     /// Adds an index and eagerly advances `end` through any contiguous run.
     pub fn add(&mut self, index: u64) {
+        if index <= self.end {
+            return;
+        }
         self.pending.insert(index);
         let mut check_from = self.end + 1;
         while self.pending.remove(&check_from) {
@@ -113,8 +116,10 @@ mod tests {
         tracker.add(3);
         tracker.add(5);
         assert_eq!(tracker.end(), 5);
-        // Old indices just sit in pending harmlessly (or were never contiguous).
+        // Indices at or below `end` are dropped, not stashed in `pending`.
+        assert!(tracker.pending.is_empty());
         tracker.add(6);
         assert_eq!(tracker.end(), 6);
+        assert!(tracker.pending.is_empty());
     }
 }
