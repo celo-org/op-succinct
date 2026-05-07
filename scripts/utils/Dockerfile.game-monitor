@@ -63,5 +63,6 @@ RUN apt-get update && apt-get install -y \
 COPY --from=builder /app/target/release/cost-estimator /usr/local/bin/
 COPY --from=builder /app/target/release/game-monitor /usr/local/bin/
 
-# Copy script to manually rerun failed games
+# Copy operational scripts
 COPY --chmod=0755 scripts/utils/rerun-cost-estimator.sh .
+COPY --chmod=0755 scripts/utils/fetch-game-logs.sh .
