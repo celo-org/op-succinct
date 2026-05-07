@@ -535,15 +535,20 @@ impl MonitorState {
                                 }
                             }
                             if let Some(med_lpb) = median_lpb {
-                                let current_lpb = running_log_sizes.get(id).copied().unwrap_or(0)
-                                    as f64 /
-                                    estimator.block_range as f64;
+                                let current_log_bytes =
+                                    running_log_sizes.get(id).copied().unwrap_or(0) as f64;
+                                let current_lpb = current_log_bytes / estimator.block_range as f64;
                                 if current_lpb > LOG_VOLUME_KILL_MULTIPLIER * med_lpb {
+                                    let median_log_bytes =
+                                        med_lpb * estimator.block_range as f64;
                                     return Some(format!(
-                                        "log size ({:.1} MB) exceeds {:.0}x median ({:.1} MB)",
-                                        current_lpb / (1024.0 * 1024.0),
+                                        "log size ({:.1} MB, {:.0} bytes/block) exceeds \
+                                         {:.0}x median ({:.1} MB, {:.0} bytes/block)",
+                                        current_log_bytes / (1024.0 * 1024.0),
+                                        current_lpb,
                                         LOG_VOLUME_KILL_MULTIPLIER,
-                                        med_lpb / (1024.0 * 1024.0)
+                                        median_log_bytes / (1024.0 * 1024.0),
+                                        med_lpb,
                                     ));
                                 }
                             }
