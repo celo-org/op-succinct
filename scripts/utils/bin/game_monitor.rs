@@ -1,3 +1,18 @@
+//! Game monitor daemon and operational tools.
+//!
+//! Watches for new fault-proof dispute games on L1 and runs a `cost-estimator` child process
+//! for each in mock-proving mode. Implements a two-tier retry system:
+//!
+//! 1. **Primary**: fast retries with linear backoff (bounded by `--cost-estimator-retries`).
+//! 2. **Background**: long-tail retries with exponential 4x backoff, only using spare
+//!    execution slots, evicted after `--background-retry-max-age-secs`.
+//!
+//! Running processes are monitored for anomalies (excessive runtime or log volume relative to
+//! the median of recent completions) and killed if they exceed configurable multipliers.
+//!
+//! Progress (`last_contiguous` game index + background retry queue) is persisted to disk so
+//! the daemon can resume after restarts.
+
 use alloy_eips::BlockId;
 use alloy_primitives::{Address, U256};
 use alloy_provider::ProviderBuilder;
@@ -23,6 +38,7 @@ use tokio::{
     time::sleep,
 };
 
+/// The dispute game type we monitor. Games with a different type are skipped.
 const GAME_TYPE: u32 = 42;
 /// Kill a process if its log file is this many times larger than the median of peers.
 const LOG_VOLUME_KILL_MULTIPLIER: f64 = 10.0;
@@ -231,13 +247,16 @@ struct PendingGame {
     kind: AttemptKind,
 }
 
+/// On-chain metadata for a single dispute game, fetched from L1 via [`fetch_game_data`].
 struct GameData {
     game_index: u64,
     game_address: Address,
+    /// L2 block at which the game's execution range starts.
     start_block: u64,
+    /// L2 block at which the game's execution range ends.
     end_block: u64,
     /// L1 wall-clock time at which the game was created on the dispute game factory. Used for
-    /// age-based eviction in later commits.
+    /// age-based eviction of background retries.
     created_at: SystemTime,
 }
 
@@ -247,6 +266,9 @@ impl GameData {
     }
 }
 
+/// Deferred action determined during the process-scan phase of
+/// [`MonitorState::cleanup_finished_processes`]. Actions are collected first and applied
+/// afterwards to avoid mutating `running_processes` while iterating over it.
 enum ProcessAction {
     Success { duration: Duration, block_range: u64 },
     Kill { reason: String },
@@ -308,6 +330,11 @@ struct BackgroundRetry {
     attempts: u32,
 }
 
+/// The subset of daemon state that survives restarts, serialised to `progress.json`.
+///
+/// `last_contiguous` is the highest game index such that every index up to and including it
+/// has been processed (successfully or with retries exhausted). On startup the daemon resumes
+/// from `last_contiguous + 1`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct ProgressState {
     last_contiguous: u64,
@@ -315,19 +342,32 @@ struct ProgressState {
     background_retries: Vec<BackgroundRetry>,
 }
 
+/// The full mutable state of the running daemon. Not serialised directly; the persistable
+/// subset is extracted into [`ProgressState`] by [`save_progress`](Self::save_progress).
 struct MonitorState {
+    /// Currently executing cost-estimator child processes, keyed by game index.
     running_processes: HashMap<u64, RunningEstimator>,
+    /// Games waiting for their `executable_at` delay to elapse before spawning.
     pending_games: VecDeque<PendingGame>,
+    /// Games whose primary retries are exhausted, awaiting low-priority background attempts.
     background_retries: VecDeque<BackgroundRetry>,
+    /// The next game index to discover from the factory (monotonically increasing).
     next_game_index: u64,
+    /// Delay applied to newly discovered games and used as the base for retry backoff.
     initial_game_delay: Duration,
+    /// Sliding window of recent successful completions for anomaly detection.
     completion_history: VecDeque<CompletionRecord>,
+    /// Absolute ceiling on cost-estimator runtime before it is killed.
     max_process_duration_secs: u64,
+    /// Max entries in `completion_history`; oldest are evicted when full.
     max_history_length: usize,
+    /// Number of primary retries before a game moves to background.
     max_retries: u32,
     history_file: PathBuf,
+    /// Tracks out-of-order game completions to compute `last_contiguous`.
     sequence_tracker: SequenceTracker,
     progress_file: PathBuf,
+    /// Games older than this (from L1 creation time) are evicted from background retries.
     background_retry_max_age: Duration,
 }
 
@@ -367,6 +407,8 @@ impl MonitorState {
         }
     }
 
+    /// Load persisted progress from disk. Returns `None` if the file doesn't exist or can't
+    /// be parsed (a warning is logged in the latter case).
     fn load_progress(path: &Path) -> Option<ProgressState> {
         let data = match fs::read_to_string(path) {
             Ok(data) => data,
@@ -381,6 +423,8 @@ impl MonitorState {
         }
     }
 
+    /// Record a game as completed. If this causes `last_contiguous` to advance (i.e. there
+    /// are no more gaps below this index), progress is persisted to disk.
     fn mark_game_completed(&mut self, game_index: u64) {
         let old_end = self.sequence_tracker.end();
         self.sequence_tracker.add(game_index);
@@ -391,6 +435,7 @@ impl MonitorState {
         }
     }
 
+    /// Atomically write the current `last_contiguous` and `background_retries` to disk.
     fn save_progress(&self) {
         let state = ProgressState {
             last_contiguous: self.sequence_tracker.end(),
@@ -408,6 +453,7 @@ impl MonitorState {
         }
     }
 
+    /// Load completion history from disk, truncating to `max_length` if it has grown.
     fn load_history(path: &Path, max_length: usize) -> VecDeque<CompletionRecord> {
         let data = match fs::read_to_string(path) {
             Ok(data) => data,
@@ -426,6 +472,7 @@ impl MonitorState {
         records
     }
 
+    /// Atomically write the completion history to disk.
     fn save_history(&self) {
         match serde_json::to_string(&self.completion_history) {
             Ok(data) => {
@@ -443,6 +490,7 @@ impl MonitorState {
         }
     }
 
+    /// Append a completion record (evicting the oldest if at capacity) and persist to disk.
     fn push_completion(&mut self, record: CompletionRecord) {
         if self.max_history_length == 0 {
             return;
@@ -454,8 +502,20 @@ impl MonitorState {
         self.save_history();
     }
 
+    /// Poll all running processes and handle completions, failures, and anomalies.
+    ///
+    /// This is the core housekeeping method called at the top of each poll iteration. It:
+    /// 1. Computes median time-per-block and log-size-per-block from completion history.
+    /// 2. Scans each running process via `try_wait()`:
+    ///    - Exited successfully -> `ProcessAction::Success`
+    ///    - Exited with error   -> `ProcessAction::Retry`
+    ///    - Still running but exceeds duration/time/log anomaly thresholds -> `ProcessAction::Kill`
+    /// 3. Applies deferred actions: records completions, kills runaways, re-queues failures.
+    ///
+    /// Actions are collected into a `Vec` first because we can't mutate `running_processes`
+    /// (to remove entries or call `maybe_requeue`) while iterating over it.
     fn cleanup_finished_processes(&mut self) {
-        // Calculate median log size per block
+        // Calculate median log size per block from completion history for anomaly comparison.
         let lpb_values: Vec<f64> = self
             .completion_history
             .iter()
@@ -471,6 +531,8 @@ impl MonitorState {
             .collect();
         let median_tpb: Option<f64> = median(&tpb_values, MEDIAN_THRESHOLD);
 
+        // Snapshot current log file sizes for all running processes so we can compare
+        // against the median without re-reading metadata during the scan loop.
         let running_log_sizes: HashMap<u64, u64> = self
             .running_processes
             .iter()
@@ -516,6 +578,8 @@ impl MonitorState {
                     }
                 }
                 Ok(None) => {
+                    // Process still running. Check kill conditions using a closure that
+                    // returns Some(reason) on the first triggered condition.
                     let kill_reason = (|| {
                         if elapsed.as_secs() > self.max_process_duration_secs {
                             return Some(format!(
@@ -573,6 +637,7 @@ impl MonitorState {
             }
         }
 
+        // Apply deferred actions now that we're no longer borrowing running_processes.
         for (id, action) in process_actions {
             match action {
                 ProcessAction::Success { duration, block_range } => {
@@ -621,6 +686,12 @@ impl MonitorState {
         }
     }
 
+    /// Decide what to do with a failed game based on its `AttemptKind`:
+    ///
+    /// - **Primary with retries remaining**: re-queue to `pending_games` with linear backoff.
+    /// - **Primary with retries exhausted**: mark completed (so `last_contiguous` can advance),
+    ///   move to `background_retries` with the first exponential wait.
+    /// - **Background**: quadruple `last_wait` on the existing entry for the next attempt.
     fn maybe_requeue(
         &mut self,
         game_index: u64,
@@ -629,6 +700,7 @@ impl MonitorState {
         reason: &str,
     ) {
         match kind {
+            // Primary retry: re-queue with linear backoff (delay * 2 * retry_number).
             AttemptKind::Primary { retries } if retries < self.max_retries => {
                 let new_retries = retries + 1;
                 let delay = self.initial_game_delay * 2 * new_retries;
@@ -695,6 +767,7 @@ impl MonitorState {
         }
     }
 
+    /// Returns true if there are spare execution slots for new processes.
     fn can_spawn_new(&self, max_concurrent: usize) -> bool {
         self.running_processes.len() < max_concurrent
     }
@@ -731,6 +804,8 @@ impl MonitorState {
         evicted
     }
 
+    /// Graceful shutdown: kill all running cost-estimator processes and delete their log files
+    /// (incomplete logs are not useful for analysis).
     fn shutdown(&mut self) {
         info!("Shutting down: killing {} running processes", self.running_processes.len());
         for (id, mut est) in self.running_processes.drain() {
@@ -851,8 +926,8 @@ fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
     fs::rename(&tmp_path, path)
 }
 
-/// Compute the median of a slice of f64 values. Returns if the length of the slice is below the
-/// threshold.
+/// Compute the median of `values`. Returns `None` if fewer than `threshold` entries are
+/// available, preventing anomaly detection from triggering on insufficient data.
 fn median(values: &[f64], threshold: usize) -> Option<f64> {
     if values.len() < threshold {
         return None;
@@ -875,11 +950,16 @@ enum FetchGameError {
     Other(#[from] anyhow::Error),
 }
 
+/// Fetch on-chain metadata for a single game: type, address, L2 block range, creation time.
+///
+/// Returns [`FetchGameError::WrongGameType`] if the game's type doesn't match [`GAME_TYPE`],
+/// allowing callers to skip non-matching games without treating it as a transient failure.
 async fn fetch_game_data<P: alloy_provider::Provider + Clone>(
     game_index: u64,
     factory: &DisputeGameFactoryInstance<P>,
     l1_provider: P,
 ) -> Result<GameData, FetchGameError> {
+    // Look up game metadata from the factory contract.
     let game_info = factory
         .gameAtIndex(U256::from(game_index))
         .call()
@@ -911,6 +991,11 @@ async fn fetch_game_data<P: alloy_provider::Provider + Clone>(
     Ok(GameData { game_index, game_address, start_block, end_block: l2_block_number, created_at })
 }
 
+/// Spawn a `cost-estimator` child process for the given game.
+///
+/// The log file is pre-seeded with a header block containing the exact command and environment
+/// variables, so that a failed run can be replayed manually via `rerun-cost-estimator.sh`.
+/// Both stdout and stderr of the child are redirected into the log file.
 fn spawn_cost_estimator(
     cost_estimator_binary_path: &Path,
     batch_size: u64,
@@ -918,6 +1003,7 @@ fn spawn_cost_estimator(
     log_file: &LogFile,
     game_data: &GameData,
 ) -> Result<Child> {
+    // Cap batch size to the game's block range so small games run as a single chunk.
     let effective_batch_size = std::cmp::min(batch_size, game_data.block_range()).to_string();
     let args = [
         "--start",
@@ -973,11 +1059,19 @@ fn spawn_cost_estimator(
     Ok(child)
 }
 
+/// Manages the lifecycle of a per-game log file.
+///
+/// Log files follow the naming convention:
+/// `cost-estimator-<index>-<address>[-retry<n>][-bg-retry<n>].log`
+///
+/// On completion, [`mark_complete`](Self::mark_complete) appends `-success` or `-failure`
+/// before the `.log` extension.
 struct LogFile {
     path: PathBuf,
 }
 
 impl LogFile {
+    /// Build the log file path from the game index, address, and attempt kind.
     fn new(logs_dir: &Path, game_index: u64, game_address: Address, kind: AttemptKind) -> Self {
         let path = match kind {
             AttemptKind::Primary { retries: 0 } => {
@@ -995,6 +1089,8 @@ impl LogFile {
         Self { path }
     }
 
+    /// Parse the game index from a log filename. Used by log-space enforcement to identify
+    /// which game a log belongs to (so logs for running games are not deleted).
     fn extract_game_index(path: &Path) -> Option<u64> {
         let filename = path.file_name()?.to_str()?;
         let stripped = filename.strip_prefix("cost-estimator-")?;
@@ -1002,6 +1098,7 @@ impl LogFile {
         stripped[..dash_pos].parse().ok()
     }
 
+    /// Rename the log file to include a `-success` or `-failure` suffix before `.log`.
     fn mark_complete(&mut self, success: bool) {
         let Some(filename) = self.path.file_name().and_then(|f| f.to_str()) else {
             return;
@@ -1017,6 +1114,7 @@ impl LogFile {
             self.path = new_path;
         }
     }
+    /// List all log files with their sizes and game indexes, for log-space enforcement.
     fn sizes(logs_dir: &Path) -> Result<Vec<(PathBuf, u64, u64)>> {
         let mut log_files: Vec<(PathBuf, u64, u64)> = Vec::new();
         for entry in fs::read_dir(logs_dir)? {
@@ -1035,6 +1133,8 @@ impl LogFile {
     }
 }
 
+/// Delete the oldest log files (by game index) until the total log directory size is within
+/// `max_size_bytes`. Logs for currently running games are never deleted.
 fn enforce_log_space_limit(
     max_size_bytes: u64,
     running_game_indices: &HashMap<u64, RunningEstimator>,
@@ -1143,6 +1243,7 @@ async fn run(args: RunArgs) -> Result<()> {
 
     let persisted_progress = MonitorState::load_progress(&progress_file);
 
+    // Determine starting game index: explicit flag > persisted progress > latest on-chain.
     let next_game_index = if let Some(index) = args.start_index {
         index
     } else if let Some(progress) = persisted_progress.as_ref() {
@@ -1198,6 +1299,10 @@ async fn run(args: RunArgs) -> Result<()> {
         logs_dir: args.logs_dir.as_path(),
     };
 
+    // ── Main poll loop ──────────────────────────────────────────────────────
+    // Each iteration: cleanup -> evict -> enforce log limits -> spawn primary -> spawn
+    // background -> discover new games. The loop breaks on SIGTERM/SIGINT for graceful
+    // shutdown.
     'outer: loop {
         tokio::select! {
             _ = sleep(poll_interval) => {}
@@ -1211,10 +1316,13 @@ async fn run(args: RunArgs) -> Result<()> {
             }
         }
 
+        // Phase 1: handle completed/failed/runaway processes.
         state.cleanup_finished_processes();
 
+        // Phase 2: drop background retries that have exceeded their max age.
         state.evict_aged_background_retries();
 
+        // Phase 3: delete oldest log files if the directory exceeds the size limit.
         if args.max_logs_size_mb > 0 {
             enforce_log_space_limit(
                 args.max_logs_size_mb * 1024 * 1024,
@@ -1231,8 +1339,8 @@ async fn run(args: RunArgs) -> Result<()> {
             state.background_retries.len(),
         );
 
+        // Phase 4: spawn pending primary games whose delay has elapsed, up to max_concurrent.
         let current_time = Instant::now();
-        // Primary phase: drain pending_games entries whose delay has elapsed.
         while state.can_spawn_new(args.max_concurrent) {
             let Some((game_index, kind)) = state
                 .pending_games
@@ -1247,8 +1355,8 @@ async fn run(args: RunArgs) -> Result<()> {
             }
         }
 
-        // Background phase. Only consume slots if the primary queue has nothing currently
-        // executable, so primary scheduling always wins on contention. Entries stay in
+        // Phase 5: spawn background retries using spare slots. Only runs when no primary
+        // entries are ready, so primary scheduling always wins on contention. Entries stay in
         // background_retries while running so maybe_requeue can update them on failure;
         // cleanup_finished_processes removes them on success.
         let primary_has_ready =
@@ -1277,7 +1385,7 @@ async fn run(args: RunArgs) -> Result<()> {
             }
         }
 
-        // Discover new game indices and queue them for deferred processing.
+        // Phase 6: discover new game indexes from the factory and queue them with a delay.
         let current_game_count = match factory.gameCount().call().block(BlockId::finalized()).await
         {
             Ok(count) => count.to::<u64>(),
