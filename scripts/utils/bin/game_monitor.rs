@@ -429,7 +429,7 @@ impl MonitorState {
     fn save_history(&self) {
         match serde_json::to_string(&self.completion_history) {
             Ok(data) => {
-                if let Err(e) = fs::write(&self.history_file, data) {
+                if let Err(e) = atomic_write(&self.history_file, data.as_bytes()) {
                     warn!(
                         "Failed to write completion history to {}: {}",
                         self.history_file.display(),
