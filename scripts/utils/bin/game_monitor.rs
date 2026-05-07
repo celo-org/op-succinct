@@ -52,12 +52,11 @@ pub struct Cli {
 pub enum CliCommand {
     /// Run the game monitor daemon (default behaviour prior to the subcommand split).
     Run(RunArgs),
-    /// Generate JSON `BackgroundRetry` entries for splicing into a `progress.json` file.
+    /// Read an existing `progress.json`, generate `BackgroundRetry` entries for the given game
+    /// indexes, append them, and print the complete `ProgressState` as JSON to stdout.
     ///
-    /// The output is a JSON array (a value suitable for the `background_retries` field of
-    /// `ProgressState`). The daemon must be stopped while editing `progress.json`; on next
-    /// startup it will load the spliced entries and schedule them through the normal
-    /// background-retry path.
+    /// The daemon must be stopped while replacing `progress.json`; on next startup it will
+    /// load the updated entries and schedule them through the normal background-retry path.
     GenBackgroundRetry(GenBackgroundRetryArgs),
 }
 
@@ -157,11 +156,19 @@ pub struct RunArgs {
 
 /// Arguments for the `gen-background-retry` subcommand.
 ///
-/// This subcommand is a one-shot tool: it does not write to disk, it just emits JSON to stdout.
-/// Operators are expected to redirect the output and splice it into a `progress.json` file by
-/// hand (or via `jq`).
+/// This subcommand is a one-shot tool that reads an existing `progress.json`, appends newly
+/// generated [`BackgroundRetry`] entries, and writes the complete [`ProgressState`] to stdout.
+/// Operators can inspect the output and, if satisfied, redirect it to replace the original file.
 #[derive(Debug, Clone, Parser)]
 pub struct GenBackgroundRetryArgs {
+    /// Path to the existing `progress.json` file.
+    ///
+    /// The file is parsed as a [`ProgressState`]. The new background-retry entries are appended
+    /// to whatever is already in `background_retries`, and the full state (including
+    /// `last_contiguous`) is emitted to stdout. The original file is never modified.
+    #[arg(long)]
+    pub progress_file: PathBuf,
+
     /// L1 RPC URL used to look up each game's on-chain creation timestamp.
     ///
     /// Falls back to the `L1_RPC` environment variable if not provided. This makes it easy to
@@ -1325,44 +1332,43 @@ async fn make_background_retry<P: alloy_provider::Provider + Clone>(
     })
 }
 
-/// Build [`BackgroundRetry`] entries for the supplied game indexes and print them as a JSON
-/// array on stdout.
+/// Load an existing `progress.json`, generate [`BackgroundRetry`] entries for the supplied
+/// game indexes, append them to the existing state, and print the complete [`ProgressState`]
+/// as pretty-printed JSON on stdout.
 ///
-/// The output is shaped exactly like the `background_retries` field of [`ProgressState`], so
-/// it can be spliced into a `progress.json` file (for example with `jq`):
+/// Example usage (daemon must be stopped first):
 ///
 /// ```sh
 /// game-monitor gen-background-retry \
+///     --progress-file /logs/progress.json \
 ///     --last-wait-secs 4800 \
-///     12345 12346 > new-retries.json
-/// jq '.background_retries = $new' \
-///     --argjson new "$(cat new-retries.json)" \
-///     progress.json > progress.json.new
-/// mv progress.json.new progress.json
+///     12345 12346 > /logs/progress.json.new
+/// # inspect the output, then replace the original:
+/// mv /logs/progress.json.new /logs/progress.json
 /// ```
-///
-/// The daemon must be stopped while `progress.json` is being edited; on next startup it will
-/// load the spliced entries through [`MonitorState::load_progress`] and schedule them via the
-/// normal background-retry path.
 ///
 /// All log output is suppressed (no logger is initialised) so that stdout contains only the
 /// JSON payload. Errors are returned to `main` and printed via `anyhow` on stderr.
 async fn gen_background_retry(args: GenBackgroundRetryArgs) -> Result<()> {
+    let data = fs::read_to_string(&args.progress_file)
+        .with_context(|| format!("failed to read {}", args.progress_file.display()))?;
+    let mut state: ProgressState = serde_json::from_str(&data)
+        .with_context(|| format!("failed to parse {}", args.progress_file.display()))?;
+
     let l1_url = args.l1_rpc.parse().context("invalid L1 RPC URL")?;
     let l1_provider = ProviderBuilder::new().connect_http(l1_url);
     let factory =
         DisputeGameFactoryInstance::new(args.dispute_game_factory_address, l1_provider.clone());
     let last_wait = Duration::from_secs(args.last_wait_secs);
 
-    let mut entries = Vec::with_capacity(args.game_indexes.len());
     for game_index in args.game_indexes {
         let entry =
             make_background_retry(game_index, last_wait, &factory, l1_provider.clone()).await?;
-        entries.push(entry);
+        state.background_retries.push(entry);
     }
 
-    let json = serde_json::to_string_pretty(&entries)
-        .context("failed to serialize background retries to JSON")?;
+    let json = serde_json::to_string_pretty(&state)
+        .context("failed to serialize progress state to JSON")?;
     println!("{}", json);
     Ok(())
 }
