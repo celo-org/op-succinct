@@ -7968,7 +7968,7 @@ dependencies = [
 
 [[package]]
 name = "op-succinct-common"
-version = "4.0.1"
+version = "4.3.1"
 
 [[package]]
 name = "op-succinct-eigenda-client-utils"
