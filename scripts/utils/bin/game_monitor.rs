@@ -4,8 +4,8 @@
 //! for each in mock-proving mode. Implements a two-tier retry system:
 //!
 //! 1. **Primary**: fast retries with linear backoff (bounded by `--cost-estimator-retries`).
-//! 2. **Background**: long-tail retries with exponential 4x backoff, only using spare
-//!    execution slots, evicted after `--background-retry-max-age-secs`.
+//! 2. **Background**: long-tail retries with exponential 4x backoff, only using spare execution
+//!    slots, evicted after `--background-retry-max-age-secs`.
 //!
 //! Running processes are monitored for anomalies (excessive runtime or log volume relative to
 //! the median of recent completions) and killed if they exceed configurable multipliers.
@@ -603,8 +603,7 @@ impl MonitorState {
                                     running_log_sizes.get(id).copied().unwrap_or(0) as f64;
                                 let current_lpb = current_log_bytes / estimator.block_range as f64;
                                 if current_lpb > LOG_VOLUME_KILL_MULTIPLIER * med_lpb {
-                                    let median_log_bytes =
-                                        med_lpb * estimator.block_range as f64;
+                                    let median_log_bytes = med_lpb * estimator.block_range as f64;
                                     return Some(format!(
                                         "log size ({:.1} MB, {:.0} bytes/block) exceeds \
                                          {:.0}x median ({:.1} MB, {:.0} bytes/block)",
