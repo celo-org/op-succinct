@@ -1,7 +1,7 @@
 {
   "activateContracts": false,
-  "aggregationVkey": "0x00b37da93c30bef199e4f70190c46367ade11ab988c3cff4c661960919718afd",
-  "anchorStateRegistryAddress": "0x9F18D91949731E766f294A14027bBFE8F28328CC",
+  "aggregationVkey": "0x00b04647b693a1024f3f6524643693ac5445fbabe5cdfcd3b2d3d468274d4be4",
+  "anchorStateRegistryAddress": "0x8fE58d2168b5412Cf1Bd212cE6137f8b7300222d",
   "celoSuperchainConfigAddress": "0xa440975E5A6BB19Bc3Bee901d909BB24b0f43D33",
   "challengerAddresses": [
     "0x7247204E46B381149d99acF88b318713fE12c32f",
@@ -26,10 +26,11 @@
     "0x0B7de3F505AD7Fc9b38207CD8E2Adc7a604BFe62",
     "0x79D14553D6B3484F5612272B43c219A882415d33"
   ],
-  "rangeVkeyCommitment": "0x05ca7dfb1b7ca7a103fa36750d622f81182eb7c9679b9487418968400e2b1a29",
-  "rollupConfigHash": "0xa9c7f463d3a5bc60caec02bd0cea84f0d7c303b5cb7385e813224cd2c28aaab9",
-  "startingL2BlockNumber": 56358020,
-  "startingRoot": "0x815ebcc48c470de4a1ba339004eaa289c02903d934f28a18d6b0e93375e04cc1",
+  "rangeVkeyCommitment": "0x1dd60be45aa2e74722e16f3a7c2d3b0a3339c1b72dc4e5b513487da3528e5c94",
+  "rollupConfigHash": "0x0961504b7d498af8f8606bfd4e5fe8e14f7882ed3116b1c59ddfe51d4125633e",
+  "startingL2BlockNumber": 66912040,
+  "startingRoot": "0x7386008914a7e109f1631505ca9c0a7d27b842a7607bbc79a23b59cf9080f27a",
+  "systemConfigAddress": "0x89e31965d844a309231b1f17759ccaf1b7c09861",
   "useSp1MockVerifier": false,
   "verifierAddress": "0x3B6041173B80E77f038f3F2C0f9744f04837185e"
 }
