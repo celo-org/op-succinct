@@ -3,11 +3,11 @@
 //! On restart, the proposer can restore its cursor and game cache from a backup file,
 //! avoiding a full re-sync from the factory contract.
 
-use std::{collections::HashSet, io::Write, path::Path};
+use std::{io::Write, path::Path};
 
 use tempfile::NamedTempFile;
 
-use alloy_primitives::U256;
+use alloy_primitives::{Address, U256};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
@@ -23,41 +23,46 @@ pub struct ProposerBackup {
     pub cursor: Option<U256>,
     pub games: Vec<Game>,
     pub anchor_game_index: Option<U256>,
+    /// L2 block of the most recently created game. Prevents duplicate creation after
+    /// restart when the pinned sync cache hasn't caught up. Defaults to 0 for backups
+    /// created before this field existed.
+    #[serde(default)]
+    pub last_created_game_l2_block: u64,
+    /// Address of the most recently created game. Used for precise CHALLENGER_WINS
+    /// guard reset. Defaults to Address::ZERO (no guard) for old backups.
+    #[serde(default)]
+    pub last_created_game_address: Address,
 }
 
 impl ProposerBackup {
     /// Create a new backup with the current version.
     pub fn new(cursor: Option<U256>, games: Vec<Game>, anchor_game_index: Option<U256>) -> Self {
-        Self { version: BACKUP_VERSION, cursor, games, anchor_game_index }
+        Self {
+            version: BACKUP_VERSION,
+            cursor,
+            games,
+            anchor_game_index,
+            last_created_game_l2_block: 0,
+            last_created_game_address: Address::ZERO,
+        }
     }
 
-    /// Validate backup integrity.
-    ///
-    /// Checks for:
-    /// - Cursor exists but no games (likely stale/corrupted)
-    /// - Anchor game index references a non-existent game
-    /// - Games with parent indices that don't exist in the backup (orphaned games)
+    /// Validate backup integrity. Rejects stale/corrupted backups but allows orphaned parent
+    /// references, which are normal when anchor-based fetching or ASR filtering produce partial
+    /// DAGs.
     pub fn validate(&self) -> Result<()> {
-        // Check: cursor exists but no games
+        // Cursor with no games indicates a stale or corrupted backup.
         if let Some(cursor) = self.cursor {
             if self.games.is_empty() && cursor > U256::ZERO {
                 bail!("cursor exists but no games");
             }
         }
 
-        // Check: anchor game index references non-existent game
+        // Anchor must reference a game that exists in the backup.
         if let Some(anchor_idx) = self.anchor_game_index {
             if !self.games.iter().any(|g| g.index == anchor_idx) {
                 bail!("anchor game index references non-existent game");
             }
-        }
-
-        // Check: games with orphaned parent references (parent_index == u32::MAX means genesis)
-        let game_indices: HashSet<U256> = self.games.iter().map(|g| g.index).collect();
-        if self.games.iter().any(|g| {
-            g.parent_index != u32::MAX && !game_indices.contains(&U256::from(g.parent_index))
-        }) {
-            bail!("games have orphaned parent references");
         }
 
         Ok(())
@@ -176,7 +181,14 @@ mod tests {
 
         assert_eq!(
             keys,
-            vec!["anchor_game_index", "cursor", "games", "version"],
+            vec![
+                "anchor_game_index",
+                "cursor",
+                "games",
+                "last_created_game_address",
+                "last_created_game_l2_block",
+                "version"
+            ],
             "ProposerBackup schema changed! Bump BACKUP_VERSION in backup.rs"
         );
     }

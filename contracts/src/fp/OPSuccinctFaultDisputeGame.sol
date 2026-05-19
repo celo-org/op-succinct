@@ -271,10 +271,19 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
             // INVARIANT: The parent game must be a valid game.
             if (proxy.status() == GameStatus.CHALLENGER_WINS) revert InvalidParentGame();
+
+            // INVARIANT: The parent game's L2 block must be ahead of the anchor. This prevents
+            // duplicate games (same startingOutputRoot via parent index vs uint32.max) and ensures
+            // that after a game type switch, proposals resume from the anchor rather than a stale parent.
+            (, uint256 anchorL2SeqNum) = ANCHOR_STATE_REGISTRY.getAnchorRoot();
+            if (startingOutputRoot.l2SequenceNumber <= anchorL2SeqNum) {
+                revert InvalidParentGame();
+            }
         } else {
-            // When there is no parent game, the starting output root is the anchor state for the game type.
-            (startingOutputRoot.root, startingOutputRoot.l2SequenceNumber) =
-                IAnchorStateRegistry(ANCHOR_STATE_REGISTRY).anchors(GAME_TYPE);
+            // When there is no parent game, start from the current anchor root. This allows
+            // resuming from the latest anchor after game type switches (e.g., retirement recovery).
+            (Hash anchorRoot, uint256 anchorL2SeqNum) = ANCHOR_STATE_REGISTRY.getAnchorRoot();
+            startingOutputRoot = Proposal({root: anchorRoot, l2SequenceNumber: anchorL2SeqNum});
         }
 
         // Do not allow the game to be initialized if the root claim corresponds to a block at or before the
@@ -422,7 +431,7 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     ///         `CHALLENGER_WINS` when the proposer's claim has been challenged, but the proposer has not proven
     ///         its claim within the `MAX_PROVE_DURATION`.
     function resolve() external returns (GameStatus) {
-        // INVARIANT: Resolution cannot occur unless the game has already been resolved.
+        // INVARIANT: Resolution cannot occur if the game has already been resolved.
         if (status != GameStatus.IN_PROGRESS) revert ClaimAlreadyResolved();
 
         // INVARIANT: Cannot resolve a game if the parent game has not been resolved.

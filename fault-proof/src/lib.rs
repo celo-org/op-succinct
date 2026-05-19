@@ -6,7 +6,7 @@ pub mod prometheus;
 pub mod proposer;
 pub mod prover;
 
-use alloy_eips::BlockNumberOrTag;
+use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_primitives::{address, keccak256, Address, FixedBytes, B256, U256};
 use alloy_provider::{Provider, RootProvider};
 use alloy_rpc_types_eth::Block;
@@ -24,6 +24,10 @@ use crate::contract::{
 pub type L1Provider = RootProvider;
 pub type L2Provider = RootProvider<Celo>;
 pub type L2NodeProvider = RootProvider<Celo>;
+
+/// L2ToL1MessagePasser predeploy address (OP Stack).
+/// Ref: `op_alloy_consensus::L2_TO_L1_MESSAGE_PASSER_ADDRESS` (available from op-alloy v0.23+).
+const L2_TO_L1_MESSAGE_PASSER: Address = address!("0x4200000000000000000000000000000000000016");
 
 pub const NUM_CONFIRMATIONS: u64 = 3;
 pub const TIMEOUT_SECONDS: u64 = 60;
@@ -85,12 +89,18 @@ impl L2ProviderTrait for L2Provider {
             .await?;
         let l2_state_root = l2_block.header.state_root;
         let l2_claim_hash = l2_block.header.hash;
-        let l2_storage_root = self
-            .get_l2_storage_root(
-                address!("0x4200000000000000000000000000000000000016"),
-                BlockNumberOrTag::Number(l2_block_number.to::<u64>()),
-            )
-            .await?;
+        // Post-Isthmus: withdrawals_root carries the L2ToL1MessagePasser storage root.
+        // Pre-Isthmus: it's nil or EMPTY_ROOT_HASH, so fall back to eth_getProof.
+        let l2_storage_root = match l2_block.header.withdrawals_root {
+            Some(root) if root != alloy_trie::EMPTY_ROOT_HASH => root,
+            _ => {
+                self.get_l2_storage_root(
+                    L2_TO_L1_MESSAGE_PASSER,
+                    BlockNumberOrTag::Number(l2_block_number.to::<u64>()),
+                )
+                .await?
+            }
+        };
 
         let l2_claim_encoded = L2Output {
             zero: 0,
@@ -119,7 +129,7 @@ where
     async fn fetch_init_bond(&self, game_type: u32) -> Result<U256>;
 
     /// Fetches the latest game index.
-    async fn fetch_latest_game_index(&self) -> Result<Option<U256>>;
+    async fn fetch_latest_game_index(&self, block: BlockId) -> Result<Option<U256>>;
 }
 
 #[async_trait]
@@ -147,8 +157,8 @@ where
     }
 
     /// Fetches the latest game index.
-    async fn fetch_latest_game_index(&self) -> Result<Option<U256>> {
-        let game_count = self.gameCount().call().await?;
+    async fn fetch_latest_game_index(&self, block: BlockId) -> Result<Option<U256>> {
+        let game_count = self.gameCount().block(block).call().await?;
 
         if game_count == U256::ZERO {
             tracing::debug!("No games exist yet");
@@ -165,6 +175,7 @@ where
 async fn is_parent_resolved<P>(
     parent_index: u32,
     factory: &DisputeGameFactoryInstance<P>,
+    pinned_block: BlockId,
 ) -> Result<bool>
 where
     P: Provider + Clone,
@@ -173,15 +184,17 @@ where
         return Ok(true);
     }
 
-    let parent_game_address = factory.gameAtIndex(U256::from(parent_index)).call().await?.proxy;
+    let parent_game_address =
+        factory.gameAtIndex(U256::from(parent_index)).block(pinned_block).call().await?.proxy;
     let parent_game_contract = IDisputeGame::new(parent_game_address, factory.provider());
 
-    Ok(parent_game_contract.status().call().await? != GameStatus::IN_PROGRESS)
+    Ok(parent_game_contract.status().block(pinned_block).call().await? != GameStatus::IN_PROGRESS)
 }
 
 async fn is_parent_challenger_wins<P>(
     parent_index: u32,
     factory: &DisputeGameFactoryInstance<P>,
+    pinned_block: BlockId,
 ) -> Result<bool>
 where
     P: Provider + Clone,
@@ -190,10 +203,12 @@ where
         return Ok(false);
     }
 
-    let parent_game_address = factory.gameAtIndex(U256::from(parent_index)).call().await?.proxy;
+    let parent_game_address =
+        factory.gameAtIndex(U256::from(parent_index)).block(pinned_block).call().await?.proxy;
     let parent_game_contract = IDisputeGame::new(parent_game_address, factory.provider());
 
-    Ok(parent_game_contract.status().call().await? == GameStatus::CHALLENGER_WINS)
+    Ok(parent_game_contract.status().block(pinned_block).call().await? ==
+        GameStatus::CHALLENGER_WINS)
 }
 
 /// Prefix used for transaction revert errors.

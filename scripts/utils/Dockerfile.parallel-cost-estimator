@@ -34,7 +34,7 @@ RUN rustup show && \
 
 # Install SP1
 RUN curl -L https://sp1.succinct.xyz | bash && \
-    ~/.sp1/bin/sp1up -v 6.0.2 && \
+    ~/.sp1/bin/sp1up -v 6.1.0 && \
     ~/.sp1/bin/cargo-prove prove --version
 ENV PATH=/root/.sp1/bin:$PATH
 
