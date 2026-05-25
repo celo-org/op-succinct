@@ -2,7 +2,7 @@
   "activateContracts": false,
   "aggregationVkey": "0x00b04647b693a1024f3f6524643693ac5445fbabe5cdfcd3b2d3d468274d4be4",
   "anchorStateRegistryAddress": "0x8fE58d2168b5412Cf1Bd212cE6137f8b7300222d",
-  "celoSuperchainConfigAddress": "0xa440975E5A6BB19Bc3Bee901d909BB24b0f43D33",
+  "celoSuperchainConfigAddress": "0x25035d2233d099f0BA710ca1e5a3834842870C66",
   "challengerAddresses": [
     "0x7247204E46B381149d99acF88b318713fE12c32f",
     "0x53e8eeaae0731ccc888513695ec1bd792ec975ca",
