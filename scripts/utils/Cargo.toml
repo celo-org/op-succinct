@@ -47,10 +47,6 @@ path = "bin/preflight.rs"
 name = "game-monitor"
 path = "bin/game_monitor.rs"
 
-[[bin]]
-name = "parallel-cost-estimator"
-path = "bin/parallel_cost_estimator.rs"
-
 [dependencies]
 
 # workspace
