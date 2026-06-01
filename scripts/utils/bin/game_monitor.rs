@@ -28,7 +28,7 @@ use std::{
     collections::{HashMap, VecDeque},
     env,
     fs::{self, File},
-    io::Write,
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -565,10 +565,16 @@ impl MonitorState {
                             },
                         ));
                     } else {
+                        // Classify the failure log before logging so the failure type is
+                        // included inline. Grep for `failure type unknown` to find failures
+                        // not covered by an existing pattern.
+                        let failure_type = detect_failure_type(&estimator.log_file.path);
                         error!(
-                            "Cost estimator {} failed with status {:?}, log file: {}",
+                            "Cost estimator {} failed with status {:?}, failure type {}, \
+                             log file: {}",
                             id,
                             status,
+                            failure_type,
                             estimator.log_file.path.display(),
                         );
                         process_actions.push((
@@ -923,6 +929,111 @@ fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
     };
     fs::write(&tmp_path, data)?;
     fs::rename(&tmp_path, path)
+}
+
+/// Classification of the cause of a cost-estimator failure, derived from the tail of its
+/// failure log. The non-`Unknown` variants all represent transient environmental issues (RPC
+/// backend health, missing state, DNS resolution) rather than programmatic faults, so flagging
+/// them lets the daemon distinguish "infra was sick" from "the estimator is broken" when
+/// primary retries are exhausted.
+#[derive(Debug, Clone, Copy)]
+enum FailureType {
+    /// `HTTP error 503 ... no backend is currently healthy to serve traffic` (JSON-RPC code
+    /// `-32011`). The proxy in front of the L1/L2 nodes returned 503 because none of its
+    /// backends were healthy.
+    NoHealthyBackend,
+    /// `No state available for block ...` (JSON-RPC code `-32002`). The RPC node pruned or
+    /// never had state for the requested historical block.
+    NoStateAvailable,
+    /// `distance to target block exceeds maximum proof window` (JSON-RPC code `-32602`). The
+    /// requested block is too far from the node's head for an `eth_getProof` call.
+    ExceedsProofWindow,
+    /// `missing trie node ... is not available` (JSON-RPC code `-32000`). The RPC node is
+    /// missing a trie node for the requested state.
+    MissingTrieNode,
+    /// `Failed to fetch safe head` with a `dns error` cause. The op-node hostname could not be
+    /// resolved (typically a transient cluster-DNS hiccup).
+    DnsLookupFailure,
+    /// No known pattern matched. Either the log could not be read, or the failure mode is
+    /// new/programmatic; callers should treat this as "not a known infrastructure failure"
+    /// rather than as a positive signal of a code bug.
+    Unknown,
+}
+
+/// Short human-readable description suitable for inclusion in a log line. The string is
+/// stable and grep-friendly; in particular, [`FailureType::Unknown`] renders as the literal
+/// `"unknown"` so an operator can scan logs for failures lacking a classification.
+impl std::fmt::Display for FailureType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::NoHealthyBackend => "no healthy RPC backend (HTTP 503)",
+            Self::NoStateAvailable => "RPC node has no state for requested block",
+            Self::ExceedsProofWindow => "distance to target block exceeds maximum proof window",
+            Self::MissingTrieNode => "RPC node missing trie node",
+            Self::DnsLookupFailure => "DNS lookup failure",
+            Self::Unknown => "unknown",
+        };
+        f.write_str(s)
+    }
+}
+
+/// Maximum number of trailing bytes scanned by [`detect_failure_type`]. Analysis of historical
+/// failure logs shows the canonical error line is within ~100 lines (and ~500 KiB worst-case,
+/// when several worker threads panicked before the main thread) of EOF; 1 MiB covers every
+/// observed case with margin.
+const FAILURE_SCAN_TAIL_BYTES: u64 = 1024 * 1024;
+
+/// Patterns matched against each line of the failure log, in descending order of observed
+/// frequency. Each entry is the set of substrings that must all appear in a single line for
+/// the classification to apply; matching is intentionally loose (substring rather than full
+/// regex) because the chosen anchors are invariant across thread ids, request ids, and
+/// addresses. Scoping each match to a single line — rather than the whole tail — prevents
+/// false positives where two unrelated log entries happen to contain the constituent
+/// substrings of a multi-needle pattern (notably [`FailureType::DnsLookupFailure`]).
+const FAILURE_PATTERNS: &[(&[&str], FailureType)] = &[
+    (&["no backend is currently healthy to serve traffic"], FailureType::NoHealthyBackend),
+    (&["No state available for block"], FailureType::NoStateAvailable),
+    (&["distance to target block exceeds maximum proof window"], FailureType::ExceedsProofWindow),
+    (&["missing trie node"], FailureType::MissingTrieNode),
+    (&["Failed to fetch safe head", "dns error"], FailureType::DnsLookupFailure),
+];
+
+/// Classify the tail of a failure log against the known cost-estimator failure patterns.
+///
+/// The function reads at most [`FAILURE_SCAN_TAIL_BYTES`] from the end of the file and matches
+/// each line against [`FAILURE_PATTERNS`], returning the first matching classification.
+/// Patterns are derived from a survey of historical failure logs (see the
+/// `forno-eu-game-monitor-logs/` corpus).
+///
+/// Returns [`FailureType::Unknown`] for I/O errors or for any failure mode not covered by the
+/// patterns above.
+fn detect_failure_type(log_path: &Path) -> FailureType {
+    let Ok(mut file) = File::open(log_path) else {
+        return FailureType::Unknown;
+    };
+    let Ok(metadata) = file.metadata() else {
+        return FailureType::Unknown;
+    };
+    let len = metadata.len();
+    let start = len.saturating_sub(FAILURE_SCAN_TAIL_BYTES);
+    if start > 0 && file.seek(SeekFrom::Start(start)).is_err() {
+        return FailureType::Unknown;
+    }
+    let mut bytes = Vec::new();
+    if file.read_to_end(&mut bytes).is_err() {
+        return FailureType::Unknown;
+    }
+    let tail = String::from_utf8_lossy(&bytes);
+
+    tail.lines().find_map(classify_line).unwrap_or(FailureType::Unknown)
+}
+
+/// Match a single log line against [`FAILURE_PATTERNS`] in priority order.
+fn classify_line(line: &str) -> Option<FailureType> {
+    FAILURE_PATTERNS
+        .iter()
+        .find(|(patterns, _)| patterns.iter().all(|n| line.contains(n)))
+        .map(|(_, ft)| *ft)
 }
 
 /// Compute the median of `values`. Returns `None` if fewer than `threshold` entries are
