@@ -288,6 +288,11 @@ enum SpawnOutcome {
     /// Fetching game data from L1/L2 failed. Queues are unmodified so the entry will be retried
     /// on the next poll. Callers typically `continue 'outer` to abandon the current iteration.
     FetchFailed,
+    /// The L2 finalized block is behind the game's end block, so the cost estimator would have
+    /// nothing to execute against. The entry is left in its queue; the caller should skip this
+    /// candidate and try the next one (older games in the queue may have lower end blocks the
+    /// L2 has already finalised). The next poll will re-check skipped entries.
+    L2Behind,
 }
 
 /// Bundles the per-spawn configuration that doesn't change across loop iterations. Built once
@@ -295,6 +300,9 @@ enum SpawnOutcome {
 struct SpawnContext<'a, P: alloy_provider::Provider + Clone> {
     factory: &'a DisputeGameFactoryInstance<P>,
     l1_provider: &'a P,
+    /// L2 (op-geth) provider used to read the finalized head before spawning. Games whose end
+    /// block is ahead of the L2 finalized block can't be executed yet and are deferred.
+    l2_provider: &'a P,
     cost_estimator_binary_path: &'a Path,
     batch_size: u64,
     env_file: &'a Path,
@@ -850,6 +858,36 @@ impl MonitorState {
                 }
             };
 
+        // A game can be posted on L1 before the L2 has actually produced (or finalised) all of
+        // the blocks it covers. Running the cost estimator in that state would either fail or
+        // produce a misleading result, so we defer until the L2 catches up. The next poll will
+        // re-check.
+        let l2_finalized_block = match ctx.l2_provider.get_block(BlockId::finalized()).await {
+            Ok(Some(block)) => block.header.number,
+            Ok(None) => {
+                warn!(
+                    "L2 finalized block not returned by provider; deferring spawn of game {}",
+                    game_data.game_index,
+                );
+                return Ok(SpawnOutcome::FetchFailed);
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to fetch L2 finalized block for game {}: {:#}. Retrying",
+                    game_data.game_index, e,
+                );
+                return Ok(SpawnOutcome::FetchFailed);
+            }
+        };
+        if l2_finalized_block < game_data.end_block {
+            warn!(
+                "L2 finalized block {} is behind game {} end block {}; deferring spawn until \
+                 the L2 catches up",
+                l2_finalized_block, game_data.game_index, game_data.end_block,
+            );
+            return Ok(SpawnOutcome::L2Behind);
+        }
+
         let log_file =
             LogFile::new(ctx.logs_dir, game_data.game_index, game_data.game_address, kind);
         let child = spawn_cost_estimator(
@@ -1335,16 +1373,20 @@ async fn run(args: RunArgs) -> Result<()> {
 
     // Get required environment variables
     let l1_rpc = env::var("L1_RPC").context("L1_RPC not set")?;
+    let l2_rpc = env::var("L2_RPC").context("L2_RPC not set")?;
     let dispute_game_factory_address = env::var("DISPUTE_GAME_FACTORY_ADDRESS")
         .context("DISPUTE_GAME_FACTORY_ADDRESS not set")?
         .parse::<Address>()
         .context("Invalid DISPUTE_GAME_FACTORY_ADDRESS")?;
 
     info!("L1 RPC: {}", l1_rpc);
+    info!("L2 RPC: {}", l2_rpc);
     info!("Dispute Game Factory: {}", dispute_game_factory_address);
 
-    // Set up L1 provider and factory contract
+    // Set up L1 and L2 providers, and the factory contract. The L2 provider is used during
+    // spawn scheduling to verify the L2 has finalised the game's end block; see `spawn_game`.
     let l1_provider = ProviderBuilder::new().connect_http(l1_rpc.parse()?);
+    let l2_provider = ProviderBuilder::new().connect_http(l2_rpc.parse()?);
     let factory =
         DisputeGameFactoryInstance::new(dispute_game_factory_address, l1_provider.clone());
 
@@ -1403,6 +1445,7 @@ async fn run(args: RunArgs) -> Result<()> {
     let spawn_ctx = SpawnContext {
         factory: &factory,
         l1_provider: &l1_provider,
+        l2_provider: &l2_provider,
         cost_estimator_binary_path: args.cost_estimator_binary_path.as_path(),
         batch_size: args.batch_size,
         env_file: args.env_file.as_path(),
@@ -1450,18 +1493,24 @@ async fn run(args: RunArgs) -> Result<()> {
         );
 
         // Phase 4: spawn pending primary games whose delay has elapsed, up to max_concurrent.
+        // A snapshot of the eligible candidates is taken once so we can iterate without
+        // holding a borrow on `state.pending_games`; `spawn_game` only mutates the entry it
+        // operates on, so other snapshot entries remain valid as we walk through them.
         let current_time = Instant::now();
-        while state.can_spawn_new(args.max_concurrent) {
-            let Some((game_index, kind)) = state
-                .pending_games
-                .iter()
-                .find(|p| p.executable_at <= current_time)
-                .map(|p| (p.game_index, p.kind))
-            else {
-                break; // nothing ready in the queue
-            };
-            if state.spawn_game(game_index, kind, &spawn_ctx).await? == SpawnOutcome::FetchFailed {
-                continue 'outer;
+        let primary_candidates: Vec<(u64, AttemptKind)> = state
+            .pending_games
+            .iter()
+            .filter(|p| p.executable_at <= current_time)
+            .map(|p| (p.game_index, p.kind))
+            .collect();
+        for (game_index, kind) in primary_candidates {
+            if !state.can_spawn_new(args.max_concurrent) {
+                break;
+            }
+            match state.spawn_game(game_index, kind, &spawn_ctx).await? {
+                SpawnOutcome::FetchFailed => continue 'outer,
+                SpawnOutcome::L2Behind => continue,
+                SpawnOutcome::Spawned | SpawnOutcome::WrongGameType => {}
             }
         }
 
@@ -1472,25 +1521,24 @@ async fn run(args: RunArgs) -> Result<()> {
         let primary_has_ready =
             state.pending_games.iter().any(|p| p.executable_at <= Instant::now());
         if !primary_has_ready {
-            while state.can_spawn_new(args.max_concurrent) {
-                let now_sys = SystemTime::now();
-                let Some((game_index, kind)) = state
-                    .background_retries
-                    .iter()
-                    .find(|bg| {
-                        bg.next_attempt_at <= now_sys &&
-                            !state.running_processes.contains_key(&bg.game_index)
-                    })
-                    .map(|bg| {
-                        (bg.game_index, AttemptKind::Background { attempts: bg.attempts + 1 })
-                    })
-                else {
+            let now_sys = SystemTime::now();
+            let background_candidates: Vec<(u64, AttemptKind)> = state
+                .background_retries
+                .iter()
+                .filter(|bg| {
+                    bg.next_attempt_at <= now_sys &&
+                        !state.running_processes.contains_key(&bg.game_index)
+                })
+                .map(|bg| (bg.game_index, AttemptKind::Background { attempts: bg.attempts + 1 }))
+                .collect();
+            for (game_index, kind) in background_candidates {
+                if !state.can_spawn_new(args.max_concurrent) {
                     break;
-                };
-                if state.spawn_game(game_index, kind, &spawn_ctx).await? ==
-                    SpawnOutcome::FetchFailed
-                {
-                    continue 'outer;
+                }
+                match state.spawn_game(game_index, kind, &spawn_ctx).await? {
+                    SpawnOutcome::FetchFailed => continue 'outer,
+                    SpawnOutcome::L2Behind => continue,
+                    SpawnOutcome::Spawned | SpawnOutcome::WrongGameType => {}
                 }
             }
         }
