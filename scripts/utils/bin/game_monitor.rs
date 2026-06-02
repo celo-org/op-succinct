@@ -1514,32 +1514,27 @@ async fn run(args: RunArgs) -> Result<()> {
             }
         }
 
-        // Phase 5: spawn background retries using spare slots. Only runs when no primary
-        // entries are ready, so primary scheduling always wins on contention. Entries stay in
-        // background_retries while running so maybe_requeue can update them on failure;
-        // cleanup_finished_processes removes them on success.
-        let primary_has_ready =
-            state.pending_games.iter().any(|p| p.executable_at <= Instant::now());
-        if !primary_has_ready {
-            let now_sys = SystemTime::now();
-            let background_candidates: Vec<(u64, AttemptKind)> = state
-                .background_retries
-                .iter()
-                .filter(|bg| {
-                    bg.next_attempt_at <= now_sys &&
-                        !state.running_processes.contains_key(&bg.game_index)
-                })
-                .map(|bg| (bg.game_index, AttemptKind::Background { attempts: bg.attempts + 1 }))
-                .collect();
-            for (game_index, kind) in background_candidates {
-                if !state.can_spawn_new(args.max_concurrent) {
-                    break;
-                }
-                match state.spawn_game(game_index, kind, &spawn_ctx).await? {
-                    SpawnOutcome::FetchFailed => continue 'outer,
-                    SpawnOutcome::L2Behind => continue,
-                    SpawnOutcome::Spawned | SpawnOutcome::WrongGameType => {}
-                }
+        // Phase 5: spawn background retries using spare slots. Entries stay in background_retries
+        // while running so maybe_requeue can update them on failure; cleanup_finished_processes
+        // removes them on success.
+        let now_sys = SystemTime::now();
+        let background_candidates: Vec<(u64, AttemptKind)> = state
+            .background_retries
+            .iter()
+            .filter(|bg| {
+                bg.next_attempt_at <= now_sys &&
+                    !state.running_processes.contains_key(&bg.game_index)
+            })
+            .map(|bg| (bg.game_index, AttemptKind::Background { attempts: bg.attempts + 1 }))
+            .collect();
+        for (game_index, kind) in background_candidates {
+            if !state.can_spawn_new(args.max_concurrent) {
+                break;
+            }
+            match state.spawn_game(game_index, kind, &spawn_ctx).await? {
+                SpawnOutcome::FetchFailed => continue 'outer,
+                SpawnOutcome::L2Behind => continue,
+                SpawnOutcome::Spawned | SpawnOutcome::WrongGameType => {}
             }
         }
 
