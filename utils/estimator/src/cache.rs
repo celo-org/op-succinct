@@ -1,3 +1,6 @@
+use anyhow::Result;
+use sp1_sdk::SP1Stdin;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 /// DA-type discriminator folded into every cache key. The on-disk `WitnessData`
@@ -47,6 +50,33 @@ impl WitnessCache {
     }
 }
 
+impl WitnessCache {
+    pub fn has_stdin(&self, start: u64, end: u64) -> bool {
+        self.stdin_path(start, end).exists()
+    }
+
+    pub fn save_stdin(&self, start: u64, end: u64, stdin: &SP1Stdin) -> Result<PathBuf> {
+        let dir = self.cache_dir();
+        if !dir.exists() {
+            fs::create_dir_all(&dir)?;
+        }
+        let path = self.stdin_path(start, end);
+        let tmp = path.with_extension("bin.tmp");
+        fs::write(&tmp, bincode::serialize(stdin)?)?;
+        fs::rename(&tmp, &path)?; // atomic publish so a crash mid-write leaves no half blob
+        Ok(path)
+    }
+
+    pub fn load_stdin(&self, start: u64, end: u64) -> Result<Option<SP1Stdin>> {
+        let path = self.stdin_path(start, end);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = fs::read(&path)?;
+        Ok(Some(bincode::deserialize(&bytes)?))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,5 +101,24 @@ mod tests {
         let eigen = WitnessCache::new("/c", 1, DaType::EigenDa);
         let eth = WitnessCache::new("/c", 1, DaType::Ethereum);
         assert_ne!(eigen.witness_path(1, 2), eth.witness_path(1, 2));
+    }
+
+    #[test]
+    fn stdin_round_trips_through_disk() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache = WitnessCache::new(dir.path(), 42220, DaType::EigenDa);
+        assert!(!cache.has_stdin(10, 20));
+        let stdin = sp1_sdk::SP1Stdin::default();
+        cache.save_stdin(10, 20, &stdin).unwrap();
+        assert!(cache.has_stdin(10, 20));
+        let loaded = cache.load_stdin(10, 20).unwrap();
+        assert!(loaded.is_some());
+    }
+
+    #[test]
+    fn load_stdin_returns_none_on_miss() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache = WitnessCache::new(dir.path(), 1, DaType::Ethereum);
+        assert!(cache.load_stdin(1, 2).unwrap().is_none());
     }
 }
