@@ -4,6 +4,7 @@
 pub mod cache;
 pub mod error;
 pub mod estimator;
+pub mod memory;
 pub mod retry;
 pub mod stats;
 
