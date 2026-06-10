@@ -156,8 +156,6 @@ pub async fn split_range_based_on_safe_heads(
     let (_, l1_head_number) = data_fetcher.get_safe_l1_block_for_l2_block(l2_end).await?;
 
     // Get all the unique safeHeads between l1_start and l1_head
-    let mut ranges = Vec::new();
-    let mut current_l2_start = l2_start;
     let safe_heads = futures::stream::iter(l1_start..=l1_head_number)
         .map(|block| async move {
             let l1_block_hex = format!("0x{block:x}");
@@ -180,6 +178,8 @@ pub async fn split_range_based_on_safe_heads(
     safe_heads.sort();
 
     // Loop over all of the safe heads and create ranges.
+    let mut ranges = Vec::new();
+    let mut current_l2_start = l2_start;
     for safe_head in safe_heads {
         if safe_head > current_l2_start && current_l2_start < l2_end {
             let mut range_start = current_l2_start;
@@ -230,5 +230,18 @@ mod tests {
     #[test]
     fn split_range_basic_empty_when_start_equals_end() {
         assert_eq!(split_range_basic(50, 50, 30), vec![]);
+    }
+
+    #[test]
+    fn basic_split_respects_max_range_and_covers_window() {
+        let ranges = split_range_basic(100, 250, 60);
+        assert_eq!(ranges.first().unwrap().start, 100);
+        assert_eq!(ranges.last().unwrap().end, 250);
+        for w in &ranges {
+            assert!(w.end - w.start <= 60);
+        }
+        for pair in ranges.windows(2) {
+            assert_eq!(pair[0].end, pair[1].start);
+        }
     }
 }
