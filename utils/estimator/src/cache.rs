@@ -131,6 +131,24 @@ impl WitnessCache {
     }
 }
 
+impl WitnessCache {
+    /// Delete a range's stdin blob (called after the owning game succeeds + grace).
+    pub fn prune_stdin(&self, start: u64, end: u64) -> Result<()> {
+        let path = self.stdin_path(start, end);
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
+    /// Age in seconds of a range's stdin blob, or `None` if absent/unreadable.
+    pub fn stdin_age_secs(&self, start: u64, end: u64, now: std::time::SystemTime) -> Option<u64> {
+        let path = self.stdin_path(start, end);
+        let modified = fs::metadata(&path).ok()?.modified().ok()?;
+        now.duration_since(modified).ok().map(|d| d.as_secs())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +192,27 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let cache = WitnessCache::new(dir.path(), 1, DaType::Ethereum);
         assert!(cache.load_stdin(1, 2).unwrap().is_none());
+    }
+
+    #[test]
+    fn prune_stdin_is_idempotent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache = WitnessCache::new(dir.path(), 1, DaType::Ethereum);
+        cache.save_stdin(1, 2, &sp1_sdk::SP1Stdin::default()).unwrap();
+        assert!(cache.has_stdin(1, 2));
+        cache.prune_stdin(1, 2).unwrap();
+        assert!(!cache.has_stdin(1, 2));
+        cache.prune_stdin(1, 2).unwrap(); // no error on missing
+    }
+
+    #[test]
+    fn stdin_age_is_some_after_write() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache = WitnessCache::new(dir.path(), 1, DaType::Ethereum);
+        cache.save_stdin(1, 2, &sp1_sdk::SP1Stdin::default()).unwrap();
+        let age = cache.stdin_age_secs(1, 2, std::time::SystemTime::now());
+        assert!(age.is_some());
+        assert!(cache.stdin_age_secs(9, 9, std::time::SystemTime::now()).is_none());
     }
 
     #[cfg(feature = "eigenda")]
