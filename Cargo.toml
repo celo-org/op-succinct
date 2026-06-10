@@ -10,6 +10,7 @@ members = [
     "utils/eigenda/host",
     "utils/eigenda/registry",
     "utils/proof",
+    "utils/estimator",
     "utils/signer",
     "utils/ethereum/client",
     "utils/ethereum/host",
@@ -146,6 +147,7 @@ op-succinct-eigenda-client-utils = { path = "utils/eigenda/client" }
 op-succinct-eigenda-host-utils = { path = "utils/eigenda/host" }
 celo-eigenda-registry = { path = "utils/eigenda/registry" }
 op-succinct-proof-utils = { path = "utils/proof" }
+op-succinct-estimator = { path = "utils/estimator" }
 op-succinct-signer-utils = { path = "utils/signer" }
 op-succinct-common = { path = "utils/common" }
 op-succinct-signer-gcp-utils = { path = "utils/signer-gcp" }
