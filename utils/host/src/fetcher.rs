@@ -10,9 +10,11 @@ use crate::rpc_types::{OutputResponse, SafeHeadResponse};
 use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_primitives::{address, keccak256, Address, Bytes, B256, U256, U64};
-use alloy_provider::{Provider, ProviderBuilder, RootProvider};
+use alloy_provider::{Provider, RootProvider};
 use alloy_rlp::Decodable;
+use alloy_rpc_client::ClientBuilder;
 use alloy_sol_types::SolValue;
+use alloy_transport::layers::RetryBackoffLayer;
 use anyhow::{anyhow, bail, Context, Result};
 use celo_alloy_consensus::CeloBlock;
 use celo_alloy_network::Celo;
@@ -177,15 +179,26 @@ pub struct FeeData {
     pub tx_fee: u128,
 }
 
+/// Build an HTTP [`RootProvider`] with a bounded retry/backoff layer so that transient,
+/// idempotent RPC failures (rate limits, blips) retry before triggering expensive
+/// witness generation.
+///
+/// The arguments to [`RetryBackoffLayer::new`] are
+/// `(max_rate_limit_retries, initial_backoff_ms, compute_units_per_second)`.
+fn http_provider_with_retries<N: Network>(url: Url) -> Arc<RootProvider<N>> {
+    let retry = RetryBackoffLayer::new(3, 500, 100);
+    let client = ClientBuilder::default().layer(retry).http(url);
+    Arc::new(RootProvider::<N>::new(client))
+}
+
 impl OPSuccinctDataFetcher {
     /// Gets the RPC URL's and saves the rollup config for the chain to the rollup config file.
     pub fn new() -> Self {
         let rpc_config = get_rpcs_from_env();
 
         let l1_provider =
-            Arc::new(ProviderBuilder::default().connect_http(rpc_config.l1_rpc.clone()));
-        let l2_provider =
-            Arc::new(ProviderBuilder::default().connect_http(rpc_config.l2_rpc.clone()));
+            http_provider_with_retries::<alloy_network::Ethereum>(rpc_config.l1_rpc.clone());
+        let l2_provider = http_provider_with_retries::<Celo>(rpc_config.l2_rpc.clone());
 
         OPSuccinctDataFetcher {
             rpc_config,
@@ -202,9 +215,8 @@ impl OPSuccinctDataFetcher {
         let rpc_config = get_rpcs_from_env();
 
         let l1_provider =
-            Arc::new(ProviderBuilder::default().connect_http(rpc_config.l1_rpc.clone()));
-        let l2_provider =
-            Arc::new(ProviderBuilder::default().connect_http(rpc_config.l2_rpc.clone()));
+            http_provider_with_retries::<alloy_network::Ethereum>(rpc_config.l1_rpc.clone());
+        let l2_provider = http_provider_with_retries::<Celo>(rpc_config.l2_rpc.clone());
 
         let (rollup_config, rollup_config_path) =
             Self::fetch_and_save_rollup_config(&rpc_config).await?;
@@ -566,7 +578,9 @@ impl OPSuccinctDataFetcher {
     where
         T: serde::de::DeserializeOwned,
     {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()?;
         let response = client
             .post(url.clone())
             .json(&json!({
@@ -971,6 +985,13 @@ mod tests {
 
     fn test_rollup_config(chain_id: u64) -> CeloRollupConfig {
         CeloRollupConfig(RollupConfig { l2_chain_id: chain_id.into(), ..Default::default() })
+    }
+
+    #[test]
+    fn http_provider_with_retries_constructs() {
+        let url: Url = "http://localhost:8545".parse().unwrap();
+        let _p = http_provider_with_retries::<alloy_network::Ethereum>(url);
+        // Construction must not panic; no network call is made.
     }
 
     #[test]
