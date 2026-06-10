@@ -49,7 +49,12 @@ impl EstimatorError {
             EstimatorError::MissingTrieNode
         } else if msg.contains("dns error") || msg.contains("failed to fetch safe head") {
             EstimatorError::DnsLookupFailure
-        } else if msg.contains("memory allocation") || msg.contains("out of memory") {
+        } else if msg.contains("memory allocation")
+            || msg.contains("out of memory")
+            // SP1's in-VM memory-limit error: `ExecutionError::TooMuchMemory` renders as
+            // "SP1 program consumes too much memory". Catch it so an OOM is never retried.
+            || msg.contains("too much memory")
+        {
             EstimatorError::Oom
         } else {
             EstimatorError::Transient(err)
@@ -82,6 +87,16 @@ mod tests {
     #[test]
     fn oom_is_never_transient() {
         assert!(!EstimatorError::Oom.is_transient());
+    }
+
+    #[test]
+    fn sp1_too_much_memory_classifies_as_oom() {
+        // SP1's `ExecutionError::TooMuchMemory` renders as this message.
+        let e = EstimatorError::classify(anyhow::anyhow!(
+            "SP1 execute failed: SP1 program consumes too much memory"
+        ));
+        assert!(matches!(e, EstimatorError::Oom));
+        assert!(!e.is_transient());
     }
 
     #[test]
