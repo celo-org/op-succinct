@@ -122,7 +122,17 @@ pub async fn split_range_based_on_safe_heads(
     max_range_size: u64,
 ) -> Result<Vec<SpanBatchRange>> {
     let data_fetcher = OPSuccinctDataFetcher::default();
+    split_range_based_on_safe_heads_with_fetcher(&data_fetcher, l2_start, l2_end, max_range_size)
+        .await
+}
 
+/// Additive variant: reuse a caller-owned fetcher (no per-call `default()` builds).
+pub async fn split_range_based_on_safe_heads_with_fetcher(
+    data_fetcher: &OPSuccinctDataFetcher,
+    l2_start: u64,
+    l2_end: u64,
+    max_range_size: u64,
+) -> Result<Vec<SpanBatchRange>> {
     // Get the L1 origin of l2_start
     let l2_start_hex = format!("0x{l2_start:x}");
     let start_output: OutputResponse = data_fetcher
@@ -138,21 +148,21 @@ pub async fn split_range_based_on_safe_heads(
     let (_, l1_head_number) = data_fetcher.get_safe_l1_block_for_l2_block(l2_end).await?;
 
     // Get all the unique safeHeads between l1_start and l1_head
-    let mut ranges = Vec::new();
-    let mut current_l2_start = l2_start;
     let safe_heads = futures::stream::iter(l1_start..=l1_head_number)
-        .map(|block| async move {
-            let l1_block_hex = format!("0x{block:x}");
-            let data_fetcher = OPSuccinctDataFetcher::default();
-            let result: SafeHeadResponse = data_fetcher
-                .fetch_rpc_data_with_mode(
-                    RPCMode::L2Node,
-                    "optimism_safeHeadAtL1Block",
-                    vec![l1_block_hex.into()],
-                )
-                .await
-                .expect("Failed to fetch safe head");
-            result.safe_head.number
+        .map(|block| {
+            let data_fetcher = data_fetcher;
+            async move {
+                let l1_block_hex = format!("0x{block:x}");
+                let result: SafeHeadResponse = data_fetcher
+                    .fetch_rpc_data_with_mode(
+                        RPCMode::L2Node,
+                        "optimism_safeHeadAtL1Block",
+                        vec![l1_block_hex.into()],
+                    )
+                    .await
+                    .expect("Failed to fetch safe head");
+                result.safe_head.number
+            }
         })
         .buffered(15)
         .collect::<HashSet<_>>()
@@ -163,6 +173,8 @@ pub async fn split_range_based_on_safe_heads(
     safe_heads.sort();
 
     // Loop over all of the safe heads and create ranges.
+    let mut ranges = Vec::new();
+    let mut current_l2_start = l2_start;
     for safe_head in safe_heads {
         if safe_head > current_l2_start && current_l2_start < l2_end {
             let mut range_start = current_l2_start;
@@ -177,4 +189,22 @@ pub async fn split_range_based_on_safe_heads(
     }
 
     Ok(ranges)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn basic_split_respects_max_range_and_covers_window() {
+        let ranges = split_range_basic(100, 250, 60);
+        assert_eq!(ranges.first().unwrap().start, 100);
+        assert_eq!(ranges.last().unwrap().end, 250);
+        for w in &ranges {
+            assert!(w.end - w.start <= 60);
+        }
+        for pair in ranges.windows(2) {
+            assert_eq!(pair[0].end, pair[1].start);
+        }
+    }
 }
