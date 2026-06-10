@@ -3,10 +3,12 @@
 
 pub mod cache;
 pub mod error;
+pub mod estimator;
 pub mod retry;
 pub mod stats;
 
 pub use cache::{DaType, WitnessCache};
 pub use error::EstimatorError;
+pub use estimator::Estimator;
 pub use retry::network_call_with_timeout;
 pub use stats::aggregate_execution_stats;
