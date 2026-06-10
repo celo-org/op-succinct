@@ -2,9 +2,14 @@ use std::sync::Arc;
 
 use op_succinct_host_utils::{
     block_range::SpanBatchRange, fetcher::OPSuccinctDataFetcher, host::OPSuccinctHost,
-    witness_generation::WitnessGenerator,
+    stats::ExecutionStats, witness_generation::WitnessGenerator,
 };
+use op_succinct_proof_utils::get_range_elf_embedded;
 use rkyv::rancor::Error as RkyvError;
+use sp1_sdk::{
+    blocking::{CpuProver, Prover},
+    Elf,
+};
 
 use crate::{cache::WitnessCache, error::EstimatorError};
 
@@ -76,5 +81,45 @@ where
             .drop_witness(range.start, range.end)
             .map_err(EstimatorError::Transient)?;
         Ok(())
+    }
+
+    /// Consumer: load the cached stdin (build on miss), run the SP1 execute, and
+    /// produce `ExecutionStats`. The caller must hold an RSS-admission slot.
+    pub async fn execute_range(
+        &self,
+        range: &SpanBatchRange,
+    ) -> Result<ExecutionStats, EstimatorError> {
+        // Ensure stdin exists (cache hit is the common path; miss builds on demand).
+        if !self.cache.has_stdin(range.start, range.end) {
+            self.build_range_witness(range).await?;
+        }
+        let stdin = self
+            .cache
+            .load_stdin(range.start, range.end)
+            .map_err(EstimatorError::Transient)?
+            .ok_or_else(|| EstimatorError::Fatal(anyhow::anyhow!("stdin missing after build")))?;
+
+        // Block data for stats (cheap relative to witness-gen). Parity: l1_head passed as 0.
+        let block_data = self
+            .fetcher
+            .get_l2_block_data_range(range.start, range.end)
+            .await
+            .map_err(EstimatorError::classify)?;
+
+        // SP1 execute must run off the async runtime: CpuProver spins its own tokio runtime.
+        let exec = tokio::task::spawn_blocking(move || {
+            let prover = CpuProver::new();
+            prover
+                .execute(Elf::Static(get_range_elf_embedded()), stdin)
+                .deferred_proof_verification(false)
+                .run()
+        })
+        .await
+        .map_err(|e| EstimatorError::Fatal(anyhow::anyhow!("execute task join error: {e}")))?;
+
+        let (_public_values, report) = exec
+            .map_err(|e| EstimatorError::classify(anyhow::anyhow!("SP1 execute failed: {e:?}")))?;
+
+        Ok(ExecutionStats::new(0, &block_data, &report, 0, 0))
     }
 }
