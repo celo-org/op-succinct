@@ -85,10 +85,18 @@ pub enum WorkKind {
 }
 
 /// Bounded history of peak-RSS samples used to project the next unit's footprint.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RssHistory {
     pub samples: Vec<RssSample>,
     pub max_len: usize,
+}
+
+impl Default for RssHistory {
+    // Delegate to `new` so the `max_len >= 1` invariant always holds (a derived
+    // `Default` would set `max_len = 0`, silently dropping every recorded sample).
+    fn default() -> Self {
+        Self::new(64)
+    }
 }
 
 impl RssHistory {
@@ -171,5 +179,14 @@ mod admission_tests {
             h.record(RssSample { gas: g + 1, peak_rss_bytes: 1, kind: WorkKind::Build });
         }
         assert_eq!(h.samples.len(), 2);
+    }
+
+    #[test]
+    fn default_history_retains_samples() {
+        // Default must honor the max_len >= 1 invariant, not silently drop everything.
+        let mut h = RssHistory::default();
+        assert!(h.max_len >= 1);
+        h.record(RssSample { gas: 1, peak_rss_bytes: 1, kind: WorkKind::Build });
+        assert_eq!(h.samples.len(), 1);
     }
 }
