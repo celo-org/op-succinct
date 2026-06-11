@@ -2,6 +2,7 @@ use clap::Parser;
 use std::{num::NonZeroU64, path::PathBuf};
 
 pub mod config_common;
+pub mod contained;
 
 /// The arguments for the host executable.
 #[derive(Debug, Clone, Parser)]
