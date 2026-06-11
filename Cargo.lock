@@ -8335,6 +8335,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sp1-sdk",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
