@@ -1,4 +1,5 @@
 pub mod discovery;
+pub mod pipeline;
 pub mod state;
 
 use std::path::PathBuf;

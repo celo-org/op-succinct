@@ -8331,6 +8331,7 @@ dependencies = [
  "op-succinct-host-utils",
  "op-succinct-proof-utils",
  "rayon",
+ "rkyv",
  "rustls 0.23.37",
  "serde",
  "serde_json",
