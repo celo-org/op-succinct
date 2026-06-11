@@ -1,10 +1,38 @@
 pub mod discovery;
+pub mod executor;
 pub mod pipeline;
 pub mod state;
 
-use std::path::PathBuf;
+use std::{
+    collections::VecDeque,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{Duration, Instant, SystemTime},
+};
 
+use alloy_eips::BlockId;
+use alloy_primitives::Address;
+use alloy_provider::ProviderBuilder;
+use anyhow::Context;
 use clap::Parser;
+use fault_proof::contract::DisputeGameFactory::DisputeGameFactoryInstance;
+use op_succinct_common::SequenceTracker;
+use op_succinct_estimator::{
+    memory::{read_cgroup_budget_bytes, read_cgroup_usage_bytes},
+    DaType, Estimator, WindowPredictor, WitnessCache,
+};
+use op_succinct_host_utils::fetcher::OPSuccinctDataFetcher;
+use op_succinct_proof_utils::initialize_host;
+use tokio::sync::Semaphore;
+
+use crate::contained::{
+    discovery::{fetch_game_data, FetchGameError},
+    executor::execute_game,
+    state::{
+        is_background_retry_aged_out, load_progress, requeue_decision, resume_next_index,
+        save_progress, AttemptKind, BackgroundRetry, PendingGame, RequeueDecision,
+    },
+};
 
 /// CLI for the contained game monitor. Preserves the legacy flags and adds the
 /// pipeline/cache/memory knobs.
@@ -56,9 +84,296 @@ pub struct ContainedArgs {
     pub max_process_duration_secs: u64,
 }
 
-/// Filled in by Task 21.
-pub async fn run(_args: ContainedArgs) -> anyhow::Result<()> {
-    anyhow::bail!("not yet implemented")
+/// DA type for the cache key, selected by the build feature.
+fn da_type() -> DaType {
+    #[cfg(feature = "celestia")]
+    {
+        DaType::Celestia
+    }
+    #[cfg(all(feature = "eigenda", not(feature = "celestia")))]
+    {
+        DaType::EigenDa
+    }
+    #[cfg(not(any(feature = "eigenda", feature = "celestia")))]
+    {
+        DaType::Ethereum
+    }
+}
+
+/// Size the RSS-admission semaphore from the cgroup budget. `None` budget (no cgroup
+/// limit) defaults to 4. Otherwise: how many `unit_bytes` units fit after reserving
+/// current usage + margin, floored at 1.
+fn compute_initial_permits(budget: Option<u64>, usage: u64, unit_bytes: u64, margin: u64) -> usize {
+    match budget {
+        None => 4,
+        Some(b) => ((b.saturating_sub(usage).saturating_sub(margin) / unit_bytes.max(1)) as usize)
+            .max(1),
+    }
+}
+
+/// Apply the two-tier retry policy to a failed game, mutating the queues + persisting.
+fn apply_requeue(
+    pending: &mut VecDeque<PendingGame>,
+    background: &mut VecDeque<BackgroundRetry>,
+    tracker: &mut SequenceTracker,
+    pg: PendingGame,
+    created_at: SystemTime,
+    args: &ContainedArgs,
+    progress_path: &Path,
+) -> anyhow::Result<()> {
+    let initial_delay = Duration::from_secs(args.delay);
+    let prev_wait = background.iter().find(|b| b.game_index == pg.game_index).map(|b| b.last_wait);
+    match requeue_decision(pg.kind, initial_delay, args.max_retries, prev_wait) {
+        RequeueDecision::Primary { retries, delay } => {
+            pending.push_front(PendingGame {
+                executable_at: Instant::now() + delay,
+                game_index: pg.game_index,
+                kind: AttemptKind::Primary { retries },
+            });
+        }
+        RequeueDecision::ToBackground { first_wait } => {
+            // Primary budget exhausted: advance the frontier (never stall) and enqueue
+            // a background retry.
+            tracker.add(pg.game_index);
+            background.push_back(BackgroundRetry {
+                game_index: pg.game_index,
+                game_created_at: created_at,
+                next_attempt_at: SystemTime::now() + first_wait,
+                last_wait: first_wait,
+                attempts: 0,
+            });
+            save_progress(progress_path, tracker, background)?;
+        }
+        RequeueDecision::Background { next_wait } => {
+            // Update the matching background entry in place with the new schedule.
+            if let Some(entry) = background.iter_mut().find(|b| b.game_index == pg.game_index) {
+                entry.last_wait = next_wait;
+                entry.next_attempt_at = SystemTime::now() + next_wait;
+                entry.attempts += 1;
+            }
+            save_progress(progress_path, tracker, background)?;
+        }
+    }
+    Ok(())
+}
+
+/// Run the contained game monitor: build shared resources once, spawn the predictive
+/// pipeline, and run the discovery/execute/retry loop.
+pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
+    // ── Shared resources (built once) ──────────────────────────────────────
+    let fetcher = Arc::new(OPSuccinctDataFetcher::new_with_rollup_config().await?);
+    let chain_id = fetcher.get_l2_chain_id().await?;
+    let host = initialize_host(fetcher.clone());
+    let cache = WitnessCache::new(&args.cache_dir, chain_id, da_type());
+    let estimator = Arc::new(Estimator {
+        host: host.clone(),
+        fetcher: fetcher.clone(),
+        cache: cache.clone(),
+        chain_id,
+        safe_db_fallback: true,
+    });
+
+    // ── RSS-admission semaphore ────────────────────────────────────────────
+    let budget = read_cgroup_budget_bytes();
+    let margin = args.rss_margin_mb * 1024 * 1024;
+    let usage = read_cgroup_usage_bytes().unwrap_or(0);
+    let default_unit = 55u64 * 1024 * 1024 * 1024; // ~55 GiB per concurrent execution
+    let max_conc = compute_initial_permits(budget, usage, default_unit, margin);
+    tracing::info!(max_conc, ?budget, usage, "RSS admission sized");
+    let permits = Arc::new(Semaphore::new(max_conc));
+
+    // ── Predictive pipeline task ───────────────────────────────────────────
+    let poll = Duration::from_secs(args.poll_interval);
+    {
+        let estimator = estimator.clone();
+        let fetcher = fetcher.clone();
+        let permits = permits.clone();
+        let proposal_interval = args.proposal_interval;
+        let max_lead_windows = args.max_lead_windows;
+        let batch_size = args.batch_size;
+        tokio::spawn(async move {
+            let start_frontier = fetcher
+                .get_l2_header(BlockId::finalized())
+                .await
+                .map(|h| h.number)
+                .unwrap_or(0);
+            let mut predictor =
+                WindowPredictor::new(start_frontier, proposal_interval, max_lead_windows);
+            loop {
+                if let Err(e) =
+                    pipeline::pipeline_step(&estimator, &fetcher, &mut predictor, &permits, batch_size)
+                        .await
+                {
+                    tracing::warn!(error = %e, "pipeline step failed");
+                }
+                tokio::time::sleep(poll).await;
+            }
+        });
+    }
+
+    // ── L1 provider + dispute game factory (from env, matching the legacy) ──
+    let l1_rpc = std::env::var("L1_RPC").context("L1_RPC not set")?;
+    let factory_address = std::env::var("DISPUTE_GAME_FACTORY_ADDRESS")
+        .context("DISPUTE_GAME_FACTORY_ADDRESS not set")?
+        .parse::<Address>()
+        .context("Invalid DISPUTE_GAME_FACTORY_ADDRESS")?;
+    let l1_provider = ProviderBuilder::new().connect_http(l1_rpc.parse()?);
+    let factory = DisputeGameFactoryInstance::new(factory_address, l1_provider.clone());
+
+    // ── Restart resume ─────────────────────────────────────────────────────
+    let progress_path =
+        args.progress_file.clone().unwrap_or_else(|| args.cache_dir.join("progress.json"));
+    let persisted = load_progress(&progress_path);
+    let on_chain_count =
+        factory.gameCount().call().block(BlockId::finalized()).await?.to::<u64>();
+    let mut next_game_index =
+        resume_next_index(args.start_index, persisted.as_ref(), on_chain_count);
+    tracing::info!(next_game_index, on_chain_count, "resume point determined");
+
+    let mut tracker = SequenceTracker::new(next_game_index.saturating_sub(1));
+    let mut background_retries: VecDeque<BackgroundRetry> =
+        persisted.map(|p| p.background_retries.into_iter().collect()).unwrap_or_default();
+    let mut pending_games: VecDeque<PendingGame> = VecDeque::new();
+
+    let delay = Duration::from_secs(args.delay);
+    let max_age = Duration::from_secs(args.background_retry_max_age_secs);
+
+    // ── Main loop ──────────────────────────────────────────────────────────
+    loop {
+        tokio::time::sleep(poll).await;
+
+        // (a) Discovery: queue newly-created games with the discover→execute delay.
+        let count = match factory.gameCount().call().block(BlockId::finalized()).await {
+            Ok(c) => c.to::<u64>(),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to fetch gameCount; retrying");
+                continue;
+            }
+        };
+        while next_game_index < count {
+            let game_index = next_game_index;
+            next_game_index += 1;
+            tracing::info!(game_index, ?delay, "discovered new game");
+            pending_games.push_front(PendingGame {
+                executable_at: Instant::now() + delay,
+                game_index,
+                kind: AttemptKind::Primary { retries: 0 },
+            });
+        }
+
+        // (b) Drain due background retries into the pending queue as Background attempts.
+        let now_sys = SystemTime::now();
+        let due: Vec<u64> = background_retries
+            .iter()
+            .filter(|bg| bg.next_attempt_at <= now_sys)
+            .map(|bg| bg.game_index)
+            .collect();
+        for game_index in due {
+            if let Some(bg) = background_retries.iter().find(|b| b.game_index == game_index) {
+                pending_games.push_back(PendingGame {
+                    executable_at: Instant::now(),
+                    game_index,
+                    kind: AttemptKind::Background { attempts: bg.attempts + 1 },
+                });
+            }
+        }
+
+        // (c) Evict aged-out background retries (this loop executes synchronously per game,
+        // so no entry is "running" here).
+        let now_sys = SystemTime::now();
+        background_retries.retain(|bg| !is_background_retry_aged_out(bg, now_sys, max_age, false));
+
+        // (d) Execute due pending games.
+        let current_time = Instant::now();
+        let due: Vec<PendingGame> = pending_games
+            .iter()
+            .filter(|p| p.executable_at <= current_time)
+            .cloned()
+            .collect();
+        // Drop the executed entries from the pending queue up front; failures re-queue them.
+        pending_games.retain(|p| p.executable_at > current_time);
+
+        for pg in due {
+            match fetch_game_data(pg.game_index, &factory, l1_provider.clone()).await {
+                Ok(game) => {
+                    match execute_game(&estimator, &fetcher, &permits, &game, args.batch_size).await
+                    {
+                        Ok((stats, ranges)) => {
+                            tracing::info!(
+                                game_index = pg.game_index,
+                                start = game.start_block,
+                                end = game.end_block,
+                                sp1_gas = stats.total_sp1_gas,
+                                blocks = stats.nb_blocks,
+                                ranges = ranges.len(),
+                                "game executed"
+                            );
+                            tracker.add(pg.game_index);
+                            // A successful background game is now complete: drop its entry.
+                            background_retries.retain(|b| b.game_index != pg.game_index);
+                            if let Err(e) = save_progress(&progress_path, &tracker, &background_retries)
+                            {
+                                tracing::warn!(error = %e, "failed to save progress");
+                            }
+                        }
+                        Err(e) if e.is_transient() => {
+                            tracing::warn!(
+                                game_index = pg.game_index,
+                                error = %e,
+                                "game execution failed (transient); requeuing"
+                            );
+                            if let Err(err) = apply_requeue(
+                                &mut pending_games,
+                                &mut background_retries,
+                                &mut tracker,
+                                pg.clone(),
+                                game.created_at,
+                                &args,
+                                &progress_path,
+                            ) {
+                                tracing::warn!(error = %err, "failed to apply requeue");
+                            }
+                        }
+                        Err(e) => {
+                            // Fatal: advance the frontier so the loop never stalls on it.
+                            tracing::error!(
+                                game_index = pg.game_index,
+                                error = %e,
+                                "game execution failed (fatal); skipping"
+                            );
+                            tracker.add(pg.game_index);
+                            background_retries.retain(|b| b.game_index != pg.game_index);
+                            if let Err(e) = save_progress(&progress_path, &tracker, &background_retries)
+                            {
+                                tracing::warn!(error = %e, "failed to save progress");
+                            }
+                        }
+                    }
+                }
+                Err(FetchGameError::WrongGameType { game_index, game_type, .. }) => {
+                    tracing::info!(game_index, game_type, "skipping non-type-42 game");
+                    tracker.add(pg.game_index);
+                    background_retries.retain(|b| b.game_index != pg.game_index);
+                    if let Err(e) = save_progress(&progress_path, &tracker, &background_retries) {
+                        tracing::warn!(error = %e, "failed to save progress");
+                    }
+                }
+                Err(FetchGameError::Other(e)) => {
+                    // Transient fetch error: re-queue this attempt unchanged to retry next tick.
+                    tracing::warn!(
+                        game_index = pg.game_index,
+                        error = %e,
+                        "failed to fetch game data; will retry"
+                    );
+                    pending_games.push_back(PendingGame {
+                        executable_at: Instant::now() + poll,
+                        game_index: pg.game_index,
+                        kind: pg.kind,
+                    });
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -75,5 +390,15 @@ mod tests {
         assert_eq!(args.batch_size, 200);
         assert_eq!(args.max_lead_windows, 4);
         assert_eq!(args.stdin_grace_secs, 3600);
+    }
+
+    #[test]
+    fn permits_scale_with_budget() {
+        let budget = Some(500u64 * 1024 * 1024 * 1024);
+        let unit = 55u64 * 1024 * 1024 * 1024;
+        let margin = 20u64 * 1024 * 1024 * 1024;
+        // 500GiB - 20GiB margin = 480GiB; /55GiB = 8.7 → 8.
+        assert_eq!(super::compute_initial_permits(budget, 0, unit, margin), 8);
+        assert_eq!(super::compute_initial_permits(None, 0, unit, margin), 4);
     }
 }
