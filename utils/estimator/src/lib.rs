@@ -7,9 +7,11 @@ pub mod estimator;
 pub mod memory;
 pub mod retry;
 pub mod stats;
+pub mod window;
 
 pub use cache::{DaType, WitnessCache};
 pub use error::EstimatorError;
 pub use estimator::Estimator;
 pub use retry::network_call_with_timeout;
 pub use stats::aggregate_execution_stats;
+pub use window::WindowPredictor;
