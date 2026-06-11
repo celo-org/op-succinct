@@ -14,7 +14,10 @@ use op_succinct_host_utils::{
 use rkyv::rancor::Error as RkyvError;
 use tokio::sync::Semaphore;
 
-use crate::contained::admission::{current_rss_bytes, Admission};
+use crate::contained::{
+    admission::{current_rss_bytes, Admission},
+    watchdog::Watchdog,
+};
 
 /// A sub-range is safe to *persist* only once its end block is L2-finalized AND L1 has
 /// finalized past its `l1_head` (spec key-soundness). Keeps the
@@ -39,6 +42,7 @@ pub async fn pipeline_step<H: OPSuccinctHost>(
     predictor: &mut WindowPredictor,
     permits: &Arc<Semaphore>,
     admission: &Admission,
+    watchdog: &Watchdog,
     admission_frozen: &Arc<AtomicBool>,
     batch_size: u64,
 ) -> anyhow::Result<()>
@@ -129,6 +133,10 @@ where
         // live cgroup usage; the semaphore stays as the hard concurrency cap.
         admission.admit(WorkKind::Build, gas).await;
         let _permit = permits.clone().acquire_owned().await.expect("semaphore closed");
+        // Register with the watchdog AFTER the permit so a wedged build (e.g. a hung
+        // host.run/beacon fetch — the spec's "more likely stuck case") is visible to the
+        // overrun watchdog and freezes admission, instead of leaking a permit unseen.
+        let _unit = watchdog.enter(WorkKind::Build, format!("build {}-{}", range.start, range.end));
         if let Err(e) = estimator.build_range_witness(range).await {
             tracing::warn!(start = range.start, end = range.end, error = %e, "pipeline build failed");
         }
