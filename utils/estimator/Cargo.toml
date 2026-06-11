@@ -9,10 +9,6 @@ edition.workspace = true
 op-succinct-host-utils.workspace = true
 op-succinct-proof-utils.workspace = true
 op-succinct-client-utils.workspace = true
-op-succinct-common.workspace = true
-op-succinct-celestia-host-utils = { workspace = true, optional = true }
-op-succinct-eigenda-host-utils = { workspace = true, optional = true }
-op-succinct-ethereum-host-utils = { workspace = true, optional = true }
 
 # sp1
 sp1-sdk.workspace = true
@@ -20,22 +16,20 @@ sp1-sdk.workspace = true
 # general
 anyhow.workspace = true
 thiserror.workspace = true
-async-trait.workspace = true
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
 bincode.workspace = true
 rkyv.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-futures.workspace = true
-alloy-primitives.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-rstest = "0.26"
 
 [features]
 default = ["ethereum"]
-celestia = ["op-succinct-celestia-host-utils", "op-succinct-proof-utils/celestia"]
-eigenda = ["op-succinct-eigenda-host-utils", "op-succinct-proof-utils/eigenda"]
-ethereum = ["op-succinct-ethereum-host-utils", "op-succinct-proof-utils/ethereum"]
+# The DA path is provided by op-succinct-proof-utils' matching feature (range ELF +
+# initialize_host). The estimator itself is generic over the host, so it needs no
+# direct DA-host-utils dependency.
+celestia = ["op-succinct-proof-utils/celestia"]
+eigenda = ["op-succinct-proof-utils/eigenda"]
+ethereum = ["op-succinct-proof-utils/ethereum"]
