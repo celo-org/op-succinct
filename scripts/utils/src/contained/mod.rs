@@ -1,3 +1,4 @@
+pub mod admission;
 pub mod discovery;
 pub mod executor;
 pub mod pipeline;
@@ -29,6 +30,7 @@ use op_succinct_proof_utils::initialize_host;
 use tokio::sync::Semaphore;
 
 use crate::contained::{
+    admission::Admission,
     discovery::{fetch_game_data, FetchGameError},
     executor::execute_game,
     state::{
@@ -248,6 +250,17 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
     tracing::info!(max_conc, ?budget, usage, "RSS admission sized");
     let permits = Arc::new(Semaphore::new(max_conc));
 
+    // Adaptive RSS admission (spec §7): gas-weighted projection from observed history,
+    // gating each build/execute on LIVE cgroup usage + margin. Shared by the pipeline and
+    // the executor; the semaphore above remains the hard concurrency cap.
+    let admission = Arc::new(Admission::load(
+        budget,
+        margin,
+        default_unit,
+        args.cache_dir.join("completion_history.json"),
+        Duration::from_secs(args.poll_interval),
+    ));
+
     // ── Overrun-guard admission state ──────────────────────────────────────
     // When an in-flight execute runs past the duration ceiling, the watchdog FREEZES
     // admission: the pipeline and executor stop starting NEW work (spec §7 — a running
@@ -283,6 +296,7 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
         let estimator = estimator.clone();
         let fetcher = fetcher.clone();
         let permits = permits.clone();
+        let admission = admission.clone();
         let admission_frozen = admission_frozen.clone();
         let proposal_interval = args.proposal_interval;
         let max_lead_windows = args.max_lead_windows;
@@ -306,6 +320,7 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
                     &fetcher,
                     &mut predictor,
                     &permits,
+                    &admission,
                     &admission_frozen,
                     batch_size,
                 )
@@ -489,8 +504,15 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
                     // Record the start so the watchdog can detect an overrun; clear it on
                     // BOTH success and error so a failed execute leaves no stale start time.
                     *execute_started.lock().unwrap() = Some(Instant::now());
-                    let result =
-                        execute_game(&estimator, &fetcher, &permits, &game, args.batch_size).await;
+                    let result = execute_game(
+                        &estimator,
+                        &fetcher,
+                        &permits,
+                        &admission,
+                        &game,
+                        args.batch_size,
+                    )
+                    .await;
                     *execute_started.lock().unwrap() = None;
                     match result {
                         Ok((stats, ranges)) => {
