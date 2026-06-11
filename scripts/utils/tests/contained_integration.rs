@@ -161,3 +161,56 @@ async fn second_build_is_noop_fast_path() {
     estimator.build_range_witness(&range).await.unwrap();
     assert!(cache.has_stdin(range.start, range.end));
 }
+
+/// Test 5 — frontier/game cache-key alignment (ENV-GATED). The pipeline prebuilds a
+/// window's stdin; an on-chain game whose `[start_block, end_block]` equals that window
+/// then finds the stdin already cache-resident, so `execute_game` hits the cache instead
+/// of rebuilding. This documents the alignment invariant the frontier-seed fix enforces:
+/// the pipeline's frontier must sit on a real proposal boundary so its split sub-ranges
+/// share cache keys with the executor's game splits.
+///
+/// This is the alignment-POSITIVE assertion. A divergent-boundary test (a misaligned
+/// frontier missing the cache) needs a live multi-game chain to derive two genuinely
+/// different proposal boundaries, so it is out of scope here.
+#[tokio::test]
+async fn pipeline_window_aligned_to_game_boundary_hits_cache() {
+    if !it_enabled() {
+        eprintln!("skipping: OPS_IT_L2_RPC unset");
+        return;
+    }
+    dotenv::from_filename(".env").ok();
+    let Some((start, end)) = range_enabled() else {
+        eprintln!("skipping: OPS_IT_START/OPS_IT_END unset or invalid");
+        return;
+    };
+    let batch_size = env_u64("OPS_IT_BATCH", 100);
+
+    build_estimator!(estimator, fetcher, cache, _dir);
+
+    // Pipeline producer: prebuild the window's stdin (the predictor would do this for an
+    // aligned window `[start, end]`).
+    let range = SpanBatchRange { start, end };
+    estimator.build_range_witness(&range).await.unwrap();
+
+    // The key invariant: the aligned window's stdin is cache-resident BEFORE the executor
+    // runs, so an aligned game will hit the cache rather than rebuild.
+    assert!(cache.has_stdin(start, end));
+
+    // The aligned game: its on-chain boundaries equal the prebuilt window.
+    let game = GameData {
+        game_index: 0,
+        game_address: alloy_primitives::Address::ZERO,
+        start_block: start,
+        end_block: end,
+        created_at: std::time::SystemTime::now(),
+    };
+
+    let permits = Arc::new(tokio::sync::Semaphore::new(1));
+    let (stats, ranges) =
+        execute_game(&estimator, &fetcher, &permits, &game, batch_size).await.unwrap();
+
+    // execute_game succeeds and produces real stats over the aligned range.
+    assert_eq!(stats.batch_end, end);
+    assert!(stats.total_instruction_count > 0);
+    assert!(!ranges.is_empty());
+}
