@@ -1,7 +1,4 @@
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use std::sync::Arc;
 
 use alloy_eips::BlockId;
 use op_succinct_estimator::{memory::WorkKind, window::WindowPredictor, Estimator};
@@ -14,10 +11,7 @@ use op_succinct_host_utils::{
 use rkyv::rancor::Error as RkyvError;
 use tokio::sync::Semaphore;
 
-use crate::contained::{
-    admission::{current_rss_bytes, Admission},
-    watchdog::Watchdog,
-};
+use crate::contained::admission::{current_rss_bytes, Admission};
 
 /// A sub-range is safe to *persist* only once its end block is L2-finalized AND L1 has
 /// finalized past its `l1_head` (spec key-soundness). Keeps the
@@ -42,8 +36,6 @@ pub async fn pipeline_step<H: OPSuccinctHost>(
     predictor: &mut WindowPredictor,
     permits: &Arc<Semaphore>,
     admission: &Admission,
-    watchdog: &Watchdog,
-    admission_frozen: &Arc<AtomicBool>,
     batch_size: u64,
 ) -> anyhow::Result<()>
 where
@@ -59,11 +51,6 @@ where
         rkyv::Deserialize<WitnessOf<H>, rkyv::api::high::HighDeserializer<RkyvError>>
             + for<'a> rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, RkyvError>>,
 {
-    // Admission frozen by the overrun watchdog: don't start new builds.
-    if admission_frozen.load(Ordering::SeqCst) {
-        return Ok(());
-    }
-
     // Real finalized-L2 head; on any RPC error do nothing this tick.
     let finalized_l2 = fetcher
         .get_l2_header(BlockId::finalized())
@@ -133,10 +120,6 @@ where
         // live cgroup usage; the semaphore stays as the hard concurrency cap.
         admission.admit(WorkKind::Build, gas).await;
         let _permit = permits.clone().acquire_owned().await.expect("semaphore closed");
-        // Register with the watchdog AFTER the permit so a wedged build (e.g. a hung
-        // host.run/beacon fetch — the spec's "more likely stuck case") is visible to the
-        // overrun watchdog and freezes admission, instead of leaking a permit unseen.
-        let _unit = watchdog.enter(WorkKind::Build, format!("build {}-{}", range.start, range.end));
         if let Err(e) = estimator.build_range_witness(range).await {
             tracing::warn!(start = range.start, end = range.end, error = %e, "pipeline build failed");
         }

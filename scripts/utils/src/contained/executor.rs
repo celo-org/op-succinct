@@ -1,9 +1,5 @@
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use std::sync::Arc;
 
-use anyhow::anyhow;
 use op_succinct_estimator::{
     aggregate_execution_stats, memory::WorkKind, Estimator, EstimatorError,
 };
@@ -20,30 +16,22 @@ use tokio::sync::Semaphore;
 use crate::contained::{
     admission::{current_rss_bytes, Admission},
     discovery::GameData,
-    watchdog::Watchdog,
 };
 
 type WitnessOf<H> = <<H as OPSuccinctHost>::WitnessGenerator as WitnessGenerator>::WitnessData;
 
 /// Execute every safe-head sub-range of a game CONCURRENTLY and aggregate the stats.
 /// A cache hit (pipeline prebuilt the stdin) skips host.run; a miss builds on demand.
-/// Each execute draws an RSS-admission slot and a semaphore permit, so the number of
-/// sub-ranges actually running at once is bounded by the shared memory budget — not by
-/// how many ranges (or games) are in flight. Returns the aggregate AND the sub-ranges
-/// (so the caller can schedule stdin pruning per range after the game succeeds).
-///
-/// Each running sub-range registers a [`Watchdog`] unit (after acquiring its permit) so
-/// the overrun watchdog can observe ALL concurrent units. `admission_frozen` is checked
-/// at the top of each sub-range: if the watchdog froze admission, sub-ranges that have
-/// not yet started bail out and the game is requeued (its already-built stdins are
-/// cached, so the retry re-executes only the unfinished sub-ranges cheaply).
+/// Each execute draws an RSS-admission slot (projected memory must fit the live cgroup
+/// budget) and a semaphore permit, so the number of sub-ranges actually running at once
+/// is bounded by the shared memory budget — not by how many ranges (or games) are in
+/// flight. Returns the aggregate AND the sub-ranges (so the caller can schedule stdin
+/// pruning per range after the game succeeds).
 pub async fn execute_game<H: OPSuccinctHost>(
     estimator: &Estimator<H>,
     fetcher: &OPSuccinctDataFetcher,
     permits: &Arc<Semaphore>,
     admission: &Admission,
-    watchdog: &Watchdog,
-    admission_frozen: &Arc<AtomicBool>,
     game: &GameData,
     batch_size: u64,
 ) -> Result<(ExecutionStats, Vec<SpanBatchRange>), EstimatorError>
@@ -69,26 +57,14 @@ where
     .await
     .map_err(EstimatorError::classify)?;
 
-    // One future per sub-range; they run concurrently and are gated by admission + the
+    // One future per sub-range; they run concurrently and are gated by RSS admission + the
     // shared semaphore (the hard concurrency cap).
     let range_futures = sub_ranges.iter().map(|range| {
         let estimator = estimator;
         let fetcher = fetcher;
         let admission = admission;
-        let watchdog = watchdog;
         let permits = permits;
-        let admission_frozen = admission_frozen;
         async move {
-            // Overrun watchdog froze admission: don't start this sub-range. Surfacing a
-            // Transient requeues the whole game; its built stdins are cached, so the retry
-            // re-executes only the unfinished sub-ranges cheaply.
-            if admission_frozen.load(Ordering::SeqCst) {
-                return Err(EstimatorError::Transient(anyhow!(
-                    "admission frozen mid-game; deferring sub-range {}-{}",
-                    range.start,
-                    range.end
-                )));
-            }
             // Gas-weighted RSS projection key: sum the sub-range's L2 block gas. One extra
             // (cheap) fetch versus the SP1 execute that follows.
             let block_data = fetcher
@@ -96,14 +72,10 @@ where
                 .await
                 .map_err(EstimatorError::classify)?;
             let gas: u64 = block_data.iter().map(|b| b.gas_used).sum();
-            // Adaptive admission: block until this unit is projected to fit the budget given
-            // live cgroup usage; the semaphore stays as the hard concurrency cap.
+            // Adaptive admission: block until this unit's projected peak fits the budget
+            // given live cgroup usage; the semaphore stays as the hard concurrency cap.
             admission.admit(WorkKind::Execute, gas).await;
             let _permit = permits.clone().acquire_owned().await.expect("semaphore closed");
-            // Register with the watchdog AFTER acquiring the permit, so the registry tracks
-            // work that is actually running. The guard deregisters on drop (incl. the `?`).
-            let _unit =
-                watchdog.enter(WorkKind::Execute, format!("execute {}-{}", range.start, range.end));
             let stats = estimator.execute_range(range).await?;
             admission.record(WorkKind::Execute, gas, current_rss_bytes());
             Ok::<ExecutionStats, EstimatorError>(stats)
