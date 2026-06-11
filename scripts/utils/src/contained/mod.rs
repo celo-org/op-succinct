@@ -1,3 +1,5 @@
+pub mod discovery;
+
 use std::path::PathBuf;
 
 use clap::Parser;
