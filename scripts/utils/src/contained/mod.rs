@@ -3,13 +3,14 @@ pub mod discovery;
 pub mod executor;
 pub mod pipeline;
 pub mod state;
+pub mod watchdog;
 
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc,
     },
     time::{Duration, Instant, SystemTime},
 };
@@ -25,9 +26,11 @@ use op_succinct_estimator::{
     memory::{read_cgroup_budget_bytes, read_cgroup_usage_bytes},
     network_call_with_timeout, DaType, Estimator, WindowPredictor, WitnessCache,
 };
-use op_succinct_host_utils::fetcher::OPSuccinctDataFetcher;
+use op_succinct_host_utils::{
+    block_range::SpanBatchRange, fetcher::OPSuccinctDataFetcher, stats::ExecutionStats,
+};
 use op_succinct_proof_utils::initialize_host;
-use tokio::sync::Semaphore;
+use tokio::sync::{mpsc, Semaphore};
 
 use crate::contained::{
     admission::Admission,
@@ -37,6 +40,7 @@ use crate::contained::{
         is_background_retry_aged_out, load_progress, requeue_decision, resume_next_index,
         save_progress, AttemptKind, BackgroundRetry, PendingGame, RequeueDecision,
     },
+    watchdog::Watchdog,
 };
 
 /// CLI for the contained game monitor. Preserves the legacy flags and adds the
@@ -54,6 +58,11 @@ pub struct ContainedArgs {
     /// Blocks per range — caps SP1 guest memory per execution.
     #[arg(long, default_value = "200")]
     pub batch_size: u64,
+    /// Maximum number of games executed concurrently (replaces the legacy
+    /// `--max-concurrent`). Per-range memory is bounded separately by RSS admission;
+    /// this caps game-task fan-out and concurrent control-plane fetches.
+    #[arg(long, default_value = "5")]
+    pub max_concurrent_games: usize,
     /// Primary-retry budget before a game moves to the background queue.
     #[arg(long, default_value = "1")]
     pub max_retries: u32,
@@ -111,8 +120,9 @@ fn da_type() -> DaType {
 fn compute_initial_permits(budget: Option<u64>, usage: u64, unit_bytes: u64, margin: u64) -> usize {
     match budget {
         None => 4,
-        Some(b) => ((b.saturating_sub(usage).saturating_sub(margin) / unit_bytes.max(1)) as usize)
-            .max(1),
+        Some(b) => {
+            ((b.saturating_sub(usage).saturating_sub(margin) / unit_bytes.max(1)) as usize).max(1)
+        }
     }
 }
 
@@ -162,11 +172,6 @@ async fn latest_game_end_block<P: alloy_provider::Provider + Clone>(
     }
 }
 
-/// True if an in-flight unit started at `started` has exceeded the duration ceiling.
-fn is_overrun(started: Instant, now: Instant, ceiling_secs: u64) -> bool {
-    now.duration_since(started).as_secs() > ceiling_secs
-}
-
 struct PrunableStdin {
     start: u64,
     end: u64,
@@ -177,6 +182,121 @@ struct PrunableStdin {
 /// elapsed (so a near-term rerun can still hit the cache).
 fn is_prune_eligible(now: std::time::SystemTime, eligible_at: std::time::SystemTime) -> bool {
     now >= eligible_at
+}
+
+/// Outcome of one spawned game-execution task, sent back to the main loop which owns the
+/// scheduling state and applies the mutation single-threaded (no locks on the queues).
+enum GameTaskResult {
+    /// Game executed: advance the frontier, drop any background entry, schedule prunes.
+    Success { pg: PendingGame, stats: ExecutionStats, ranges: Vec<SpanBatchRange> },
+    /// Non-type-42 game: advance the frontier, drop any background entry.
+    WrongType { pg: PendingGame, game_type: u32 },
+    /// Transient execution failure: apply the two-tier requeue policy.
+    Transient { pg: PendingGame, created_at: SystemTime, error: String },
+    /// Fatal execution failure: advance the frontier (never stall), drop background entry.
+    Fatal { pg: PendingGame, error: String },
+    /// Pre-execution transient condition (L2 behind, control-plane blip): re-queue the
+    /// same attempt without spending retry budget.
+    Defer { pg: PendingGame },
+}
+
+impl GameTaskResult {
+    fn game_index(&self) -> u64 {
+        match self {
+            GameTaskResult::Success { pg, .. } |
+            GameTaskResult::WrongType { pg, .. } |
+            GameTaskResult::Transient { pg, .. } |
+            GameTaskResult::Fatal { pg, .. } |
+            GameTaskResult::Defer { pg } => pg.game_index,
+        }
+    }
+}
+
+/// Apply a finished game task's outcome to the scheduling state. Runs only on the main
+/// loop, so the queues/tracker/prunables are mutated without locking.
+#[allow(clippy::too_many_arguments)]
+fn apply_game_result(
+    result: GameTaskResult,
+    pending_games: &mut VecDeque<PendingGame>,
+    background_retries: &mut VecDeque<BackgroundRetry>,
+    tracker: &mut SequenceTracker,
+    prunables: &mut Vec<PrunableStdin>,
+    args: &ContainedArgs,
+    progress_path: &Path,
+    now_sys: SystemTime,
+    now_instant: Instant,
+    poll: Duration,
+) {
+    match result {
+        GameTaskResult::Success { pg, stats, ranges } => {
+            tracing::info!(
+                game_index = pg.game_index,
+                sp1_gas = stats.total_sp1_gas,
+                blocks = stats.nb_blocks,
+                ranges = ranges.len(),
+                "game executed"
+            );
+            tracker.add(pg.game_index);
+            background_retries.retain(|b| b.game_index != pg.game_index);
+            // Purge any stale duplicate queue entry for this now-completed game.
+            pending_games.retain(|p| p.game_index != pg.game_index);
+            if let Err(e) = save_progress(progress_path, tracker, background_retries) {
+                tracing::warn!(error = %e, "failed to save progress");
+            }
+            let eligible_at = now_sys + Duration::from_secs(args.stdin_grace_secs);
+            for range in &ranges {
+                prunables.push(PrunableStdin { start: range.start, end: range.end, eligible_at });
+            }
+        }
+        GameTaskResult::WrongType { pg, game_type } => {
+            tracing::info!(game_index = pg.game_index, game_type, "skipping non-type-42 game");
+            tracker.add(pg.game_index);
+            background_retries.retain(|b| b.game_index != pg.game_index);
+            pending_games.retain(|p| p.game_index != pg.game_index);
+            if let Err(e) = save_progress(progress_path, tracker, background_retries) {
+                tracing::warn!(error = %e, "failed to save progress");
+            }
+        }
+        GameTaskResult::Transient { pg, created_at, error } => {
+            tracing::warn!(
+                game_index = pg.game_index,
+                error,
+                "game execution failed (transient); requeuing"
+            );
+            if let Err(e) = apply_requeue(
+                pending_games,
+                background_retries,
+                tracker,
+                pg,
+                created_at,
+                args,
+                progress_path,
+            ) {
+                tracing::warn!(error = %e, "failed to apply requeue");
+            }
+        }
+        GameTaskResult::Fatal { pg, error } => {
+            tracing::error!(
+                game_index = pg.game_index,
+                error,
+                "game execution failed (fatal); skipping"
+            );
+            tracker.add(pg.game_index);
+            background_retries.retain(|b| b.game_index != pg.game_index);
+            pending_games.retain(|p| p.game_index != pg.game_index);
+            if let Err(e) = save_progress(progress_path, tracker, background_retries) {
+                tracing::warn!(error = %e, "failed to save progress");
+            }
+        }
+        GameTaskResult::Defer { pg } => {
+            // Re-queue the same attempt shortly (no retry budget spent).
+            pending_games.push_back(PendingGame {
+                executable_at: now_instant + poll,
+                game_index: pg.game_index,
+                kind: pg.kind,
+            });
+        }
+    }
 }
 
 /// Apply the two-tier retry policy to a failed game, mutating the queues + persisting.
@@ -262,12 +382,14 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
     ));
 
     // ── Overrun-guard admission state ──────────────────────────────────────
-    // When an in-flight execute runs past the duration ceiling, the watchdog FREEZES
+    // When an in-flight unit runs past the duration ceiling, the watchdog FREEZES
     // admission: the pipeline and executor stop starting NEW work (spec §7 — a running
-    // SP1 execute cannot be force-killed in-process). The running unit is left to finish.
+    // SP1 execute cannot be force-killed in-process). The running unit is left to finish;
+    // the freeze THAWS automatically once nothing is overrunning (see the watchdog task).
     let admission_frozen = Arc::new(AtomicBool::new(false));
-    // Records when the current inline execute started (None = idle). The watchdog reads it.
-    let execute_started: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+    // In-flight registry: every concurrent build/execute registers here so the overrun
+    // watchdog can observe ALL running units at once, not a single slot.
+    let watchdog = Arc::new(Watchdog::new());
 
     // ── L1 provider + dispute game factory (from env, matching the legacy) ──
     // Built before the pipeline spawn so we can seed the predictor's frontier from the
@@ -280,8 +402,7 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
     let l1_provider = ProviderBuilder::new().connect_http(l1_rpc.parse()?);
     let factory = DisputeGameFactoryInstance::new(factory_address, l1_provider.clone());
 
-    let on_chain_count =
-        factory.gameCount().call().block(BlockId::finalized()).await?.to::<u64>();
+    let on_chain_count = factory.gameCount().call().block(BlockId::finalized()).await?.to::<u64>();
 
     // ── Pipeline frontier seed ─────────────────────────────────────────────
     // The frontier MUST land on a real proposal boundary so the pipeline's prebuilt
@@ -297,6 +418,7 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
         let fetcher = fetcher.clone();
         let permits = permits.clone();
         let admission = admission.clone();
+        let watchdog = watchdog.clone();
         let admission_frozen = admission_frozen.clone();
         let proposal_interval = args.proposal_interval;
         let max_lead_windows = args.max_lead_windows;
@@ -306,11 +428,9 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
             // L2 head (then 0) when no aligned boundary is available.
             let start_frontier = match frontier_seed {
                 Some(end_block) => end_block,
-                None => fetcher
-                    .get_l2_header(BlockId::finalized())
-                    .await
-                    .map(|h| h.number)
-                    .unwrap_or(0),
+                None => {
+                    fetcher.get_l2_header(BlockId::finalized()).await.map(|h| h.number).unwrap_or(0)
+                }
             };
             let mut predictor =
                 WindowPredictor::new(start_frontier, proposal_interval, max_lead_windows);
@@ -321,6 +441,7 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
                     &mut predictor,
                     &permits,
                     &admission,
+                    &watchdog,
                     &admission_frozen,
                     batch_size,
                 )
@@ -334,23 +455,28 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
     }
 
     // ── Overrun watchdog task ──────────────────────────────────────────────
+    // Scans the in-flight registry each tick. If ANY running build/execute exceeds the
+    // duration ceiling, FREEZE admission (stop starting new work; a running unit cannot be
+    // force-killed in-process). When nothing is overrunning any more, THAW so the daemon
+    // resumes — the freeze is a transient brake, not a permanent latch.
     {
         let frozen = admission_frozen.clone();
-        let started = execute_started.clone();
+        let watchdog = watchdog.clone();
         let ceiling = args.max_process_duration_secs;
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(poll).await;
-                let overrun = {
-                    let guard = started.lock().unwrap();
-                    guard.map(|s| is_overrun(s, Instant::now(), ceiling)).unwrap_or(false)
-                };
-                if overrun && !frozen.swap(true, Ordering::SeqCst) {
+                let overruns = watchdog.overrunning(Instant::now(), ceiling);
+                let was_frozen = frozen.swap(!overruns.is_empty(), Ordering::SeqCst);
+                if !overruns.is_empty() && !was_frozen {
                     tracing::error!(
                         ceiling_secs = ceiling,
-                        "ALERT: execute exceeded duration ceiling; freezing admission \
-                         (no new work will start; running unit cannot be force-killed)"
+                        ?overruns,
+                        "ALERT: unit(s) exceeded duration ceiling; freezing admission \
+                         (no new work will start; running units cannot be force-killed)"
                     );
+                } else if overruns.is_empty() && was_frozen {
+                    tracing::warn!("overrun cleared; thawing admission (resuming new work)");
                 }
             }
         });
@@ -374,13 +500,38 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
 
     let mut prunables: Vec<PrunableStdin> = Vec::new();
 
+    // Finished game tasks report their outcome here; the main loop applies the state
+    // mutation (single-threaded), so the tracker/queues/prunables need no locking.
+    let (results_tx, mut results_rx) = mpsc::unbounded_channel::<GameTaskResult>();
+    // Game indices whose task is currently running — bounds concurrency and prevents
+    // double-spawning a game (e.g. a background drain while it is already executing).
+    let mut running_games: HashSet<u64> = HashSet::new();
+
     // ── Main loop ──────────────────────────────────────────────────────────
     loop {
+        // (0) Apply outcomes from finished game tasks. State mutation happens only here.
+        let now_sys = SystemTime::now();
+        let now_instant = Instant::now();
+        while let Ok(result) = results_rx.try_recv() {
+            running_games.remove(&result.game_index());
+            apply_game_result(
+                result,
+                &mut pending_games,
+                &mut background_retries,
+                &mut tracker,
+                &mut prunables,
+                &args,
+                &progress_path,
+                now_sys,
+                now_instant,
+                poll,
+            );
+        }
+
         // Sweep eligible stdin blobs before sleeping so a long-running iteration
         // doesn't delay pruning by an extra poll period.
-        let now = std::time::SystemTime::now();
         prunables.retain(|p| {
-            if is_prune_eligible(now, p.eligible_at) {
+            if is_prune_eligible(now_sys, p.eligible_at) {
                 if let Err(e) = estimator.cache.prune_stdin(p.start, p.end) {
                     tracing::warn!(start = p.start, end = p.end, error = %e, "stdin prune failed");
                 }
@@ -395,21 +546,18 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
         // (a) Discovery: queue newly-created games with the discover→execute delay.
         // Bound the control-plane read so a wedged RPC can't stall the loop; a timeout
         // yields an Err handled like any other fetch failure (warn + retry next tick).
-        let count = match network_call_with_timeout(
-            args.network_call_timeout_secs,
-            "gameCount",
-            async {
+        let count =
+            match network_call_with_timeout(args.network_call_timeout_secs, "gameCount", async {
                 Ok(factory.gameCount().call().block(BlockId::finalized()).await?.to::<u64>())
-            },
-        )
-        .await
-        {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to fetch gameCount; retrying");
-                continue;
-            }
-        };
+            })
+            .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to fetch gameCount; retrying");
+                    continue;
+                }
+            };
         while next_game_index < count {
             let game_index = next_game_index;
             next_game_index += 1;
@@ -421,7 +569,8 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
             });
         }
 
-        // (b) Drain due background retries into the pending queue as Background attempts.
+        // (b) Drain due background retries into the pending queue as Background attempts,
+        // skipping any game already running or already queued so no duplicate is enqueued.
         let now_sys = SystemTime::now();
         let due: Vec<u64> = background_retries
             .iter()
@@ -429,6 +578,11 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
             .map(|bg| bg.game_index)
             .collect();
         for game_index in due {
+            if running_games.contains(&game_index) ||
+                pending_games.iter().any(|p| p.game_index == game_index)
+            {
+                continue;
+            }
             if let Some(bg) = background_retries.iter().find(|b| b.game_index == game_index) {
                 pending_games.push_back(PendingGame {
                     executable_at: Instant::now(),
@@ -438,204 +592,123 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
             }
         }
 
-        // (c) Evict aged-out background retries (this loop executes synchronously per game,
-        // so no entry is "running" here).
+        // (c) Evict aged-out background retries — but never one whose task is running.
         let now_sys = SystemTime::now();
-        background_retries.retain(|bg| !is_background_retry_aged_out(bg, now_sys, max_age, false));
-
-        // (d) Execute due pending games.
-        let current_time = Instant::now();
-        let due: Vec<PendingGame> = pending_games
-            .iter()
-            .filter(|p| p.executable_at <= current_time)
-            .cloned()
-            .collect();
-        // Drop the executed entries from the pending queue up front; failures re-queue them.
-        pending_games.retain(|p| p.executable_at > current_time);
-
-        for pg in due {
-            // Bound the control-plane game-data read. The inner `Result<GameData,
-            // FetchGameError>` is preserved (so the WrongGameType/Other arms below are
-            // unchanged); only a timeout produces the outer Err, handled like a transient
-            // fetch failure (warn + retry next tick).
-            let fetched = network_call_with_timeout(
-                args.network_call_timeout_secs,
-                "fetch_game_data",
-                async { Ok(fetch_game_data(pg.game_index, &factory, l1_provider.clone()).await) },
+        background_retries.retain(|bg| {
+            !is_background_retry_aged_out(
+                bg,
+                now_sys,
+                max_age,
+                running_games.contains(&bg.game_index),
             )
-            .await;
-            let game_result = match fetched {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!(
-                        game_index = pg.game_index,
-                        error = %e,
-                        "fetch_game_data timed out; will retry"
-                    );
-                    pending_games.push_back(PendingGame {
-                        executable_at: Instant::now() + poll,
-                        game_index: pg.game_index,
-                        kind: pg.kind,
-                    });
-                    continue;
-                }
-            };
-            match game_result {
-                Ok(game) => {
-                    // L2-behind defer: a game's end block must be derivable from the
-                    // finalized L2 head before it can be executed. If the finalized head
-                    // hasn't reached it, re-queue the same attempt (no retry budget spent)
-                    // with a short defer instead of burning a retry in the splitter.
-                    let finalized_l2 =
+        });
+
+        // (d) Spawn due pending games as concurrent tasks, up to the concurrency cap.
+        // Memory is bounded per-range by RSS admission inside execute_game; this caps the
+        // number of in-flight games. Each spawned task reports back via `results_tx`.
+        let current_time = Instant::now();
+        let mut remaining: VecDeque<PendingGame> = VecDeque::with_capacity(pending_games.len());
+        while let Some(pg) = pending_games.pop_front() {
+            let startable = pg.executable_at <= current_time &&
+                !admission_frozen.load(Ordering::SeqCst) &&
+                !running_games.contains(&pg.game_index) &&
+                running_games.len() < args.max_concurrent_games;
+            if !startable {
+                remaining.push_back(pg);
+                continue;
+            }
+            running_games.insert(pg.game_index);
+            let tx = results_tx.clone();
+            let estimator = estimator.clone();
+            let fetcher = fetcher.clone();
+            let permits = permits.clone();
+            let admission = admission.clone();
+            let watchdog = watchdog.clone();
+            let admission_frozen = admission_frozen.clone();
+            let factory = factory.clone();
+            let l1_provider = l1_provider.clone();
+            let timeout_secs = args.network_call_timeout_secs;
+            let batch_size = args.batch_size;
+            tokio::spawn(async move {
+                // Bound the control-plane game-data read; a timeout is a transient defer.
+                let fetched = network_call_with_timeout(timeout_secs, "fetch_game_data", async {
+                    Ok(fetch_game_data(pg.game_index, &factory, l1_provider.clone()).await)
+                })
+                .await;
+                let result = match fetched {
+                    Err(e) => {
+                        tracing::warn!(
+                            game_index = pg.game_index,
+                            error = %e,
+                            "fetch_game_data timed out; will retry"
+                        );
+                        GameTaskResult::Defer { pg }
+                    }
+                    Ok(Ok(game)) => {
+                        // L2-behind defer: the end block must be derivable from the finalized
+                        // L2 head before execution; if not, re-queue (no retry budget spent).
                         match fetcher.get_l2_header(BlockId::finalized()).await.map(|h| h.number) {
-                            Ok(n) => n,
                             Err(e) => {
                                 tracing::warn!(
                                     game_index = pg.game_index,
                                     error = %e,
                                     "failed to fetch finalized L2 head; will retry"
                                 );
-                                pending_games.push_back(PendingGame {
-                                    executable_at: Instant::now()
-                                        + Duration::from_secs(args.poll_interval),
-                                    game_index: pg.game_index,
-                                    kind: pg.kind,
-                                });
-                                continue;
+                                GameTaskResult::Defer { pg }
                             }
-                        };
-                    if !game_is_executable(finalized_l2, game.end_block) {
-                        tracing::debug!(
-                            game_index = pg.game_index,
-                            finalized_l2,
-                            end_block = game.end_block,
-                            "deferring game {}: L2 behind",
-                            pg.game_index
-                        );
-                        pending_games.push_back(PendingGame {
-                            executable_at: Instant::now()
-                                + Duration::from_secs(args.poll_interval),
-                            game_index: pg.game_index,
-                            kind: pg.kind,
-                        });
-                        continue;
-                    }
-                    // Admission frozen by the overrun watchdog: don't start new work.
-                    // Re-queue this attempt unchanged (no retry budget spent), like the
-                    // L2-behind defer path above.
-                    if admission_frozen.load(Ordering::SeqCst) {
-                        tracing::debug!(
-                            game_index = pg.game_index,
-                            "admission frozen; deferring game {} (no new work started)",
-                            pg.game_index
-                        );
-                        pending_games.push_back(PendingGame {
-                            executable_at: Instant::now()
-                                + Duration::from_secs(args.poll_interval),
-                            game_index: pg.game_index,
-                            kind: pg.kind,
-                        });
-                        continue;
-                    }
-                    // `execute_game` records `execute_started` around EACH sub-range so the
-                    // watchdog measures one sub-range, and checks `admission_frozen` per
-                    // sub-range to halt the remaining ones if the watchdog freezes mid-game.
-                    let result = execute_game(
-                        &estimator,
-                        &fetcher,
-                        &permits,
-                        &admission,
-                        &execute_started,
-                        &admission_frozen,
-                        &game,
-                        args.batch_size,
-                    )
-                    .await;
-                    match result {
-                        Ok((stats, ranges)) => {
-                            tracing::info!(
-                                game_index = pg.game_index,
-                                start = game.start_block,
-                                end = game.end_block,
-                                sp1_gas = stats.total_sp1_gas,
-                                blocks = stats.nb_blocks,
-                                ranges = ranges.len(),
-                                "game executed"
-                            );
-                            tracker.add(pg.game_index);
-                            // A successful background game is now complete: drop its entry.
-                            background_retries.retain(|b| b.game_index != pg.game_index);
-                            if let Err(e) = save_progress(&progress_path, &tracker, &background_retries)
+                            Ok(finalized_l2)
+                                if !game_is_executable(finalized_l2, game.end_block) =>
                             {
-                                tracing::warn!(error = %e, "failed to save progress");
+                                tracing::debug!(
+                                    game_index = pg.game_index,
+                                    finalized_l2,
+                                    end_block = game.end_block,
+                                    "deferring game: L2 behind"
+                                );
+                                GameTaskResult::Defer { pg }
                             }
-                            let eligible_at = std::time::SystemTime::now()
-                                + std::time::Duration::from_secs(args.stdin_grace_secs);
-                            for range in &ranges {
-                                prunables.push(PrunableStdin {
-                                    start: range.start,
-                                    end: range.end,
-                                    eligible_at,
-                                });
-                            }
-                        }
-                        Err(e) if e.is_transient() => {
-                            tracing::warn!(
-                                game_index = pg.game_index,
-                                error = %e,
-                                "game execution failed (transient); requeuing"
-                            );
-                            if let Err(err) = apply_requeue(
-                                &mut pending_games,
-                                &mut background_retries,
-                                &mut tracker,
-                                pg.clone(),
-                                game.created_at,
-                                &args,
-                                &progress_path,
-                            ) {
-                                tracing::warn!(error = %err, "failed to apply requeue");
-                            }
-                        }
-                        Err(e) => {
-                            // Fatal: advance the frontier so the loop never stalls on it.
-                            tracing::error!(
-                                game_index = pg.game_index,
-                                error = %e,
-                                "game execution failed (fatal); skipping"
-                            );
-                            tracker.add(pg.game_index);
-                            background_retries.retain(|b| b.game_index != pg.game_index);
-                            if let Err(e) = save_progress(&progress_path, &tracker, &background_retries)
+                            Ok(_) => match execute_game(
+                                &estimator,
+                                &fetcher,
+                                &permits,
+                                &admission,
+                                &watchdog,
+                                &admission_frozen,
+                                &game,
+                                batch_size,
+                            )
+                            .await
                             {
-                                tracing::warn!(error = %e, "failed to save progress");
-                            }
+                                Ok((stats, ranges)) => {
+                                    GameTaskResult::Success { pg, stats, ranges }
+                                }
+                                Err(e) if e.is_transient() => GameTaskResult::Transient {
+                                    pg,
+                                    created_at: game.created_at,
+                                    error: format!("{e}"),
+                                },
+                                Err(e) => GameTaskResult::Fatal { pg, error: format!("{e}") },
+                            },
                         }
                     }
-                }
-                Err(FetchGameError::WrongGameType { game_index, game_type, .. }) => {
-                    tracing::info!(game_index, game_type, "skipping non-type-42 game");
-                    tracker.add(pg.game_index);
-                    background_retries.retain(|b| b.game_index != pg.game_index);
-                    if let Err(e) = save_progress(&progress_path, &tracker, &background_retries) {
-                        tracing::warn!(error = %e, "failed to save progress");
+                    Ok(Err(FetchGameError::WrongGameType { game_type, .. })) => {
+                        GameTaskResult::WrongType { pg, game_type }
                     }
-                }
-                Err(FetchGameError::Other(e)) => {
-                    // Transient fetch error: re-queue this attempt unchanged to retry next tick.
-                    tracing::warn!(
-                        game_index = pg.game_index,
-                        error = %e,
-                        "failed to fetch game data; will retry"
-                    );
-                    pending_games.push_back(PendingGame {
-                        executable_at: Instant::now() + poll,
-                        game_index: pg.game_index,
-                        kind: pg.kind,
-                    });
-                }
-            }
+                    Ok(Err(FetchGameError::Other(e))) => {
+                        tracing::warn!(
+                            game_index = pg.game_index,
+                            error = %e,
+                            "failed to fetch game data; will retry"
+                        );
+                        GameTaskResult::Defer { pg }
+                    }
+                };
+                // The receiver lives for the whole process; a send error only means
+                // shutdown, in which case dropping the result is fine.
+                let _ = tx.send(result);
+            });
         }
+        pending_games = remaining;
     }
 }
 
@@ -653,6 +726,7 @@ mod tests {
         assert_eq!(args.batch_size, 200);
         assert_eq!(args.max_lead_windows, 4);
         assert_eq!(args.stdin_grace_secs, 3600);
+        assert_eq!(args.max_concurrent_games, 5);
     }
 
     #[test]
@@ -673,21 +747,10 @@ mod tests {
     }
 
     #[test]
-    fn overrun_detected_past_ceiling() {
-        use std::time::{Duration, Instant};
-        let started = Instant::now();
-        assert!(!super::is_overrun(started, started + Duration::from_secs(10), 60));
-        assert!(super::is_overrun(started, started + Duration::from_secs(61), 60));
-    }
-
-    #[test]
     fn prune_eligible_only_after_grace() {
         use std::time::{Duration, SystemTime};
         let eligible_at = SystemTime::now() + Duration::from_secs(3600);
         assert!(!super::is_prune_eligible(SystemTime::now(), eligible_at));
-        assert!(super::is_prune_eligible(
-            eligible_at + Duration::from_secs(1),
-            eligible_at
-        ));
+        assert!(super::is_prune_eligible(eligible_at + Duration::from_secs(1), eligible_at));
     }
 }
