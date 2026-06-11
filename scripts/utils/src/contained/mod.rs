@@ -118,6 +118,18 @@ fn game_is_executable(finalized_l2: u64, end_block: u64) -> bool {
     finalized_l2 >= end_block
 }
 
+struct PrunableStdin {
+    start: u64,
+    end: u64,
+    eligible_at: std::time::SystemTime,
+}
+
+/// An stdin blob may be pruned once its game has succeeded AND the grace window has
+/// elapsed (so a near-term rerun can still hit the cache).
+fn is_prune_eligible(now: std::time::SystemTime, eligible_at: std::time::SystemTime) -> bool {
+    now >= eligible_at
+}
+
 /// Apply the two-tier retry policy to a failed game, mutating the queues + persisting.
 fn apply_requeue(
     pending: &mut VecDeque<PendingGame>,
@@ -245,8 +257,24 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
     let delay = Duration::from_secs(args.delay);
     let max_age = Duration::from_secs(args.background_retry_max_age_secs);
 
+    let mut prunables: Vec<PrunableStdin> = Vec::new();
+
     // ── Main loop ──────────────────────────────────────────────────────────
     loop {
+        // Sweep eligible stdin blobs before sleeping so a long-running iteration
+        // doesn't delay pruning by an extra poll period.
+        let now = std::time::SystemTime::now();
+        prunables.retain(|p| {
+            if is_prune_eligible(now, p.eligible_at) {
+                if let Err(e) = estimator.cache.prune_stdin(p.start, p.end) {
+                    tracing::warn!(start = p.start, end = p.end, error = %e, "stdin prune failed");
+                }
+                false
+            } else {
+                true
+            }
+        });
+
         tokio::time::sleep(poll).await;
 
         // (a) Discovery: queue newly-created games with the discover→execute delay.
@@ -360,6 +388,15 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
                             {
                                 tracing::warn!(error = %e, "failed to save progress");
                             }
+                            let eligible_at = std::time::SystemTime::now()
+                                + std::time::Duration::from_secs(args.stdin_grace_secs);
+                            for range in &ranges {
+                                prunables.push(PrunableStdin {
+                                    start: range.start,
+                                    end: range.end,
+                                    eligible_at,
+                                });
+                            }
                         }
                         Err(e) if e.is_transient() => {
                             tracing::warn!(
@@ -452,5 +489,16 @@ mod tests {
         assert!(!super::game_is_executable(99, 100));
         assert!(super::game_is_executable(100, 100));
         assert!(super::game_is_executable(150, 100));
+    }
+
+    #[test]
+    fn prune_eligible_only_after_grace() {
+        use std::time::{Duration, SystemTime};
+        let eligible_at = SystemTime::now() + Duration::from_secs(3600);
+        assert!(!super::is_prune_eligible(SystemTime::now(), eligible_at));
+        assert!(super::is_prune_eligible(
+            eligible_at + Duration::from_secs(1),
+            eligible_at
+        ));
     }
 }
