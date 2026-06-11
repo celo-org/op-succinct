@@ -7,6 +7,11 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[package.metadata.cargo-machete]
+# False positive: used via its lib name `fault_proof` (e.g. in bin/game_monitor.rs and
+# src/contained/discovery.rs), which cargo-machete doesn't map back to the package name.
+ignored = ["op-succinct-fp"]
+
 [lib]
 name = "op_succinct_scripts"
 path = "src/lib.rs"
@@ -81,7 +86,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
-env_logger = "0.11"
 rustls = "0.23.23"
 
 # local
