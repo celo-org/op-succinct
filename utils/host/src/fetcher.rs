@@ -98,7 +98,8 @@ fn classify_safe_db_probe_outcome(response: &serde_json::Value) -> Result<bool> 
 #[derive(Clone)]
 /// The OPSuccinctDataFetcher struct is used to fetch the L2 output data and L2 claim data for a
 /// given block number. It is used to generate the boot info for the native host program.
-/// FIXME: Add retries for all requests (3 retries).
+/// Retries are implemented: the alloy providers use a `RetryBackoffLayer`, and the raw JSON-RPC
+/// path in `fetch_rpc_data` retries transport/timeout errors (up to 3 attempts).
 pub struct OPSuccinctDataFetcher {
     pub rpc_config: RPCConfig,
     pub l1_provider: Arc<RootProvider>,
@@ -581,26 +582,64 @@ impl OPSuccinctDataFetcher {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
             .build()?;
-        let response = client
-            .post(url.clone())
-            .json(&json!({
-                "jsonrpc": "2.0",
-                "method": method,
-                "params": params,
-                "id": 1
-            }))
-            .send()
-            .await?
-            .json::<serde_json::Value>()
-            .await?;
 
-        // Check for RPC error from the JSON RPC response.
-        if let Some(error) = response.get("error") {
-            let error_message = error["message"].as_str().unwrap_or("Unknown error");
-            return Err(anyhow::anyhow!("Error calling {method}: {error_message}"));
+        // Retry only transport/timeout/network errors (the reqwest path). A valid JSON-RPC
+        // `error` response is deterministic (a method error) and is NOT retried.
+        const MAX_ATTEMPTS: usize = 3;
+        let backoffs = [
+            std::time::Duration::from_millis(250),
+            std::time::Duration::from_millis(500),
+        ];
+        let mut last_err: Option<anyhow::Error> = None;
+        for attempt in 0..MAX_ATTEMPTS {
+            let send_result = client
+                .post(url.clone())
+                .json(&json!({
+                    "jsonrpc": "2.0",
+                    "method": method,
+                    "params": params,
+                    "id": 1
+                }))
+                .send()
+                .await
+                .and_then(reqwest::Response::error_for_status);
+
+            let response = match send_result {
+                Ok(resp) => resp,
+                Err(e) => {
+                    // Transport/timeout/network error: back off and retry.
+                    last_err = Some(e.into());
+                    if let Some(backoff) = backoffs.get(attempt) {
+                        tokio::time::sleep(*backoff).await;
+                    }
+                    continue;
+                }
+            };
+
+            let body = match response.json::<serde_json::Value>().await {
+                Ok(body) => body,
+                Err(e) => {
+                    // Failure reading/decoding the body is treated as transient.
+                    last_err = Some(e.into());
+                    if let Some(backoff) = backoffs.get(attempt) {
+                        tokio::time::sleep(*backoff).await;
+                    }
+                    continue;
+                }
+            };
+
+            // Check for RPC error from the JSON RPC response. This is a deterministic method
+            // error, so return immediately without retrying.
+            if let Some(error) = body.get("error") {
+                let error_message = error["message"].as_str().unwrap_or("Unknown error");
+                return Err(anyhow::anyhow!("Error calling {method}: {error_message}"));
+            }
+
+            return serde_json::from_value(body["result"].clone()).map_err(Into::into);
         }
 
-        serde_json::from_value(response["result"].clone()).map_err(Into::into)
+        Err(last_err
+            .unwrap_or_else(|| anyhow::anyhow!("fetch_rpc_data: {method} exhausted retries")))
     }
 
     /// Execute a JSON-RPC call and return the raw response body without collapsing

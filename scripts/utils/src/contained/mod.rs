@@ -23,7 +23,7 @@ use fault_proof::contract::DisputeGameFactory::DisputeGameFactoryInstance;
 use op_succinct_common::SequenceTracker;
 use op_succinct_estimator::{
     memory::{read_cgroup_budget_bytes, read_cgroup_usage_bytes},
-    DaType, Estimator, WindowPredictor, WitnessCache,
+    network_call_with_timeout, DaType, Estimator, WindowPredictor, WitnessCache,
 };
 use op_succinct_host_utils::fetcher::OPSuccinctDataFetcher;
 use op_succinct_proof_utils::initialize_host;
@@ -393,8 +393,18 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
         tokio::time::sleep(poll).await;
 
         // (a) Discovery: queue newly-created games with the discover→execute delay.
-        let count = match factory.gameCount().call().block(BlockId::finalized()).await {
-            Ok(c) => c.to::<u64>(),
+        // Bound the control-plane read so a wedged RPC can't stall the loop; a timeout
+        // yields an Err handled like any other fetch failure (warn + retry next tick).
+        let count = match network_call_with_timeout(
+            args.network_call_timeout_secs,
+            "gameCount",
+            async {
+                Ok(factory.gameCount().call().block(BlockId::finalized()).await?.to::<u64>())
+            },
+        )
+        .await
+        {
+            Ok(c) => c,
             Err(e) => {
                 tracing::warn!(error = %e, "failed to fetch gameCount; retrying");
                 continue;
@@ -444,7 +454,33 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
         pending_games.retain(|p| p.executable_at > current_time);
 
         for pg in due {
-            match fetch_game_data(pg.game_index, &factory, l1_provider.clone()).await {
+            // Bound the control-plane game-data read. The inner `Result<GameData,
+            // FetchGameError>` is preserved (so the WrongGameType/Other arms below are
+            // unchanged); only a timeout produces the outer Err, handled like a transient
+            // fetch failure (warn + retry next tick).
+            let fetched = network_call_with_timeout(
+                args.network_call_timeout_secs,
+                "fetch_game_data",
+                async { Ok(fetch_game_data(pg.game_index, &factory, l1_provider.clone()).await) },
+            )
+            .await;
+            let game_result = match fetched {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(
+                        game_index = pg.game_index,
+                        error = %e,
+                        "fetch_game_data timed out; will retry"
+                    );
+                    pending_games.push_back(PendingGame {
+                        executable_at: Instant::now() + poll,
+                        game_index: pg.game_index,
+                        kind: pg.kind,
+                    });
+                    continue;
+                }
+            };
+            match game_result {
                 Ok(game) => {
                     // L2-behind defer: a game's end block must be derivable from the
                     // finalized L2 head before it can be executed. If the finalized head
@@ -501,19 +537,20 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
                         });
                         continue;
                     }
-                    // Record the start so the watchdog can detect an overrun; clear it on
-                    // BOTH success and error so a failed execute leaves no stale start time.
-                    *execute_started.lock().unwrap() = Some(Instant::now());
+                    // `execute_game` records `execute_started` around EACH sub-range so the
+                    // watchdog measures one sub-range, and checks `admission_frozen` per
+                    // sub-range to halt the remaining ones if the watchdog freezes mid-game.
                     let result = execute_game(
                         &estimator,
                         &fetcher,
                         &permits,
                         &admission,
+                        &execute_started,
+                        &admission_frozen,
                         &game,
                         args.batch_size,
                     )
                     .await;
-                    *execute_started.lock().unwrap() = None;
                     match result {
                         Ok((stats, ranges)) => {
                             tracing::info!(
