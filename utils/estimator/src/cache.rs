@@ -49,6 +49,18 @@ impl WitnessCache {
     pub fn stdin_path(&self, start: u64, end: u64) -> PathBuf {
         self.cache_dir().join(format!("{start}-{end}-{}-stdin.bin", self.da_type.as_str()))
     }
+
+    /// A process-unique temp path sibling to `final_path`. Concurrent writers (the
+    /// pipeline and the executor building the same range) each write their own temp,
+    /// then atomically rename onto the shared final path — so they never collide on a
+    /// half-written tmp file (a deterministic tmp name would race).
+    fn unique_tmp(final_path: &Path) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        final_path.with_extension(format!("tmp.{pid}.{n}"))
+    }
 }
 
 impl WitnessCache {
@@ -62,7 +74,7 @@ impl WitnessCache {
             fs::create_dir_all(&dir)?;
         }
         let path = self.stdin_path(start, end);
-        let tmp = path.with_extension("bin.tmp");
+        let tmp = Self::unique_tmp(&path);
         fs::write(&tmp, bincode::serialize(stdin)?)?;
         fs::rename(&tmp, &path)?; // atomic publish so a crash mid-write leaves no half blob
         Ok(path)
@@ -99,7 +111,7 @@ impl WitnessCache {
             fs::create_dir_all(&dir)?;
         }
         let path = self.witness_path(start, end);
-        let tmp = path.with_extension("bin.tmp");
+        let tmp = Self::unique_tmp(&path);
         let bytes = rkyv::to_bytes::<RkyvError>(witness)?;
         fs::write(&tmp, &bytes)?;
         fs::rename(&tmp, &path)?; // atomic publish so a crash mid-write leaves no half blob
@@ -185,6 +197,25 @@ mod tests {
         assert!(cache.has_stdin(10, 20));
         let loaded = cache.load_stdin(10, 20).unwrap();
         assert!(loaded.is_some());
+    }
+
+    #[test]
+    fn repeated_stdin_saves_leave_one_clean_blob_no_stray_temps() {
+        // Two saves to the same range (the pipeline-vs-executor race) must each succeed
+        // via their own unique temp and leave exactly one valid final blob, no leftovers.
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache = WitnessCache::new(dir.path(), 7, DaType::EigenDa);
+        cache.save_stdin(1, 2, &sp1_sdk::SP1Stdin::default()).unwrap();
+        cache.save_stdin(1, 2, &sp1_sdk::SP1Stdin::default()).unwrap();
+        assert!(cache.has_stdin(1, 2));
+        assert!(cache.load_stdin(1, 2).unwrap().is_some());
+        let cache_dir = dir.path().join("7").join("witness-cache");
+        let strays: Vec<_> = std::fs::read_dir(&cache_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(strays.is_empty(), "stray tmp files left behind: {strays:?}");
     }
 
     #[test]
