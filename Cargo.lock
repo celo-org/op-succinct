@@ -8326,6 +8326,7 @@ dependencies = [
  "op-succinct-client-utils",
  "op-succinct-common",
  "op-succinct-elfs",
+ "op-succinct-estimator",
  "op-succinct-fp",
  "op-succinct-host-utils",
  "op-succinct-proof-utils",
@@ -8337,6 +8338,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tracing-subscriber 0.3.22",
 ]
 
 [[package]]
