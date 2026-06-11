@@ -98,6 +98,9 @@ sp1-sdk.workspace = true
 [build-dependencies]
 op-succinct-build-utils.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [features]
 default = ["ethereum"]
 altda = ["op-succinct-proof-utils/altda"]
