@@ -9,7 +9,11 @@ use op_succinct_estimator::{
 };
 use op_succinct_host_utils::{block_range::SpanBatchRange, fetcher::OPSuccinctDataFetcher};
 use op_succinct_proof_utils::initialize_host;
-use op_succinct_scripts::contained::{discovery::GameData, executor::execute_game};
+use op_succinct_scripts::contained::{
+    admission::Admission,
+    discovery::GameData,
+    executor::execute_game,
+};
 
 /// RPC-dependent tests run only when a live L2 node is configured.
 fn it_enabled() -> bool {
@@ -97,8 +101,15 @@ async fn execute_game_aggregates_over_real_range() {
     };
 
     let permits = Arc::new(tokio::sync::Semaphore::new(1));
+    let admission = Admission::load(
+        None,
+        0,
+        1,
+        _dir.path().join("completion_history.json"),
+        std::time::Duration::from_secs(1),
+    );
     let (stats, ranges) =
-        execute_game(&estimator, &fetcher, &permits, &game, batch_size).await.unwrap();
+        execute_game(&estimator, &fetcher, &permits, &admission, &game, batch_size).await.unwrap();
 
     assert_eq!(stats.batch_end, end);
     // The safe-head split is contiguous and get_l2_block_data_range covers start+1..=end
@@ -206,8 +217,15 @@ async fn pipeline_window_aligned_to_game_boundary_hits_cache() {
     };
 
     let permits = Arc::new(tokio::sync::Semaphore::new(1));
+    let admission = Admission::load(
+        None,
+        0,
+        1,
+        _dir.path().join("completion_history.json"),
+        std::time::Duration::from_secs(1),
+    );
     let (stats, ranges) =
-        execute_game(&estimator, &fetcher, &permits, &game, batch_size).await.unwrap();
+        execute_game(&estimator, &fetcher, &permits, &admission, &game, batch_size).await.unwrap();
 
     // execute_game succeeds and produces real stats over the aligned range.
     assert_eq!(stats.batch_end, end);
