@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use alloy_eips::BlockId;
 use op_succinct_estimator::{window::WindowPredictor, Estimator};
@@ -33,6 +36,7 @@ pub async fn pipeline_step<H: OPSuccinctHost>(
     fetcher: &OPSuccinctDataFetcher,
     predictor: &mut WindowPredictor,
     permits: &Arc<Semaphore>,
+    admission_frozen: &Arc<AtomicBool>,
     batch_size: u64,
 ) -> anyhow::Result<()>
 where
@@ -48,6 +52,11 @@ where
         rkyv::Deserialize<WitnessOf<H>, rkyv::api::high::HighDeserializer<RkyvError>>
             + for<'a> rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, RkyvError>>,
 {
+    // Admission frozen by the overrun watchdog: don't start new builds.
+    if admission_frozen.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+
     // Real finalized-L2 head; on any RPC error do nothing this tick.
     let finalized_l2 = fetcher
         .get_l2_header(BlockId::finalized())

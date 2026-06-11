@@ -6,7 +6,10 @@ pub mod state;
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant, SystemTime},
 };
 
@@ -118,6 +121,11 @@ fn game_is_executable(finalized_l2: u64, end_block: u64) -> bool {
     finalized_l2 >= end_block
 }
 
+/// True if an in-flight unit started at `started` has exceeded the duration ceiling.
+fn is_overrun(started: Instant, now: Instant, ceiling_secs: u64) -> bool {
+    now.duration_since(started).as_secs() > ceiling_secs
+}
+
 struct PrunableStdin {
     start: u64,
     end: u64,
@@ -201,12 +209,21 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
     tracing::info!(max_conc, ?budget, usage, "RSS admission sized");
     let permits = Arc::new(Semaphore::new(max_conc));
 
+    // ── Overrun-guard admission state ──────────────────────────────────────
+    // When an in-flight execute runs past the duration ceiling, the watchdog FREEZES
+    // admission: the pipeline and executor stop starting NEW work (spec §7 — a running
+    // SP1 execute cannot be force-killed in-process). The running unit is left to finish.
+    let admission_frozen = Arc::new(AtomicBool::new(false));
+    // Records when the current inline execute started (None = idle). The watchdog reads it.
+    let execute_started: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+
     // ── Predictive pipeline task ───────────────────────────────────────────
     let poll = Duration::from_secs(args.poll_interval);
     {
         let estimator = estimator.clone();
         let fetcher = fetcher.clone();
         let permits = permits.clone();
+        let admission_frozen = admission_frozen.clone();
         let proposal_interval = args.proposal_interval;
         let max_lead_windows = args.max_lead_windows;
         let batch_size = args.batch_size;
@@ -219,13 +236,42 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
             let mut predictor =
                 WindowPredictor::new(start_frontier, proposal_interval, max_lead_windows);
             loop {
-                if let Err(e) =
-                    pipeline::pipeline_step(&estimator, &fetcher, &mut predictor, &permits, batch_size)
-                        .await
+                if let Err(e) = pipeline::pipeline_step(
+                    &estimator,
+                    &fetcher,
+                    &mut predictor,
+                    &permits,
+                    &admission_frozen,
+                    batch_size,
+                )
+                .await
                 {
                     tracing::warn!(error = %e, "pipeline step failed");
                 }
                 tokio::time::sleep(poll).await;
+            }
+        });
+    }
+
+    // ── Overrun watchdog task ──────────────────────────────────────────────
+    {
+        let frozen = admission_frozen.clone();
+        let started = execute_started.clone();
+        let ceiling = args.max_process_duration_secs;
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(poll).await;
+                let overrun = {
+                    let guard = started.lock().unwrap();
+                    guard.map(|s| is_overrun(s, Instant::now(), ceiling)).unwrap_or(false)
+                };
+                if overrun && !frozen.swap(true, Ordering::SeqCst) {
+                    tracing::error!(
+                        ceiling_secs = ceiling,
+                        "ALERT: execute exceeded duration ceiling; freezing admission \
+                         (no new work will start; running unit cannot be force-killed)"
+                    );
+                }
             }
         });
     }
@@ -369,8 +415,30 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
                         });
                         continue;
                     }
-                    match execute_game(&estimator, &fetcher, &permits, &game, args.batch_size).await
-                    {
+                    // Admission frozen by the overrun watchdog: don't start new work.
+                    // Re-queue this attempt unchanged (no retry budget spent), like the
+                    // L2-behind defer path above.
+                    if admission_frozen.load(Ordering::SeqCst) {
+                        tracing::debug!(
+                            game_index = pg.game_index,
+                            "admission frozen; deferring game {} (no new work started)",
+                            pg.game_index
+                        );
+                        pending_games.push_back(PendingGame {
+                            executable_at: Instant::now()
+                                + Duration::from_secs(args.poll_interval),
+                            game_index: pg.game_index,
+                            kind: pg.kind,
+                        });
+                        continue;
+                    }
+                    // Record the start so the watchdog can detect an overrun; clear it on
+                    // BOTH success and error so a failed execute leaves no stale start time.
+                    *execute_started.lock().unwrap() = Some(Instant::now());
+                    let result =
+                        execute_game(&estimator, &fetcher, &permits, &game, args.batch_size).await;
+                    *execute_started.lock().unwrap() = None;
+                    match result {
                         Ok((stats, ranges)) => {
                             tracing::info!(
                                 game_index = pg.game_index,
@@ -489,6 +557,14 @@ mod tests {
         assert!(!super::game_is_executable(99, 100));
         assert!(super::game_is_executable(100, 100));
         assert!(super::game_is_executable(150, 100));
+    }
+
+    #[test]
+    fn overrun_detected_past_ceiling() {
+        use std::time::{Duration, Instant};
+        let started = Instant::now();
+        assert!(!super::is_overrun(started, started + Duration::from_secs(10), 60));
+        assert!(super::is_overrun(started, started + Duration::from_secs(61), 60));
     }
 
     #[test]
