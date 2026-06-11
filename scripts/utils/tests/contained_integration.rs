@@ -108,15 +108,11 @@ async fn execute_game_aggregates_over_real_range() {
         _dir.path().join("completion_history.json"),
         std::time::Duration::from_secs(1),
     );
-    let watchdog = op_succinct_scripts::contained::watchdog::Watchdog::new();
-    let admission_frozen = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (stats, ranges) = execute_game(
         &estimator,
         &fetcher,
         &permits,
         &admission,
-        &watchdog,
-        &admission_frozen,
         &game,
         batch_size,
     )
@@ -236,15 +232,11 @@ async fn pipeline_window_aligned_to_game_boundary_hits_cache() {
         _dir.path().join("completion_history.json"),
         std::time::Duration::from_secs(1),
     );
-    let watchdog = op_succinct_scripts::contained::watchdog::Watchdog::new();
-    let admission_frozen = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (stats, ranges) = execute_game(
         &estimator,
         &fetcher,
         &permits,
         &admission,
-        &watchdog,
-        &admission_frozen,
         &game,
         batch_size,
     )

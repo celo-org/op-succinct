@@ -3,15 +3,11 @@ pub mod discovery;
 pub mod executor;
 pub mod pipeline;
 pub mod state;
-pub mod watchdog;
 
 use std::{
     collections::{HashSet, VecDeque},
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::Arc,
     time::{Duration, Instant, SystemTime},
 };
 
@@ -40,7 +36,6 @@ use crate::contained::{
         is_background_retry_aged_out, load_progress, requeue_decision, resume_next_index,
         save_progress, AttemptKind, BackgroundRetry, PendingGame, RequeueDecision,
     },
-    watchdog::Watchdog,
 };
 
 /// CLI for the contained game monitor. Preserves the legacy flags and adds the
@@ -93,9 +88,6 @@ pub struct ContainedArgs {
     /// Per-network-call timeout (seconds).
     #[arg(long, default_value = "120")]
     pub network_call_timeout_secs: u64,
-    /// Absolute-duration overrun ceiling (seconds) before admission freezes.
-    #[arg(long, default_value = "10800")]
-    pub max_process_duration_secs: u64,
 }
 
 /// DA type for the cache key, selected by the build feature.
@@ -381,16 +373,6 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
         Duration::from_secs(args.poll_interval),
     ));
 
-    // ── Overrun-guard admission state ──────────────────────────────────────
-    // When an in-flight unit runs past the duration ceiling, the watchdog FREEZES
-    // admission: the pipeline and executor stop starting NEW work (spec §7 — a running
-    // SP1 execute cannot be force-killed in-process). The running unit is left to finish;
-    // the freeze THAWS automatically once nothing is overrunning (see the watchdog task).
-    let admission_frozen = Arc::new(AtomicBool::new(false));
-    // In-flight registry: every concurrent build/execute registers here so the overrun
-    // watchdog can observe ALL running units at once, not a single slot.
-    let watchdog = Arc::new(Watchdog::new());
-
     // ── L1 provider + dispute game factory (from env, matching the legacy) ──
     // Built before the pipeline spawn so we can seed the predictor's frontier from the
     // latest on-chain game's proposal boundary (see `latest_game_end_block`).
@@ -418,8 +400,6 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
         let fetcher = fetcher.clone();
         let permits = permits.clone();
         let admission = admission.clone();
-        let watchdog = watchdog.clone();
-        let admission_frozen = admission_frozen.clone();
         let proposal_interval = args.proposal_interval;
         let max_lead_windows = args.max_lead_windows;
         let batch_size = args.batch_size;
@@ -441,8 +421,6 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
                     &mut predictor,
                     &permits,
                     &admission,
-                    &watchdog,
-                    &admission_frozen,
                     batch_size,
                 )
                 .await
@@ -450,34 +428,6 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
                     tracing::warn!(error = %e, "pipeline step failed");
                 }
                 tokio::time::sleep(poll).await;
-            }
-        });
-    }
-
-    // ── Overrun watchdog task ──────────────────────────────────────────────
-    // Scans the in-flight registry each tick. If ANY running build/execute exceeds the
-    // duration ceiling, FREEZE admission (stop starting new work; a running unit cannot be
-    // force-killed in-process). When nothing is overrunning any more, THAW so the daemon
-    // resumes — the freeze is a transient brake, not a permanent latch.
-    {
-        let frozen = admission_frozen.clone();
-        let watchdog = watchdog.clone();
-        let ceiling = args.max_process_duration_secs;
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(poll).await;
-                let overruns = watchdog.overrunning(Instant::now(), ceiling);
-                let was_frozen = frozen.swap(!overruns.is_empty(), Ordering::SeqCst);
-                if !overruns.is_empty() && !was_frozen {
-                    tracing::error!(
-                        ceiling_secs = ceiling,
-                        ?overruns,
-                        "ALERT: unit(s) exceeded duration ceiling; freezing admission \
-                         (no new work will start; running units cannot be force-killed)"
-                    );
-                } else if overruns.is_empty() && was_frozen {
-                    tracing::warn!("overrun cleared; thawing admission (resuming new work)");
-                }
             }
         });
     }
@@ -610,7 +560,6 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
         let mut remaining: VecDeque<PendingGame> = VecDeque::with_capacity(pending_games.len());
         while let Some(pg) = pending_games.pop_front() {
             let startable = pg.executable_at <= current_time &&
-                !admission_frozen.load(Ordering::SeqCst) &&
                 !running_games.contains(&pg.game_index) &&
                 running_games.len() < args.max_concurrent_games;
             if !startable {
@@ -623,8 +572,6 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
             let fetcher = fetcher.clone();
             let permits = permits.clone();
             let admission = admission.clone();
-            let watchdog = watchdog.clone();
-            let admission_frozen = admission_frozen.clone();
             let factory = factory.clone();
             let l1_provider = l1_provider.clone();
             let timeout_secs = args.network_call_timeout_secs;
@@ -672,8 +619,6 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
                                 &fetcher,
                                 &permits,
                                 &admission,
-                                &watchdog,
-                                &admission_frozen,
                                 &game,
                                 batch_size,
                             )
