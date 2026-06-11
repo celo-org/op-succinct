@@ -111,6 +111,13 @@ fn compute_initial_permits(budget: Option<u64>, usage: u64, unit_bytes: u64, mar
     }
 }
 
+/// A game can only be executed once its end block is derivable from the finalized L2
+/// head. If the finalized head hasn't reached `end_block`, defer (re-queue) without
+/// consuming retry budget.
+fn game_is_executable(finalized_l2: u64, end_block: u64) -> bool {
+    finalized_l2 >= end_block
+}
+
 /// Apply the two-tier retry policy to a failed game, mutating the queues + persisting.
 fn apply_requeue(
     pending: &mut VecDeque<PendingGame>,
@@ -296,6 +303,44 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
         for pg in due {
             match fetch_game_data(pg.game_index, &factory, l1_provider.clone()).await {
                 Ok(game) => {
+                    // L2-behind defer: a game's end block must be derivable from the
+                    // finalized L2 head before it can be executed. If the finalized head
+                    // hasn't reached it, re-queue the same attempt (no retry budget spent)
+                    // with a short defer instead of burning a retry in the splitter.
+                    let finalized_l2 =
+                        match fetcher.get_l2_header(BlockId::finalized()).await.map(|h| h.number) {
+                            Ok(n) => n,
+                            Err(e) => {
+                                tracing::warn!(
+                                    game_index = pg.game_index,
+                                    error = %e,
+                                    "failed to fetch finalized L2 head; will retry"
+                                );
+                                pending_games.push_back(PendingGame {
+                                    executable_at: Instant::now()
+                                        + Duration::from_secs(args.poll_interval),
+                                    game_index: pg.game_index,
+                                    kind: pg.kind,
+                                });
+                                continue;
+                            }
+                        };
+                    if !game_is_executable(finalized_l2, game.end_block) {
+                        tracing::debug!(
+                            game_index = pg.game_index,
+                            finalized_l2,
+                            end_block = game.end_block,
+                            "deferring game {}: L2 behind",
+                            pg.game_index
+                        );
+                        pending_games.push_back(PendingGame {
+                            executable_at: Instant::now()
+                                + Duration::from_secs(args.poll_interval),
+                            game_index: pg.game_index,
+                            kind: pg.kind,
+                        });
+                        continue;
+                    }
                     match execute_game(&estimator, &fetcher, &permits, &game, args.batch_size).await
                     {
                         Ok((stats, ranges)) => {
@@ -400,5 +445,12 @@ mod tests {
         // 500GiB - 20GiB margin = 480GiB; /55GiB = 8.7 → 8.
         assert_eq!(super::compute_initial_permits(budget, 0, unit, margin), 8);
         assert_eq!(super::compute_initial_permits(None, 0, unit, margin), 4);
+    }
+
+    #[test]
+    fn game_deferred_until_l2_reaches_end_block() {
+        assert!(!super::game_is_executable(99, 100));
+        assert!(super::game_is_executable(100, 100));
+        assert!(super::game_is_executable(150, 100));
     }
 }

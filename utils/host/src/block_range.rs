@@ -6,7 +6,7 @@ use std::{
 use crate::rpc_types::{OutputResponse, SafeHeadResponse};
 use alloy_eips::BlockId;
 use anyhow::{bail, Result};
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -155,23 +155,27 @@ pub async fn split_range_based_on_safe_heads(
     // Get the L1Head from which l2_end can be derived
     let (_, l1_head_number) = data_fetcher.get_safe_l1_block_for_l2_block(l2_end).await?;
 
-    // Get all the unique safeHeads between l1_start and l1_head
-    let safe_heads = futures::stream::iter(l1_start..=l1_head_number)
-        .map(|block| async move {
-            let l1_block_hex = format!("0x{block:x}");
-            let result: SafeHeadResponse = data_fetcher
-                .fetch_rpc_data_with_mode(
-                    RPCMode::L2Node,
-                    "optimism_safeHeadAtL1Block",
-                    vec![l1_block_hex.into()],
-                )
-                .await
-                .expect("Failed to fetch safe head");
-            result.safe_head.number
+    // Get all the unique safeHeads between l1_start and l1_head. Propagate a transient
+    // safe-head RPC failure as an error instead of panicking — this path runs inline in
+    // the contained daemon's main loop, where a panic would crash the whole process.
+    let safe_heads: HashSet<u64> = futures::stream::iter(l1_start..=l1_head_number)
+        .map(|block| {
+            let data_fetcher = data_fetcher;
+            async move {
+                let l1_block_hex = format!("0x{block:x}");
+                let result: SafeHeadResponse = data_fetcher
+                    .fetch_rpc_data_with_mode(
+                        RPCMode::L2Node,
+                        "optimism_safeHeadAtL1Block",
+                        vec![l1_block_hex.into()],
+                    )
+                    .await?;
+                Ok::<u64, anyhow::Error>(result.safe_head.number)
+            }
         })
         .buffered(15)
-        .collect::<HashSet<_>>()
-        .await;
+        .try_collect()
+        .await?;
 
     // Collect and sort the safe heads.
     let mut safe_heads: Vec<_> = safe_heads.into_iter().collect();
