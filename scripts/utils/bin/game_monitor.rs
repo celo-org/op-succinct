@@ -992,6 +992,15 @@ enum FailureType {
     /// `Failed to fetch safe head` with a `dns error` cause. The op-node hostname could not be
     /// resolved (typically a transient cluster-DNS hiccup).
     DnsLookupFailure,
+    /// `Failed to load genesis time from beacon client` with a `HTTP request failed: error
+    /// decoding response body`, typically a temporary failure of the beacon client.
+    BeaconClientFailure,
+    /// `error sending request for url ...`. A request to an upstream service (L1/L2 RPC, beacon
+    /// client, prover, or proxy) failed at the transport layer — connection refused, reset,
+    /// timed out, or DNS resolution failed before a higher-level pattern could match. This is a
+    /// catch-all for transient connectivity issues that aren't pinned to a specific endpoint by
+    /// an earlier, more specific pattern, so it is matched last.
+    GenericRequestFailure,
     /// No known pattern matched. Either the log could not be read, or the failure mode is
     /// new/programmatic; callers should treat this as "not a known infrastructure failure"
     /// rather than as a positive signal of a code bug.
@@ -1009,6 +1018,8 @@ impl std::fmt::Display for FailureType {
             Self::ExceedsProofWindow => "distance to target block exceeds maximum proof window",
             Self::MissingTrieNode => "RPC node missing trie node",
             Self::DnsLookupFailure => "DNS lookup failure",
+            Self::BeaconClientFailure => "beacon client failure",
+            Self::GenericRequestFailure => "generic upstream request failure",
             Self::Unknown => "unknown",
         };
         f.write_str(s)
@@ -1034,6 +1045,15 @@ const FAILURE_PATTERNS: &[(&[&str], FailureType)] = &[
     (&["distance to target block exceeds maximum proof window"], FailureType::ExceedsProofWindow),
     (&["missing trie node"], FailureType::MissingTrieNode),
     (&["Failed to fetch safe head", "dns error"], FailureType::DnsLookupFailure),
+    (&["Temporary failure in name resolution"], FailureType::DnsLookupFailure),
+    (
+        &[
+            "Failed to load genesis time from beacon client",
+            "HTTP request failed: error decoding response body",
+        ],
+        FailureType::BeaconClientFailure,
+    ),
+    (&["error sending request for url"], FailureType::GenericRequestFailure),
 ];
 
 /// Classify the tail of a failure log against the known cost-estimator failure patterns.
