@@ -5,7 +5,7 @@ pub mod pipeline;
 pub mod state;
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant, SystemTime},
@@ -414,6 +414,9 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
             };
             let mut predictor =
                 WindowPredictor::new(start_frontier, proposal_interval, max_lead_windows);
+            // Memoized safe-head lookups, reused across ticks while a window finalizes and
+            // cleared when it advances (see split_range_based_on_safe_heads_memoized).
+            let mut safe_head_cache: HashMap<u64, u64> = HashMap::new();
             loop {
                 if let Err(e) = pipeline::pipeline_step(
                     &estimator,
@@ -421,6 +424,7 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
                     &mut predictor,
                     &permits,
                     &admission,
+                    &mut safe_head_cache,
                     batch_size,
                 )
                 .await

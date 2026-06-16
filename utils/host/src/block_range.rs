@@ -1,6 +1,6 @@
 use std::{
     cmp::{max, min},
-    collections::HashSet,
+    collections::HashMap,
 };
 
 use crate::rpc_types::{OutputResponse, SafeHeadResponse};
@@ -133,6 +133,32 @@ pub async fn split_range_based_on_safe_heads_with_fetcher(
     l2_end: u64,
     max_range_size: u64,
 ) -> Result<Vec<SpanBatchRange>> {
+    let mut safe_head_cache = HashMap::new();
+    split_range_based_on_safe_heads_memoized(
+        data_fetcher,
+        l2_start,
+        l2_end,
+        max_range_size,
+        &mut safe_head_cache,
+    )
+    .await
+}
+
+/// Like [`split_range_based_on_safe_heads_with_fetcher`], but memoizes
+/// `optimism_safeHeadAtL1Block` lookups in `safe_head_cache` (keyed by L1 block number).
+///
+/// The predictive pipeline re-splits a growing `[window.start, finalized]` prefix every tick
+/// as the finalized head advances; without memoization each tick re-queries every L1 block in
+/// the window. Safe-head values are immutable for finalized L1 blocks, so the cache is sound
+/// as long as the caller only splits up to the finalized head (the pipeline does). Each tick
+/// then queries only the L1 blocks newly finalized since the previous call.
+pub async fn split_range_based_on_safe_heads_memoized(
+    data_fetcher: &OPSuccinctDataFetcher,
+    l2_start: u64,
+    l2_end: u64,
+    max_range_size: u64,
+    safe_head_cache: &mut HashMap<u64, u64>,
+) -> Result<Vec<SpanBatchRange>> {
     // Get the L1 origin of l2_start
     let l2_start_hex = format!("0x{l2_start:x}");
     let start_output: OutputResponse = data_fetcher
@@ -147,10 +173,12 @@ pub async fn split_range_based_on_safe_heads_with_fetcher(
     // Get the L1Head from which l2_end can be derived
     let (_, l1_head_number) = data_fetcher.get_safe_l1_block_for_l2_block(l2_end).await?;
 
-    // Get all the unique safeHeads between l1_start and l1_head. Propagate a transient
-    // safe-head RPC failure as an error instead of panicking — this path runs inline in
-    // the contained daemon's main loop, where a panic would crash the whole process.
-    let safe_heads: HashSet<u64> = futures::stream::iter(l1_start..=l1_head_number)
+    // Query only the L1 blocks not already cached (safe heads are immutable for finalized
+    // blocks). Propagate a transient safe-head RPC failure as an error instead of panicking —
+    // this runs inline in the contained daemon, where a panic would crash the whole process.
+    let missing: Vec<u64> =
+        (l1_start..=l1_head_number).filter(|b| !safe_head_cache.contains_key(b)).collect();
+    let fetched: Vec<(u64, u64)> = futures::stream::iter(missing)
         .map(|block| {
             let data_fetcher = data_fetcher;
             async move {
@@ -162,16 +190,19 @@ pub async fn split_range_based_on_safe_heads_with_fetcher(
                         vec![l1_block_hex.into()],
                     )
                     .await?;
-                Ok::<u64, anyhow::Error>(result.safe_head.number)
+                Ok::<(u64, u64), anyhow::Error>((block, result.safe_head.number))
             }
         })
         .buffered(15)
         .try_collect()
         .await?;
+    safe_head_cache.extend(fetched);
 
-    // Collect and sort the safe heads.
-    let mut safe_heads: Vec<_> = safe_heads.into_iter().collect();
+    // Collect and sort the unique safe heads across [l1_start, l1_head_number] from the cache.
+    let mut safe_heads: Vec<u64> =
+        (l1_start..=l1_head_number).filter_map(|b| safe_head_cache.get(&b).copied()).collect();
     safe_heads.sort();
+    safe_heads.dedup();
 
     // Loop over all of the safe heads and create ranges.
     let mut ranges = Vec::new();
