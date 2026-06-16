@@ -2,10 +2,11 @@ pub mod admission;
 pub mod discovery;
 pub mod executor;
 pub mod pipeline;
+pub mod source;
 pub mod state;
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant, SystemTime},
@@ -20,7 +21,7 @@ use fault_proof::contract::DisputeGameFactory::DisputeGameFactoryInstance;
 use op_succinct_common::SequenceTracker;
 use op_succinct_estimator::{
     memory::{read_cgroup_budget_bytes, read_cgroup_usage_bytes},
-    network_call_with_timeout, DaType, Estimator, WindowPredictor, WitnessCache,
+    network_call_with_timeout, DaType, Estimator, WitnessCache,
 };
 use op_succinct_host_utils::{
     block_range::SpanBatchRange, fetcher::OPSuccinctDataFetcher, stats::ExecutionStats,
@@ -32,6 +33,7 @@ use crate::contained::{
     admission::Admission,
     discovery::{fetch_game_data, FetchGameError},
     executor::execute_game,
+    source::WitnessSource,
     state::{
         is_background_retry_aged_out, load_progress, requeue_decision, resume_next_index,
         save_progress, AttemptKind, BackgroundRetry, PendingGame, RequeueDecision,
@@ -76,9 +78,6 @@ pub struct ContainedArgs {
     /// Proposer's PROPOSAL_INTERVAL (L2 blocks) — drives window prediction.
     #[arg(long)]
     pub proposal_interval: u64,
-    /// Max windows the pipeline may run ahead of the finalized frontier.
-    #[arg(long, default_value = "4")]
-    pub max_lead_windows: u64,
     /// Grace period (seconds) to keep an stdin blob after its game succeeds.
     #[arg(long, default_value = "3600")]
     pub stdin_grace_secs: u64,
@@ -401,7 +400,6 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
         let permits = permits.clone();
         let admission = admission.clone();
         let proposal_interval = args.proposal_interval;
-        let max_lead_windows = args.max_lead_windows;
         let batch_size = args.batch_size;
         tokio::spawn(async move {
             // Use the precomputed proposal-boundary seed; only fall back to the finalized
@@ -412,22 +410,11 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
                     fetcher.get_l2_header(BlockId::finalized()).await.map(|h| h.number).unwrap_or(0)
                 }
             };
-            let mut predictor =
-                WindowPredictor::new(start_frontier, proposal_interval, max_lead_windows);
-            // Memoized safe-head lookups, reused across ticks while a window finalizes and
-            // cleared when it advances (see split_range_based_on_safe_heads_memoized).
-            let mut safe_head_cache: HashMap<u64, u64> = HashMap::new();
+            let mut source = WitnessSource::new(start_frontier, proposal_interval, batch_size);
             loop {
-                if let Err(e) = pipeline::pipeline_step(
-                    &estimator,
-                    &fetcher,
-                    &mut predictor,
-                    &permits,
-                    &admission,
-                    &mut safe_head_cache,
-                    batch_size,
-                )
-                .await
+                if let Err(e) =
+                    pipeline::pipeline_step(&estimator, &fetcher, &mut source, &permits, &admission)
+                        .await
                 {
                     tracing::warn!(error = %e, "pipeline step failed");
                 }
@@ -673,7 +660,6 @@ mod tests {
         assert_eq!(args.proposal_interval, 1800);
         assert_eq!(args.delay, 600);
         assert_eq!(args.batch_size, 200);
-        assert_eq!(args.max_lead_windows, 4);
         assert_eq!(args.stdin_grace_secs, 3600);
         assert_eq!(args.max_concurrent_games, 5);
     }
