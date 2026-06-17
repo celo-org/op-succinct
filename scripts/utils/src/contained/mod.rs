@@ -2,7 +2,7 @@ pub mod admission;
 pub mod discovery;
 pub mod executor;
 pub mod pipeline;
-pub mod source;
+pub mod ready_range_provider;
 pub mod state;
 
 use std::{
@@ -33,7 +33,7 @@ use crate::contained::{
     admission::Admission,
     discovery::{fetch_game_data, FetchGameError},
     executor::execute_game,
-    source::WitnessSource,
+    ready_range_provider::ReadyRangeProvider,
     state::{
         is_background_retry_aged_out, load_progress, requeue_decision, resume_next_index,
         save_progress, AttemptKind, BackgroundRetry, PendingGame, RequeueDecision,
@@ -122,45 +122,6 @@ fn compute_initial_permits(budget: Option<u64>, usage: u64, unit_bytes: u64, mar
 /// consuming retry budget.
 fn game_is_executable(finalized_l2: u64, end_block: u64) -> bool {
     finalized_l2 >= end_block
-}
-
-/// Compute the pipeline's frontier seed: the latest on-chain game's `end_block`.
-///
-/// WHY a proposal boundary, not just any finalized L2 head: the pipeline prebuilds
-/// witness stdins by splitting its predicted windows, and the executor consumes them by
-/// splitting the on-chain game's `[start_block, end_block]`. `split_range_based_on_safe_heads`
-/// anchors its sub-range stepping (`range_start += max_range_size`) on the split's own
-/// `l2_start`, so the two paths only produce the SAME sub-range boundaries — and thus the
-/// SAME `(chain_id, start, end, da_type)` cache keys — when the pipeline's frontier sits
-/// on a real proposal boundary. Proposal boundaries step by `PROPOSAL_INTERVAL`
-/// (`l2 = parent + PROPOSAL_INTERVAL`); game N's `end_block` IS a proposal boundary and
-/// game N+1's `start_block == game N's end_block`. Seeding the frontier at the latest
-/// game's `end_block` and stepping by `proposal_interval` makes the predicted windows
-/// `[latest_end, latest_end + interval], …` coincide with the FUTURE games' `[start, end]`
-/// ranges, so the executor hits the pipeline's prebuilt stdins.
-///
-/// Best-effort (spec §4.2): a wrong/stale interval just wastes work and the executor
-/// rebuilds on demand. Returns `None` when there are no games or the latest game can't be
-/// fetched (wrong type / RPC error); the caller then falls back to the finalized L2 head.
-async fn latest_game_end_block<P: alloy_provider::Provider + Clone>(
-    on_chain_count: u64,
-    factory: &DisputeGameFactoryInstance<P>,
-    l1_provider: P,
-) -> Option<u64> {
-    if on_chain_count == 0 {
-        return None;
-    }
-    match fetch_game_data(on_chain_count - 1, factory, l1_provider).await {
-        Ok(game) => Some(game.end_block),
-        Err(e) => {
-            tracing::warn!(
-                game_index = on_chain_count - 1,
-                error = %e,
-                "failed to fetch latest game for frontier seed; falling back to finalized L2 head"
-            );
-            None
-        }
-    }
 }
 
 struct PrunableStdin {
@@ -385,13 +346,8 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
 
     let on_chain_count = factory.gameCount().call().block(BlockId::finalized()).await?.to::<u64>();
 
-    // ── Pipeline frontier seed ─────────────────────────────────────────────
-    // The frontier MUST land on a real proposal boundary so the pipeline's prebuilt
-    // window stdins share cache keys with the executor's game splits. Prefer the latest
-    // on-chain game's `end_block` (a true proposal boundary); the closure below falls back
-    // to the finalized L2 head (then 0) only when there are no games / the fetch failed.
-    let frontier_seed = latest_game_end_block(on_chain_count, &factory, l1_provider.clone()).await;
-
+    // Get the latest game data
+    let game_data = fetch_game_data(on_chain_count - 1, &factory, l1_provider.clone()).await?;
     // ── Predictive pipeline task ───────────────────────────────────────────
     let poll = Duration::from_secs(args.poll_interval);
     {
@@ -402,21 +358,27 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
         let proposal_interval = args.proposal_interval;
         let batch_size = args.batch_size;
         tokio::spawn(async move {
-            // Use the precomputed proposal-boundary seed; only fall back to the finalized
-            // L2 head (then 0) when no aligned boundary is available.
-            let start_frontier = match frontier_seed {
-                Some(end_block) => end_block,
-                None => {
-                    fetcher.get_l2_header(BlockId::finalized()).await.map(|h| h.number).unwrap_or(0)
-                }
-            };
-            let mut source = WitnessSource::new(start_frontier, proposal_interval, batch_size);
+            let mut provider =
+                ReadyRangeProvider::new(game_data.end_block, proposal_interval, batch_size);
             loop {
-                if let Err(e) =
-                    pipeline::pipeline_step(&estimator, &fetcher, &mut source, &permits, &admission)
-                        .await
-                {
-                    tracing::warn!(error = %e, "pipeline step failed");
+                // Pull every range the provider reports ready and build each (one witness per
+                // pipeline step), collecting the outcomes. Serial for now — threading TBD.
+                let mut outcomes = Vec::new();
+                while let Some(range) = provider.next_range(&fetcher).await {
+                    let outcome =
+                        pipeline::pipeline_step(&estimator, &fetcher, &permits, &admission, &range)
+                            .await;
+                    outcomes.push((range, outcome));
+                }
+                for (range, outcome) in outcomes {
+                    if let Err(e) = outcome {
+                        tracing::warn!(
+                            start = range.start,
+                            end = range.end,
+                            error = %e,
+                            "pipeline build failed"
+                        );
+                    }
                 }
                 tokio::time::sleep(poll).await;
             }
@@ -606,12 +568,7 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
                                 GameTaskResult::Defer { pg }
                             }
                             Ok(_) => match execute_game(
-                                &estimator,
-                                &fetcher,
-                                &permits,
-                                &admission,
-                                &game,
-                                batch_size,
+                                &estimator, &fetcher, &permits, &admission, &game, batch_size,
                             )
                             .await
                             {
