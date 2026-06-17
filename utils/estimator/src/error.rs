@@ -24,14 +24,14 @@ impl EstimatorError {
     /// True if the failure is worth retrying. `Oom` is never retried.
     pub fn is_transient(&self) -> bool {
         match self {
-            EstimatorError::NoHealthyBackend
-            | EstimatorError::NoStateAvailable
-            | EstimatorError::DnsLookupFailure
-            | EstimatorError::Transient(_) => true,
-            EstimatorError::ExceedsProofWindow
-            | EstimatorError::MissingTrieNode
-            | EstimatorError::Oom
-            | EstimatorError::Fatal(_) => false,
+            EstimatorError::NoHealthyBackend |
+            EstimatorError::NoStateAvailable |
+            EstimatorError::DnsLookupFailure |
+            EstimatorError::Transient(_) => true,
+            EstimatorError::ExceedsProofWindow |
+            EstimatorError::MissingTrieNode |
+            EstimatorError::Oom |
+            EstimatorError::Fatal(_) => false,
         }
     }
 

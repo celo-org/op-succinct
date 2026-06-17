@@ -579,17 +579,14 @@ impl OPSuccinctDataFetcher {
     where
         T: serde::de::DeserializeOwned,
     {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build()?;
+        let client =
+            reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build()?;
 
         // Retry only transport/timeout/network errors (the reqwest path). A valid JSON-RPC
         // `error` response is deterministic (a method error) and is NOT retried.
         const MAX_ATTEMPTS: usize = 3;
-        let backoffs = [
-            std::time::Duration::from_millis(250),
-            std::time::Duration::from_millis(500),
-        ];
+        let backoffs =
+            [std::time::Duration::from_millis(250), std::time::Duration::from_millis(500)];
         let mut last_err: Option<anyhow::Error> = None;
         for attempt in 0..MAX_ATTEMPTS {
             let send_result = client

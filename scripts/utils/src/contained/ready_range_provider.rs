@@ -23,12 +23,12 @@ fn l1_head_finalized(range_l1_head: u64, finalized_l1: u64, buffer: u64) -> bool
 /// It owns everything needed to answer one question — "what's the next range ready to
 /// process?" — so the caller is free to do whatever it wants with each range it receives
 /// (build a witness, estimate, prove, …):
-///   * predicts game windows from the proposal cadence (`[frontier, frontier + interval]`,
-///     which equals the next game's `[start, end]`),
+///   * predicts game windows from the proposal cadence (`[frontier, frontier + interval]`, which
+///     equals the next game's `[start, end]`),
 ///   * splits each window into safe-head sub-ranges **anchored at the window start**, so the
 ///     boundaries match the executor's split of the real game (cache keys line up),
-///   * hands them out one at a time as each becomes soundly ready: its end is L2-finalized
-///     AND L1 has finalized past its `l1_head + buffer`.
+///   * hands them out one at a time as each becomes soundly ready: its end is L2-finalized AND L1
+///     has finalized past its `l1_head + buffer`.
 ///
 /// State is just a forward-only block cursor. Downstream failures are the caller's problem;
 /// the provider never needs completion feedback.

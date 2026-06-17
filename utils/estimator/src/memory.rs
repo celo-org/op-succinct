@@ -140,10 +140,10 @@ pub fn admits(
 ) -> bool {
     match budget_bytes {
         None => true, // no cgroup limit → unlimited
-        Some(budget) => current_usage_bytes
-            .saturating_add(projected_bytes)
-            .saturating_add(margin_bytes)
-            <= budget,
+        Some(budget) => {
+            current_usage_bytes.saturating_add(projected_bytes).saturating_add(margin_bytes) <=
+                budget
+        }
     }
 }
 

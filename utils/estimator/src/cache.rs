@@ -1,8 +1,10 @@
 use anyhow::Result;
 use rkyv::rancor::Error as RkyvError;
 use sp1_sdk::SP1Stdin;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 /// DA-type discriminator folded into every cache key. The on-disk `WitnessData`
 /// layouts differ by DA (EigenDA adds `eigenda_data`), so a key without this would
