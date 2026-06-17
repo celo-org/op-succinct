@@ -7,8 +7,8 @@ use op_succinct_estimator::memory::{
 };
 
 /// Adaptive memory admission (spec §7): before starting a build or execute, project the
-/// unit's peak RSS from history (keyed by EVM gas) and admit only if it fits the budget
-/// given LIVE cgroup usage + a margin. Records observed footprints to grow the history.
+/// unit's peak RSS(resident set size) from history (keyed by EVM gas) and admit only if it fits the
+/// budget given LIVE cgroup usage + some margin. Records observed footprints to grow the history.
 pub struct Admission {
     budget_bytes: Option<u64>,
     margin_bytes: u64,
