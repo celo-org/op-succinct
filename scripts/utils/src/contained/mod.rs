@@ -37,8 +37,8 @@ use crate::contained::{
     ready_range_provider::ReadyRangeProvider,
     rss_source::{make_source, RssSourceKind},
     state::{
-        is_background_retry_aged_out, load_progress, requeue_decision, resume_next_index,
-        save_progress, AttemptKind, BackgroundRetry, PendingGame, RequeueDecision,
+        is_background_retry_aged_out, load_progress, requeue_decision, resume_index, save_progress,
+        AttemptKind, BackgroundRetry, PendingGame, RequeueDecision,
     },
 };
 
@@ -402,8 +402,7 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
     let progress_path =
         args.progress_file.clone().unwrap_or_else(|| args.cache_dir.join("progress.json"));
     let persisted = load_progress(&progress_path);
-    let mut next_game_index =
-        resume_next_index(args.start_index, persisted.as_ref(), on_chain_count);
+    let mut next_game_index = resume_index(args.start_index, persisted.as_ref(), on_chain_count);
     tracing::info!(next_game_index, on_chain_count, "resume point determined");
 
     let mut tracker = SequenceTracker::new(next_game_index.saturating_sub(1));

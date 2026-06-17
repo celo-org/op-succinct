@@ -88,7 +88,7 @@ pub fn is_background_retry_aged_out(
 }
 
 /// Restart resume: determine the next game index (explicit > persisted > latest on-chain).
-pub fn resume_next_index(
+pub fn resume_index(
     explicit_start: Option<u64>,
     persisted: Option<&ProgressState>,
     on_chain_game_count: u64,
@@ -178,10 +178,10 @@ mod tests {
     #[test]
     fn resume_prefers_explicit_then_persisted_then_chain() {
         let p = ProgressState { last_contiguous: 41, background_retries: vec![] };
-        assert_eq!(resume_next_index(Some(5), Some(&p), 100), 5);
-        assert_eq!(resume_next_index(None, Some(&p), 100), 42);
-        assert_eq!(resume_next_index(None, None, 100), 99);
-        assert_eq!(resume_next_index(None, None, 0), 0);
+        assert_eq!(resume_index(Some(5), Some(&p), 100), 5);
+        assert_eq!(resume_index(None, Some(&p), 100), 42);
+        assert_eq!(resume_index(None, None, 100), 99);
+        assert_eq!(resume_index(None, None, 0), 0);
     }
 
     #[test]
