@@ -18,20 +18,21 @@ fn l1_head_finalized(range_l1_head: u64, finalized_l1: u64, buffer: u64) -> bool
     range_l1_head + buffer <= finalized_l1
 }
 
-/// The source of the next witness sub-range to pre-build, ahead of the executor.
+/// Provides the next sub-range ready to be processed, ahead of the executor.
 ///
 /// It owns everything needed to answer one question — "what's the next range ready to
-/// build?" — so the caller just builds whatever it returns:
+/// process?" — so the caller is free to do whatever it wants with each range it receives
+/// (build a witness, estimate, prove, …):
 ///   * predicts game windows from the proposal cadence (`[frontier, frontier + interval]`,
 ///     which equals the next game's `[start, end]`),
 ///   * splits each window into safe-head sub-ranges **anchored at the window start**, so the
 ///     boundaries match the executor's split of the real game (cache keys line up),
-///   * hands them out one at a time as each becomes soundly buildable: its end is
-///     L2-finalized AND L1 has finalized past its `l1_head + buffer`.
+///   * hands them out one at a time as each becomes soundly ready: its end is L2-finalized
+///     AND L1 has finalized past its `l1_head + buffer`.
 ///
-/// State is just a forward-only block cursor. Build failures are best-effort — the executor
-/// rebuilds on a cache miss — so the source never needs build-completion feedback.
-pub struct WitnessSource {
+/// State is just a forward-only block cursor. Downstream failures are the caller's problem;
+/// the provider never needs completion feedback.
+pub struct ReadyRangeProvider {
     proposal_interval: u64,
     batch_size: u64,
     /// Start of the current game window (a proposal boundary).
@@ -43,7 +44,7 @@ pub struct WitnessSource {
     safe_head_cache: HashMap<u64, u64>,
 }
 
-impl WitnessSource {
+impl ReadyRangeProvider {
     /// `seed` must be a real proposal boundary (the latest on-chain game's `end_block`) so the
     /// predicted windows align with future games — see `latest_game_end_block` in the daemon.
     pub fn new(seed: u64, proposal_interval: u64, batch_size: u64) -> Self {
@@ -64,14 +65,14 @@ impl WitnessSource {
         let finalized_l2 = match fetcher.get_l2_header(BlockId::finalized()).await {
             Ok(h) => h.number,
             Err(e) => {
-                tracing::debug!(error = %e, "witness source: finalized-L2 fetch failed; retry next tick");
+                tracing::debug!(error = %e, "ready range provider: finalized-L2 fetch failed; retry next tick");
                 return None;
             }
         };
         let finalized_l1 = match fetcher.get_l1_header(BlockId::finalized()).await {
             Ok(h) => h.number,
             Err(e) => {
-                tracing::debug!(error = %e, "witness source: finalized-L1 fetch failed; retry next tick");
+                tracing::debug!(error = %e, "ready range provider: finalized-L1 fetch failed; retry next tick");
                 return None;
             }
         };
@@ -107,7 +108,7 @@ impl WitnessSource {
             {
                 Ok(s) => s,
                 Err(e) => {
-                    tracing::debug!(error = %e, "witness source: split failed; retry next tick");
+                    tracing::debug!(error = %e, "ready range provider: split failed; retry next tick");
                     return None;
                 }
             };
@@ -135,7 +136,7 @@ impl WitnessSource {
                 Ok((_, l1)) => l1,
                 Err(e) => {
                     tracing::debug!(start = range.start, end = range.end, error = %e,
-                        "witness source: safe-head L1 lookup failed; retry next tick");
+                        "ready range provider: safe-head L1 lookup failed; retry next tick");
                     return None;
                 }
             };
@@ -166,7 +167,7 @@ mod tests {
 
     #[test]
     fn new_seeds_cursor_and_window_at_proposal_boundary() {
-        let s = WitnessSource::new(1000, 200, 50);
+        let s = ReadyRangeProvider::new(1000, 200, 50);
         assert_eq!(s.window_start, 1000);
         assert_eq!(s.cursor, 1000);
         assert_eq!(s.proposal_interval, 200);
