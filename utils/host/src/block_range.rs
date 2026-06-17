@@ -180,7 +180,6 @@ pub async fn split_range_based_on_safe_heads_memoized(
         (l1_start..=l1_head_number).filter(|b| !safe_head_cache.contains_key(b)).collect();
     let fetched: Vec<(u64, u64)> = futures::stream::iter(missing)
         .map(|block| {
-            let data_fetcher = data_fetcher;
             async move {
                 let l1_block_hex = format!("0x{block:x}");
                 let result: SafeHeadResponse = data_fetcher
