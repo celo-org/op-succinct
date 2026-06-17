@@ -26,7 +26,8 @@ type WitnessOf<H> = <<H as OPSuccinctHost>::WitnessGenerator as WitnessGenerator
 
 impl<H: OPSuccinctHost> Estimator<H>
 where
-    // Mirror cache.rs's save_witness/load_witness rkyv bounds so this impl can call them.
+    // Mirror cache.rs's save_witness/load_witness rkyv bounds so
+    // this impl can call them.
     WitnessOf<H>: for<'a> rkyv::Serialize<
             rkyv::api::high::HighSerializer<
                 rkyv::util::AlignedVec,
@@ -34,9 +35,8 @@ where
                 RkyvError,
             >,
         > + rkyv::Archive,
-    <WitnessOf<H> as rkyv::Archive>::Archived:
-        rkyv::Deserialize<WitnessOf<H>, rkyv::api::high::HighDeserializer<RkyvError>>
-            + for<'a> rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, RkyvError>>,
+    <WitnessOf<H> as rkyv::Archive>::Archived: rkyv::Deserialize<WitnessOf<H>, rkyv::api::high::HighDeserializer<RkyvError>>
+        + for<'a> rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, RkyvError>>,
 {
     /// Producer: fetch `WitnessData` (host.run) then crunch to `SP1Stdin`, caching both,
     /// then drop the witness blob. A cached witness skips host.run; a cached stdin is a no-op.
@@ -72,14 +72,10 @@ where
             .witness_generator()
             .get_sp1_stdin(witness)
             .map_err(EstimatorError::classify)?;
-        self.cache
-            .save_stdin(range.start, range.end, &stdin)
-            .map_err(EstimatorError::Transient)?;
+        self.cache.save_stdin(range.start, range.end, &stdin).map_err(EstimatorError::Transient)?;
 
         // 3. Drop the (large) witness blob — only needed for a re-crunch.
-        self.cache
-            .drop_witness(range.start, range.end)
-            .map_err(EstimatorError::Transient)?;
+        self.cache.drop_witness(range.start, range.end).map_err(EstimatorError::Transient)?;
         Ok(())
     }
 

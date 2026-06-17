@@ -1,5 +1,7 @@
-use std::collections::VecDeque;
-use std::time::{Duration, Instant, SystemTime};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant, SystemTime},
+};
 
 use op_succinct_common::SequenceTracker;
 use serde::{Deserialize, Serialize};

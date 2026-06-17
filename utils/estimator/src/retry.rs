@@ -1,6 +1,5 @@
 use anyhow::{bail, Result};
-use std::future::Future;
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
 /// Bound an idempotent network future with a timeout. On timeout returns an error
 /// classified `transient` downstream. Lifted from `fault-proof/src/prover.rs:341-368`.

@@ -44,9 +44,8 @@ where
                 RkyvError,
             >,
         > + rkyv::Archive,
-    <WitnessOf<H> as rkyv::Archive>::Archived:
-        rkyv::Deserialize<WitnessOf<H>, rkyv::api::high::HighDeserializer<RkyvError>>
-            + for<'a> rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, RkyvError>>,
+    <WitnessOf<H> as rkyv::Archive>::Archived: rkyv::Deserialize<WitnessOf<H>, rkyv::api::high::HighDeserializer<RkyvError>>
+        + for<'a> rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, RkyvError>>,
 {
     let sub_ranges = split_range_based_on_safe_heads_with_fetcher(
         fetcher,

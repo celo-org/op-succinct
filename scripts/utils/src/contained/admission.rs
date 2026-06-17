@@ -1,6 +1,4 @@
-use std::path::PathBuf;
-use std::sync::Mutex;
-use std::time::Duration;
+use std::{path::PathBuf, sync::Mutex, time::Duration};
 
 use op_succinct_estimator::memory::{
     admits, read_cgroup_usage_bytes, RssHistory, RssSample, WorkKind,
