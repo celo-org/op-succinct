@@ -3,6 +3,8 @@ pub mod discovery;
 pub mod executor;
 pub mod pipeline;
 pub mod ready_range_provider;
+pub mod registry;
+pub mod rss_source;
 pub mod state;
 
 use std::{
@@ -20,20 +22,20 @@ use clap::Parser;
 use fault_proof::contract::DisputeGameFactory::DisputeGameFactoryInstance;
 use op_succinct_common::SequenceTracker;
 use op_succinct_estimator::{
-    memory::{read_cgroup_budget_bytes, read_cgroup_usage_bytes},
-    network_call_with_timeout, DaType, Estimator, WitnessCache,
+    memory::read_cgroup_budget_bytes, network_call_with_timeout, DaType, Estimator, WitnessCache,
 };
 use op_succinct_host_utils::{
     block_range::SpanBatchRange, fetcher::OPSuccinctDataFetcher, stats::ExecutionStats,
 };
 use op_succinct_proof_utils::initialize_host;
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::mpsc;
 
 use crate::contained::{
-    admission::Admission,
+    admission::{Admission, AdmissionConfig},
     discovery::{fetch_game_data, FetchGameError},
     executor::execute_game,
     ready_range_provider::ReadyRangeProvider,
+    rss_source::{make_source, RssSourceKind},
     state::{
         is_background_retry_aged_out, load_progress, requeue_decision, resume_next_index,
         save_progress, AttemptKind, BackgroundRetry, PendingGame, RequeueDecision,
@@ -84,6 +86,25 @@ pub struct ContainedArgs {
     /// RSS admission safety margin (MiB).
     #[arg(long, default_value = "20480")]
     pub rss_margin_mb: u64,
+    /// Hard cap on concurrently in-flight build/execute units. Bounds file descriptors,
+    /// RPC fan-out, and CPU — the resources the memory model does not constrain — and is
+    /// the only cap when the budget is unlimited or the model has no signal yet.
+    #[arg(long, default_value = "8")]
+    pub max_concurrent_units: usize,
+    /// Resident-memory sampling source: `auto` (per-process on Linux), `proc`
+    /// (`/proc/self/status`), or `cgroup` (`memory.current`).
+    #[arg(long, value_enum, default_value_t = RssSourceKind::Auto)]
+    pub rss_source: RssSourceKind,
+    /// Memory sampler tick period (milliseconds).
+    #[arg(long, default_value = "100")]
+    pub sample_period_ms: u64,
+    /// Persist the learned memory model every N sampler ticks.
+    #[arg(long, default_value = "300")]
+    pub persist_every_ticks: u32,
+    /// Build-gas weighting (alpha) in the effective-gas memory model. `< 1` discounts
+    /// builds relative to executes; err high if unsure.
+    #[arg(long, default_value = "0.1")]
+    pub build_gas_weight: f64,
     /// Per-network-call timeout (seconds).
     #[arg(long, default_value = "120")]
     pub network_call_timeout_secs: u64,
@@ -102,18 +123,6 @@ fn da_type() -> DaType {
     #[cfg(not(any(feature = "eigenda", feature = "celestia")))]
     {
         DaType::Ethereum
-    }
-}
-
-/// Size the RSS-admission semaphore from the cgroup budget. `None` budget (no cgroup
-/// limit) defaults to 4. Otherwise: how many `unit_bytes` units fit after reserving
-/// current usage + margin, floored at 1.
-fn compute_initial_permits(budget: Option<u64>, usage: u64, unit_bytes: u64, margin: u64) -> usize {
-    match budget {
-        None => 4,
-        Some(b) => {
-            ((b.saturating_sub(usage).saturating_sub(margin) / unit_bytes.max(1)) as usize).max(1)
-        }
     }
 }
 
@@ -313,25 +322,30 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
         safe_db_fallback: true,
     });
 
-    // ── RSS-admission semaphore ────────────────────────────────────────────
+    // ── Adaptive memory admission ──────────────────────────────────────────
+    // A background sampler folds resident memory into a learned cost-per-(effective-)gas
+    // coefficient; admission projects whether one more unit fits the budget AND enforces a
+    // hard in-flight count cap (bounding fds/RPC/CPU when memory isn't the binding
+    // constraint). Shared by the pipeline and the executor. Cold start runs serially until
+    // the first game completes.
     let budget = read_cgroup_budget_bytes();
     let margin = args.rss_margin_mb * 1024 * 1024;
-    let usage = read_cgroup_usage_bytes().unwrap_or(0);
-    let default_unit = 55u64 * 1024 * 1024 * 1024; // ~55 GiB per concurrent execution
-    let max_conc = compute_initial_permits(budget, usage, default_unit, margin);
-    tracing::info!(max_conc, ?budget, usage, "RSS admission sized");
-    let permits = Arc::new(Semaphore::new(max_conc));
-
-    // Adaptive RSS admission (spec §7): gas-weighted projection from observed history,
-    // gating each build/execute on LIVE cgroup usage + margin. Shared by the pipeline and
-    // the executor; the semaphore above remains the hard concurrency cap.
-    let admission = Arc::new(Admission::load(
-        budget,
-        margin,
-        default_unit,
-        args.cache_dir.join("completion_history.json"),
-        Duration::from_secs(args.poll_interval),
-    ));
+    tracing::info!(?budget, max_concurrent = args.max_concurrent_units, "memory admission sized");
+    let admission = Admission::load(
+        AdmissionConfig {
+            budget_bytes: budget,
+            margin_bytes: margin,
+            alpha: args.build_gas_weight,
+            max_concurrent: args.max_concurrent_units,
+            admit_poll: Duration::from_secs(args.poll_interval),
+            sample_period: Duration::from_millis(args.sample_period_ms),
+            persist_every: args.persist_every_ticks,
+            persist_path: args.cache_dir.join("memory_model.json"),
+        },
+        make_source(args.rss_source),
+    );
+    // Start sampling before any work is admitted; detached, self-persists periodically.
+    admission.clone().spawn_sampler();
 
     // ── L1 provider + dispute game factory (from env, matching the legacy) ──
     // Built before the pipeline spawn so we can seed the predictor's frontier from the
@@ -353,7 +367,6 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
     {
         let estimator = estimator.clone();
         let fetcher = fetcher.clone();
-        let permits = permits.clone();
         let admission = admission.clone();
         let proposal_interval = args.proposal_interval;
         let batch_size = args.batch_size;
@@ -366,8 +379,7 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
                 let mut outcomes = Vec::new();
                 while let Some(range) = provider.next_range(&fetcher).await {
                     let outcome =
-                        pipeline::pipeline_step(&estimator, &fetcher, &permits, &admission, &range)
-                            .await;
+                        pipeline::pipeline_step(&estimator, &fetcher, &admission, &range).await;
                     outcomes.push((range, outcome));
                 }
                 for (range, outcome) in outcomes {
@@ -417,6 +429,11 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
         let now_instant = Instant::now();
         while let Ok(result) = results_rx.try_recv() {
             running_games.remove(&result.game_index());
+            // First successful game completion → trust the memory model (leave cold-start
+            // serial mode). Idempotent, so calling on every success is fine.
+            if matches!(result, GameTaskResult::Success { .. }) {
+                admission.mark_warmed();
+            }
             apply_game_result(
                 result,
                 &mut pending_games,
@@ -523,7 +540,6 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
             let tx = results_tx.clone();
             let estimator = estimator.clone();
             let fetcher = fetcher.clone();
-            let permits = permits.clone();
             let admission = admission.clone();
             let factory = factory.clone();
             let l1_provider = l1_provider.clone();
@@ -568,7 +584,7 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
                                 GameTaskResult::Defer { pg }
                             }
                             Ok(_) => match execute_game(
-                                &estimator, &fetcher, &permits, &admission, &game, batch_size,
+                                &estimator, &fetcher, &admission, &game, batch_size,
                             )
                             .await
                             {
@@ -619,16 +635,7 @@ mod tests {
         assert_eq!(args.batch_size, 200);
         assert_eq!(args.stdin_grace_secs, 3600);
         assert_eq!(args.max_concurrent_games, 5);
-    }
-
-    #[test]
-    fn permits_scale_with_budget() {
-        let budget = Some(500u64 * 1024 * 1024 * 1024);
-        let unit = 55u64 * 1024 * 1024 * 1024;
-        let margin = 20u64 * 1024 * 1024 * 1024;
-        // 500GiB - 20GiB margin = 480GiB; /55GiB = 8.7 → 8.
-        assert_eq!(super::compute_initial_permits(budget, 0, unit, margin), 8);
-        assert_eq!(super::compute_initial_permits(None, 0, unit, margin), 4);
+        assert_eq!(args.max_concurrent_units, 8);
     }
 
     #[test]

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use op_succinct_estimator::{
     aggregate_execution_stats, memory::WorkKind, Estimator, EstimatorError,
 };
@@ -11,26 +9,21 @@ use op_succinct_host_utils::{
     witness_generation::WitnessGenerator,
 };
 use rkyv::rancor::Error as RkyvError;
-use tokio::sync::Semaphore;
 
-use crate::contained::{
-    admission::{current_rss_bytes, Admission},
-    discovery::GameData,
-};
+use crate::contained::{admission::Admission, discovery::GameData};
 
 type WitnessOf<H> = <<H as OPSuccinctHost>::WitnessGenerator as WitnessGenerator>::WitnessData;
 
 /// Execute every safe-head sub-range of a game CONCURRENTLY and aggregate the stats.
 /// A cache hit (pipeline prebuilt the stdin) skips host.run; a miss builds on demand.
-/// Each execute draws an RSS-admission slot (projected memory must fit the live cgroup
-/// budget) and a semaphore permit, so the number of sub-ranges actually running at once
-/// is bounded by the shared memory budget — not by how many ranges (or games) are in
-/// flight. Returns the aggregate AND the sub-ranges (so the caller can schedule stdin
-/// pruning per range after the game succeeds).
+/// Each execute passes through admission, which gates on both the projected memory budget
+/// and the hard concurrency cap, so the number of sub-ranges actually running at once is
+/// bounded regardless of how many ranges (or games) are in flight. Returns the aggregate
+/// AND the sub-ranges (so the caller can schedule stdin pruning per range after the game
+/// succeeds).
 pub async fn execute_game<H: OPSuccinctHost>(
     estimator: &Estimator<H>,
     fetcher: &OPSuccinctDataFetcher,
-    permits: &Arc<Semaphore>,
     admission: &Admission,
     game: &GameData,
     batch_size: u64,
@@ -56,13 +49,12 @@ where
     .await
     .map_err(EstimatorError::classify)?;
 
-    // One future per sub-range; they run concurrently and are gated by RSS admission + the
-    // shared semaphore (the hard concurrency cap).
+    // One future per sub-range; they run concurrently and are gated by admission, which
+    // bounds both projected memory and the in-flight count.
     let range_futures = sub_ranges.iter().map(|range| {
         let estimator = estimator;
         let fetcher = fetcher;
         let admission = admission;
-        let permits = permits;
         async move {
             // Gas-weighted RSS projection key: sum the sub-range's L2 block gas. One extra
             // (cheap) fetch versus the SP1 execute that follows.
@@ -71,12 +63,11 @@ where
                 .await
                 .map_err(EstimatorError::classify)?;
             let gas: u64 = block_data.iter().map(|b| b.gas_used).sum();
-            // Adaptive admission: block until this unit's projected peak fits the budget
-            // given live cgroup usage; the semaphore stays as the hard concurrency cap.
-            admission.admit(WorkKind::Execute, gas).await;
-            let _permit = permits.clone().acquire_owned().await.expect("semaphore closed");
+            // Adaptive admission: block until this unit fits the memory budget and the
+            // concurrency cap. The guard keeps the execute's gas and slot registered until
+            // it drops.
+            let _admit = admission.admit(WorkKind::Execute, gas).await;
             let stats = estimator.execute_range(range).await?;
-            admission.record(WorkKind::Execute, gas, current_rss_bytes());
             Ok::<ExecutionStats, EstimatorError>(stats)
         }
     });
