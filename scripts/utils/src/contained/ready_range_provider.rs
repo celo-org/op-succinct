@@ -115,9 +115,7 @@ impl ReadyRangeProvider {
 
             // Locate the sub-range starting at the cursor (a real boundary from a prior hand-out,
             // stable because boundaries below the finalized frontier don't move).
-            let Some(idx) = sub_ranges.iter().position(|r| r.start == self.cursor) else {
-                return None;
-            };
+            let idx = sub_ranges.iter().position(|r| r.start == self.cursor)?;
 
             // The last sub-range of an INCOMPLETE window ends at the finalized cap — an
             // artifact, not a real game boundary — so hold it until finalization reveals its

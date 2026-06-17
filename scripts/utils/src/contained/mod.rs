@@ -149,7 +149,8 @@ fn is_prune_eligible(now: std::time::SystemTime, eligible_at: std::time::SystemT
 /// scheduling state and applies the mutation single-threaded (no locks on the queues).
 enum GameTaskResult {
     /// Game executed: advance the frontier, drop any background entry, schedule prunes.
-    Success { pg: PendingGame, stats: ExecutionStats, ranges: Vec<SpanBatchRange> },
+    /// `stats` is boxed to keep this large variant from bloating every `GameTaskResult`.
+    Success { pg: PendingGame, stats: Box<ExecutionStats>, ranges: Vec<SpanBatchRange> },
     /// Non-type-42 game: advance the frontier, drop any background entry.
     WrongType { pg: PendingGame, game_type: u32 },
     /// Transient execution failure: apply the two-tier requeue policy.
@@ -589,7 +590,7 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
                             .await
                             {
                                 Ok((stats, ranges)) => {
-                                    GameTaskResult::Success { pg, stats, ranges }
+                                    GameTaskResult::Success { pg, stats: Box::new(stats), ranges }
                                 }
                                 Err(e) if e.is_transient() => GameTaskResult::Transient {
                                     pg,

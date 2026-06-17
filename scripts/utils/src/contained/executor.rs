@@ -52,9 +52,6 @@ where
     // One future per sub-range; they run concurrently and are gated by admission, which
     // bounds both projected memory and the in-flight count.
     let range_futures = sub_ranges.iter().map(|range| {
-        let estimator = estimator;
-        let fetcher = fetcher;
-        let admission = admission;
         async move {
             // Gas-weighted RSS projection key: sum the sub-range's L2 block gas. One extra
             // (cheap) fetch versus the SP1 execute that follows.
