@@ -435,19 +435,38 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
 
     let on_chain_count = factory.gameCount().call().block(BlockId::finalized()).await?.to::<u64>();
 
-    // Get the latest game data
-    let game_data = fetch_game_data(on_chain_count - 1, &factory, l1_provider.clone()).await?;
+    // Seed the predictive pipeline from the latest finalized game's proposal boundary. Three
+    // cases must not crash the daemon at startup: a fresh chain with no finalized games yet
+    // (`on_chain_count == 0`, which would otherwise underflow `on_chain_count - 1`), a transient
+    // RPC failure fetching the latest game, and a non-type-42 latest game. In all of them the
+    // pipeline is simply left unseeded — the executor still builds witnesses on demand as games
+    // are discovered.
+    let pipeline_seed = match on_chain_count.checked_sub(1) {
+        None => {
+            tracing::info!("no finalized games yet; predictive pipeline not seeded");
+            None
+        }
+        Some(latest_index) => match fetch_game_data(latest_index, &factory, l1_provider.clone())
+            .await
+        {
+            Ok(game_data) => Some(game_data.end_block),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to fetch latest game; predictive pipeline not seeded");
+                None
+            }
+        },
+    };
+
     // ── Predictive pipeline task ───────────────────────────────────────────
     let poll = Duration::from_secs(args.poll_interval);
-    {
+    if let Some(seed) = pipeline_seed {
         let estimator = estimator.clone();
         let fetcher = fetcher.clone();
         let admission = admission.clone();
         let proposal_interval = args.proposal_interval;
         let batch_size = args.batch_size;
         tokio::spawn(async move {
-            let mut provider =
-                ReadyRangeProvider::new(game_data.end_block, proposal_interval, batch_size);
+            let mut provider = ReadyRangeProvider::new(seed, proposal_interval, batch_size);
             loop {
                 // Pull every range the provider reports ready and build each (one witness per
                 // pipeline step), logging failures. Serial for now — threading TBD.
