@@ -216,20 +216,34 @@ impl Admission {
     }
 
     /// Persist the learned model. Best-effort, atomic-rename; never holds the lock across
-    /// the file write.
+    /// the file write. Creates the parent directory if it does not yet exist — the cache
+    /// dir is otherwise created lazily on the first witness save, so without this the very
+    /// first persist (before any game completes) would fail.
     pub fn persist(&self) {
         let model = PersistedModel {
             max_cost_per_gas: *self.max_cost_per_gas.lock().unwrap(),
             sample_count: self.sample_count.load(Relaxed),
         };
-        if let Ok(json) = serde_json::to_string(&model) {
-            let tmp = self.persist_path.with_extension("json.tmp");
-            if std::fs::write(&tmp, &json)
-                .and_then(|_| std::fs::rename(&tmp, &self.persist_path))
-                .is_err()
-            {
-                tracing::warn!("failed to persist memory model");
+        let json = match serde_json::to_string(&model) {
+            Ok(json) => json,
+            Err(error) => {
+                tracing::warn!(%error, "failed to serialize memory model");
+                return;
             }
+        };
+        let tmp = self.persist_path.with_extension("json.tmp");
+        let result = self
+            .persist_path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|_| std::fs::write(&tmp, &json))
+            .and_then(|_| std::fs::rename(&tmp, &self.persist_path));
+        if let Err(error) = result {
+            tracing::warn!(
+                %error,
+                path = %self.persist_path.display(),
+                "failed to persist memory model"
+            );
         }
     }
 }
@@ -330,6 +344,26 @@ mod tests {
         adm.persist();
 
         // Reload: model restored and gate starts warmed.
+        let reloaded = test_admission(None, 64, path);
+        assert_eq!(*reloaded.max_cost_per_gas.lock().unwrap(), 7.0);
+        assert!(reloaded.warmed.load(Relaxed));
+    }
+
+    #[test]
+    fn persist_creates_missing_parent_dir() {
+        // Regression: the cache dir is created lazily on the first witness save, so the
+        // first persist (before any game completes) must create its own parent or it
+        // silently fails forever.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent").join("nested").join("model.json");
+        assert!(!path.parent().unwrap().exists());
+
+        let adm = test_admission(None, 64, path.clone());
+        let _g = AdmitGuard::new(adm.registry.clone(), WorkKind::Execute, 1_000);
+        adm.observe(7_000); // cpg = 7
+        adm.persist();
+
+        assert!(path.exists(), "persist must create the file under a missing parent dir");
         let reloaded = test_admission(None, 64, path);
         assert_eq!(*reloaded.max_cost_per_gas.lock().unwrap(), 7.0);
         assert!(reloaded.warmed.load(Relaxed));
