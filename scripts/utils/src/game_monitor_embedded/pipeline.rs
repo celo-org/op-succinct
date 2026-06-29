@@ -15,6 +15,15 @@ type WitnessOf<H> = <<H as OPSuccinctHost>::WitnessGenerator as WitnessGenerator
 /// `build_range_witness`). The sampler observes the resulting footprint out of band. The
 /// caller pulls ranges from the `ReadyRangeProvider` and drives one of these per range;
 /// concurrency, if any, is the caller's concern.
+///
+/// Runs in a per-range span (spec §4.6) — the pipeline has no `game`/`attempt` context, so
+/// builds are attributed to `range` alone, with the host.run/get_sp1_stdin child spans nested
+/// underneath.
+#[tracing::instrument(
+    name = "range",
+    skip_all,
+    fields(start = range.start, end = range.end, work = "build")
+)]
 pub async fn pipeline_step<H: OPSuccinctHost>(
     estimator: &Estimator<H>,
     fetcher: &OPSuccinctDataFetcher,

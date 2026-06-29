@@ -10,6 +10,7 @@ use sp1_sdk::{
     blocking::{CpuProver, Prover},
     Elf,
 };
+use tracing::Instrument;
 
 use crate::{cache::WitnessCache, error::EstimatorError};
 
@@ -58,7 +59,14 @@ where
                     .fetch(range.start, range.end, None, self.safe_db_fallback)
                     .await
                     .map_err(EstimatorError::classify)?;
-                let w = self.host.run(&args).await.map_err(EstimatorError::classify)?;
+                // `host.run` as a child span (spec §4.6): the heaviest, most failure-prone
+                // step, attributable under the enclosing range/game span.
+                let w = self
+                    .host
+                    .run(&args)
+                    .instrument(tracing::info_span!("host.run"))
+                    .await
+                    .map_err(EstimatorError::classify)?;
                 self.cache
                     .save_witness(range.start, range.end, &w)
                     .map_err(EstimatorError::Transient)?;
@@ -66,12 +74,15 @@ where
             }
         };
 
-        // 2. SP1Stdin: pure CPU serialization of the witness, then cache it.
-        let stdin = self
-            .host
-            .witness_generator()
-            .get_sp1_stdin(witness)
-            .map_err(EstimatorError::classify)?;
+        // 2. SP1Stdin: pure CPU serialization of the witness, then cache it. Synchronous, so
+        // an entered span guard (no await held across) is correct here.
+        let stdin = {
+            let _span = tracing::info_span!("get_sp1_stdin").entered();
+            self.host
+                .witness_generator()
+                .get_sp1_stdin(witness)
+                .map_err(EstimatorError::classify)?
+        };
         self.cache.save_stdin(range.start, range.end, &stdin).map_err(EstimatorError::Transient)?;
 
         // 3. Drop the (large) witness blob — only needed for a re-crunch.
@@ -103,6 +114,7 @@ where
             .map_err(EstimatorError::classify)?;
 
         // SP1 execute must run off the async runtime: CpuProver spins its own tokio runtime.
+        // `execute` as a child span (spec §4.6).
         let exec = tokio::task::spawn_blocking(move || {
             let prover = CpuProver::new();
             prover
@@ -110,6 +122,7 @@ where
                 .deferred_proof_verification(false)
                 .run()
         })
+        .instrument(tracing::info_span!("execute"))
         .await
         .map_err(|e| EstimatorError::Fatal(anyhow::anyhow!("execute task join error: {e}")))?;
 
