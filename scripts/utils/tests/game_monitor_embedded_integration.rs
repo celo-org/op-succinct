@@ -1,4 +1,4 @@
-//! Integration tests for the contained monitor. RPC-dependent tests are a no-op when
+//! Integration tests for the embedded monitor. RPC-dependent tests are a no-op when
 //! `OPS_IT_L2_RPC` is unset. Run manually against a node with the env set.
 
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use op_succinct_estimator::{
 };
 use op_succinct_host_utils::{block_range::SpanBatchRange, fetcher::OPSuccinctDataFetcher};
 use op_succinct_proof_utils::initialize_host;
-use op_succinct_scripts::contained::{
+use op_succinct_scripts::game_monitor_embedded::{
     admission::{Admission, AdmissionConfig},
     discovery::GameData,
     executor::execute_game,
@@ -55,13 +55,13 @@ fn range_enabled() -> Option<(u64, u64)> {
     Some((start, end))
 }
 
-/// Build the real estimator the same way `contained::run` does, plus a temp-dir cache.
+/// Build the real estimator the same way `game_monitor_embedded::run` does, plus a temp-dir cache.
 ///
 /// Construction is a macro (not a function) so the concrete host type returned by
 /// `initialize_host` flows to the call site: a `fn -> Arc<Estimator<impl OPSuccinctHost>>`
 /// would erase the host's rkyv bounds, making `build_range_witness`/`execute_range`
 /// uncallable. With the construction inlined, the eigenda host's bounds resolve
-/// automatically — exactly as they do where `contained::run` builds the estimator.
+/// automatically — exactly as they do where `game_monitor_embedded::run` builds the estimator.
 ///
 /// Binds `$est` (the `Arc<Estimator<…>>`), `$fetcher` (`Arc<OPSuccinctDataFetcher>`),
 /// `$cache` (`WitnessCache`), and `$dir` (the `TempDir` whose lifetime backs the cache).

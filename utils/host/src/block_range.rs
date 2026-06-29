@@ -175,22 +175,20 @@ pub async fn split_range_based_on_safe_heads_memoized(
 
     // Query only the L1 blocks not already cached (safe heads are immutable for finalized
     // blocks). Propagate a transient safe-head RPC failure as an error instead of panicking —
-    // this runs inline in the contained daemon, where a panic would crash the whole process.
+    // this runs inline in the embedded daemon, where a panic would crash the whole process.
     let missing: Vec<u64> =
         (l1_start..=l1_head_number).filter(|b| !safe_head_cache.contains_key(b)).collect();
     let fetched: Vec<(u64, u64)> = futures::stream::iter(missing)
-        .map(|block| {
-            async move {
-                let l1_block_hex = format!("0x{block:x}");
-                let result: SafeHeadResponse = data_fetcher
-                    .fetch_rpc_data_with_mode(
-                        RPCMode::L2Node,
-                        "optimism_safeHeadAtL1Block",
-                        vec![l1_block_hex.into()],
-                    )
-                    .await?;
-                Ok::<(u64, u64), anyhow::Error>((block, result.safe_head.number))
-            }
+        .map(|block| async move {
+            let l1_block_hex = format!("0x{block:x}");
+            let result: SafeHeadResponse = data_fetcher
+                .fetch_rpc_data_with_mode(
+                    RPCMode::L2Node,
+                    "optimism_safeHeadAtL1Block",
+                    vec![l1_block_hex.into()],
+                )
+                .await?;
+            Ok::<(u64, u64), anyhow::Error>((block, result.safe_head.number))
         })
         .buffered(15)
         .try_collect()
