@@ -1,0 +1,63 @@
+# syntax=docker/dockerfile:1.4
+
+# Base stage: Install Rust and dependencies
+FROM ubuntu:24.04 AS rust-base
+
+WORKDIR /app
+
+# Install required dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    clang \
+    build-essential \
+    git \
+    pkg-config \
+    libssl-dev \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Go 1.24 (required for sp1-recursion-gnark-ffi)
+RUN curl -LO https://go.dev/dl/go1.24.0.linux-amd64.tar.gz && \
+    tar -C /usr/local -xzf go1.24.0.linux-amd64.tar.gz && \
+    rm go1.24.0.linux-amd64.tar.gz
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH=/root/.cargo/bin:$PATH
+RUN rustup install stable && rustup default stable
+
+# Install SP1
+RUN curl -L https://sp1.succinct.xyz | bash && \
+    ~/.sp1/bin/sp1up -v 6.1.0 && \
+    ~/.sp1/bin/cargo-prove prove --version
+
+# Copy toolchain file
+COPY rust-toolchain.toml .
+# This installs the nightly version from the file
+RUN rustup show
+
+# Build stage
+FROM rust-base AS builder
+
+# Copy the entire workspace
+COPY . .
+
+# Build the embedded game-monitor. It runs cost estimation in-process, so the
+# DA feature (eigenda) must be compiled in rather than relying on a separate
+# cost-estimator binary.
+RUN cargo build --release --bin game-monitor-embedded --features eigenda
+
+# Runtime stage (minimal image)
+FROM ubuntu:24.04
+
+WORKDIR /app
+
+# Install only necessary runtime dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the built binary
+COPY --from=builder /app/target/release/game-monitor-embedded /usr/local/bin/
