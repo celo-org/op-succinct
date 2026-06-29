@@ -14,7 +14,7 @@
 //! the daemon can resume after restarts.
 
 use alloy_eips::BlockId;
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256};
 use alloy_provider::ProviderBuilder;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -255,6 +255,9 @@ struct GameData {
     start_block: u64,
     /// L2 block at which the game's execution range ends.
     end_block: u64,
+    /// L1 head the game is anchored to on-chain. Forwarded to the cost estimator so it matches the
+    /// proposer instead of looking the L1 head up via the op-node safeDB.
+    l1_head: B256,
     /// L1 wall-clock time at which the game was created on the dispute game factory. Used for
     /// age-based eviction of background retries.
     created_at: SystemTime,
@@ -1156,7 +1159,16 @@ async fn fetch_game_data<P: alloy_provider::Provider + Clone>(
         .context("failed to get starting block number")?
         .to::<u64>();
 
-    Ok(GameData { game_index, game_address, start_block, end_block: l2_block_number, created_at })
+    let l1_head = game.l1Head().call().await.context("failed to get L1 head")?;
+
+    Ok(GameData {
+        game_index,
+        game_address,
+        start_block,
+        end_block: l2_block_number,
+        l1_head,
+        created_at,
+    })
 }
 
 /// Spawn a `cost-estimator` child process for the given game.
@@ -1183,6 +1195,9 @@ fn spawn_cost_estimator(
         "--env-file",
         env_file.to_str().unwrap(),
         "--log-only",
+        "--no-safe-head-split",
+        "--l1-head",
+        &game_data.l1_head.to_string(),
     ];
 
     let cmd = format!("{} {}", cost_estimator_binary_path.display(), args.join(" "));
