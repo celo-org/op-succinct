@@ -25,7 +25,7 @@ use log::{debug, error, info, warn};
 use op_succinct_common::SequenceTracker;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     env,
     fs::{self, File},
     io::{Read, Seek, SeekFrom, Write},
@@ -325,7 +325,7 @@ struct CompletionRecord {
 /// A long-tail retry for a game whose primary retry budget has been exhausted. Background
 /// retries run only with spare capacity and survive process restarts via the persisted
 /// `ProgressState`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct BackgroundRetry {
     game_index: u64,
     /// L1 wall-clock time at which the game was created on the dispute game factory. Used to
@@ -731,6 +731,21 @@ impl MonitorState {
                 });
             }
             AttemptKind::Primary { .. } => {
+                // Defend against creating a second background entry for a game that is already
+                // queued (e.g. re-discovered via --start-index): maybe_requeue assumes one
+                // entry per game index.
+                if self.background_retries.iter().any(|bg| bg.game_index == game_index) {
+                    warn!(
+                        "Game {} already has a background retry entry; not adding a duplicate \
+                         ({})",
+                        game_index, reason
+                    );
+                    // Still record completion so last_contiguous can advance: a rediscovered
+                    // game (e.g. via --start-index) may not be in the tracker yet. add() is
+                    // idempotent, so re-marking an already-tracked game is a no-op.
+                    self.mark_game_completed(game_index);
+                    return;
+                }
                 // Primary retries exhausted: mark the game completed so last_contiguous can
                 // advance, and move it onto the background-retry queue for low-priority
                 // long-tail attempts. The first background wait continues the primary linear
@@ -1127,6 +1142,23 @@ fn next_background_wait(current: Duration, max: Duration) -> Duration {
     current.checked_mul(BACKGROUND_BACKOFF_MULTIPLIER).unwrap_or(max).min(max)
 }
 
+/// Drop background-retry entries that share a `game_index`, keeping the first occurrence and
+/// returning the number removed. Duplicates should never be created, but a corrupted or
+/// hand-edited `progress.json` (or an entry appended by `gen-background-retry` for a game that
+/// is already queued) can introduce them. Left in place they make
+/// [`MonitorState::maybe_requeue`] update the wrong entry via its first-match lookup,
+/// funnelling every failure's backoff growth onto a single duplicate.
+fn dedup_background_retries(
+    entries: VecDeque<BackgroundRetry>,
+) -> (VecDeque<BackgroundRetry>, usize) {
+    let num_before = entries.len();
+    let mut seen = HashSet::new();
+    let deduped: VecDeque<BackgroundRetry> =
+        entries.into_iter().filter(|bg| seen.insert(bg.game_index)).collect();
+    let num_dropped = num_before - deduped.len();
+    (deduped, num_dropped)
+}
+
 #[derive(Debug, thiserror::Error)]
 enum FetchGameError {
     #[error("game {game_index} has type {game_type}, expected {expected}")]
@@ -1448,8 +1480,14 @@ async fn run(args: RunArgs) -> Result<()> {
         }
     };
 
-    let background_retries: VecDeque<BackgroundRetry> =
+    let loaded_background_retries: VecDeque<BackgroundRetry> =
         persisted_progress.map(|p| p.background_retries.into_iter().collect()).unwrap_or_default();
+    // Drop any duplicate game indexes a corrupted or hand-edited progress.json may contain;
+    // they would otherwise make maybe_requeue update the wrong entry.
+    let (background_retries, num_dropped) = dedup_background_retries(loaded_background_retries);
+    if num_dropped > 0 {
+        warn!("Dropped {} duplicate persisted background retries on load", num_dropped);
+    }
     info!("Loaded {} persisted background retries", background_retries.len());
 
     let delay = Duration::from_secs(args.delay);
@@ -1637,7 +1675,12 @@ async fn make_background_retry<P: alloy_provider::Provider + Clone>(
 
 /// Load an existing `progress.json`, generate [`BackgroundRetry`] entries for the supplied
 /// game indexes, append them to the existing state, and print the complete [`ProgressState`]
-/// as pretty-printed JSON on stdout.
+/// as pretty-printed JSON on stdout. Indexes already present are skipped so the file never
+/// gains a duplicate entry for the same game.
+///
+/// Target only games at or below the persisted `last_contiguous`, which the daemon already
+/// treats as sequenced. Pointing this at a higher index risks stalling `last_contiguous` if
+/// the daemon later runs that game as a primary attempt and then skips it as a duplicate.
 ///
 /// Example usage (daemon must be stopped first):
 ///
@@ -1664,7 +1707,16 @@ async fn gen_background_retry(args: GenBackgroundRetryArgs) -> Result<()> {
         DisputeGameFactoryInstance::new(args.dispute_game_factory_address, l1_provider.clone());
     let last_wait = Duration::from_secs(args.last_wait_secs);
 
+    // Track existing indexes so we never append a duplicate (which would make the daemon's
+    // maybe_requeue update the wrong entry). Covers both games already in the file and repeats
+    // within the supplied list. Notices go to stderr to keep stdout pure JSON.
+    let mut existing: HashSet<u64> =
+        state.background_retries.iter().map(|bg| bg.game_index).collect();
     for game_index in args.game_indexes {
+        if !existing.insert(game_index) {
+            eprintln!("Skipping game {game_index}: already has a background retry entry");
+            continue;
+        }
         let entry =
             make_background_retry(game_index, last_wait, &factory, l1_provider.clone()).await?;
         state.background_retries.push(entry);
@@ -1702,5 +1754,65 @@ mod tests {
         // exact value that panicked the daemon in production; it must clamp to max, not abort.
         let huge = Duration::from_secs(4_800 * 4u64.pow(25));
         assert_eq!(next_background_wait(huge, MAX_AGE), MAX_AGE);
+    }
+
+    fn bg(game_index: u64, last_wait_secs: u64, attempts: u32) -> BackgroundRetry {
+        BackgroundRetry {
+            game_index,
+            game_created_at: UNIX_EPOCH,
+            next_attempt_at: UNIX_EPOCH,
+            last_wait: Duration::from_secs(last_wait_secs),
+            attempts,
+        }
+    }
+
+    #[test]
+    fn dedup_keeps_first_per_game_index_and_counts_dropped() {
+        // Mirrors the production incident: a healthy entry plus a degraded duplicate for the
+        // same game (the second carried last_wait = 4800 * 4^25).
+        let input: VecDeque<BackgroundRetry> =
+            [bg(28477, 4_800, 0), bg(28477, 4_800 * 4u64.pow(25), 1), bg(99, 100, 0)]
+                .into_iter()
+                .collect();
+
+        let (out, dropped) = dedup_background_retries(input);
+
+        assert_eq!(dropped, 1);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], bg(28477, 4_800, 0));
+        assert_eq!(out[1], bg(99, 100, 0));
+    }
+
+    #[test]
+    fn dedup_is_noop_when_all_unique() {
+        let input: VecDeque<BackgroundRetry> = [bg(1, 10, 0), bg(2, 20, 0)].into_iter().collect();
+        let (out, dropped) = dedup_background_retries(input.clone());
+        assert_eq!(dropped, 0);
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn requeue_marks_completed_when_skipping_duplicate() {
+        let tmp = std::env::temp_dir();
+        let mut state = MonitorState::new(
+            5, // SequenceTracker end starts at 5
+            Duration::from_secs(1),
+            10_800,
+            0,
+            1,                                                  // max_retries
+            tmp.join("op-succinct-test-history-dupguard.json"), // missing -> empty
+            tmp.join("op-succinct-test-progress-dupguard.json"),
+            [bg(6, 4_800, 0)].into_iter().collect(), // game 6 already queued in background
+            Duration::from_secs(302_400),
+        );
+        assert_eq!(state.sequence_tracker.end(), 5);
+
+        // Game 6 (already in the background queue, e.g. rediscovered via --start-index) exhausts
+        // a primary attempt. The duplicate guard must skip re-queuing it but still record
+        // completion so last_contiguous can advance past the gap.
+        state.maybe_requeue(6, AttemptKind::Primary { retries: 1 }, UNIX_EPOCH, "test");
+
+        assert_eq!(state.background_retries.len(), 1, "no duplicate added");
+        assert_eq!(state.sequence_tracker.end(), 6, "last_contiguous advanced past the gap");
     }
 }
