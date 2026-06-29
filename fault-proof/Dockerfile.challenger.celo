@@ -26,14 +26,33 @@ RUN curl -L https://sp1.succinct.xyz | bash && \
     ~/.sp1/bin/sp1up -v 6.1.0 && \
     ~/.sp1/bin/cargo-prove prove --version
 
+# Pre-install the pinned nightly toolchain into the cached base layer (see
+# proposer Dockerfile for the full rationale). rustup >= 1.28 does NOT
+# auto-install via `rustup show`; `rustup toolchain install` reads
+# ./rust-toolchain.toml and installs the channel + components. Busts only when
+# rust-toolchain.toml changes.
+COPY rust-toolchain.toml ./
+RUN rustup toolchain install
+
 
 FROM base AS builder
 
 WORKDIR /app
 COPY . .
 
-# Build the binary
-RUN cargo build --release --bin challenger --features eigenda
+# Content (checksum) freshness so `COPY . .` mtime churn does not force a full
+# first-party recompile against a warm /app/target (see proposer Dockerfile).
+ENV CARGO_UNSTABLE_CHECKSUM_FRESHNESS=true
+
+# Distinct target cache id (challenger-target) so it never collides with the
+# proposer's target cache if both ever share one builder. The mount ids MUST
+# match the dance cache-map ids. Copy the binary out of the target mount before
+# the runtime stage, since the mount is unmounted after this RUN.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,id=cargo-git,sharing=locked \
+    --mount=type=cache,target=/app/target,id=challenger-target,sharing=locked \
+    cargo build --release --bin challenger --features eigenda && \
+    cp /app/target/release/challenger /app/challenger
 
 # Runtime stage (minimal image)
 FROM ubuntu:24.04
@@ -46,8 +65,8 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the built challenger binary
-COPY --from=builder /app/target/release/challenger /usr/local/bin/
+# Copy the built challenger binary (copied out of the target cache mount above)
+COPY --from=builder /app/challenger /usr/local/bin/
 
 # Set the command
 CMD ["challenger"]

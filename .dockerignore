@@ -1,11 +1,31 @@
+# Build outputs / data — never build inputs
 /target
 /data
 /execution-reports
 /book
 /audits
+
+# buildkit-cache-dance scratch dirs — written into the workspace at CI time,
+# must never enter the build context (would churn the context hash).
+/scratch
+/cache-mounts
+
+# VCS / CI / Docker meta
 .github
 .git
 .dockerignore
 .gitignore
 Dockerfile*
 gha-creds-*.json
+
+# Docs and editor/OS cruft — shrink context, reduce cache-key churn.
+# Verified safe: no crate uses include_str!, and the only include_bytes! targets
+# are the committed elf/* blobs. DO NOT add Cargo.lock, rust-toolchain.toml, any
+# source dir, resources/, fault-proof/configs/, or elf/ here — those ARE inputs.
+**/node_modules
+**/*.md
+**/*.pdf
+.DS_Store
+.idea
+.vscode
+.claude

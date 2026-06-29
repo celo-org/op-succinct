@@ -26,14 +26,37 @@ RUN curl -L https://sp1.succinct.xyz | bash && \
     ~/.sp1/bin/sp1up -v 6.1.0 && \
     ~/.sp1/bin/cargo-prove prove --version
 
+# Pre-install the pinned nightly toolchain into the cached base layer so it is
+# not re-downloaded into RUSTUP_HOME (which is NOT a cache mount) on every
+# cache-busted builder RUN. rustup >= 1.28 (shipped by this image) does NOT
+# auto-install via `rustup show`, so use `rustup toolchain install` (no args),
+# which reads ./rust-toolchain.toml and installs the channel + components.
+# Busts only when rust-toolchain.toml changes.
+COPY rust-toolchain.toml ./
+RUN rustup toolchain install
+
 
 FROM base AS builder
 
 WORKDIR /app
 COPY . .
 
-# Build the binary
-RUN cargo build --release --bin proposer --features eigenda
+# Use cargo content (checksum) freshness instead of mtime freshness. `COPY . .`
+# rewrites every source file's mtime each build, which would otherwise mark every
+# workspace crate dirty and force a full first-party recompile even with a warm
+# /app/target. checksum-freshness is a nightly feature (the pinned toolchain is
+# nightly), so only genuinely-changed crates recompile across cached runs.
+ENV CARGO_UNSTABLE_CHECKSUM_FRESHNESS=true
+
+# Build with BuildKit cache mounts persisted across runs by buildkit-cache-dance.
+# The mount ids MUST match the dance cache-map ids. The binary is produced inside
+# the /app/target cache mount, which is unmounted after this RUN, so copy it out
+# to a normal path before the runtime stage can COPY it.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,id=cargo-git,sharing=locked \
+    --mount=type=cache,target=/app/target,id=proposer-target,sharing=locked \
+    cargo build --release --bin proposer --features eigenda && \
+    cp /app/target/release/proposer /app/proposer
 
 # Runtime stage (minimal image)
 FROM ubuntu:24.04
@@ -52,8 +75,8 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the built proposer binary
-COPY --from=builder /app/target/release/proposer /usr/local/bin/
+# Copy the built proposer binary (copied out of the target cache mount above)
+COPY --from=builder /app/proposer /usr/local/bin/
 
 # Set the command
 CMD ["proposer"]

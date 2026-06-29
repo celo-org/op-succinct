@@ -1,0 +1,152 @@
+name: docker-build-lite-celo (cache-dance validation)
+
+# Standalone validation for the buildkit-cache-dance Rust caching approach.
+# Builds BOTH heavy images via a matrix (each image is its own job -> its own
+# ephemeral builder + its own cache dirs/keys, so collisions are impossible) and
+# pushes to the dev GAR under distinct test tags, leaving production tags
+# untouched. Graduating this into the production hot path is a documented
+# follow-up (see the design's "Production wiring" section); it cannot be injected
+# through the existing reusable workflow, which exposes no cache hook.
+
+on:
+  workflow_dispatch:
+  # ITERATION: trigger on push to the dedicated test branch so each push runs the
+  # workflow directly (push events run the workflow from the pushed ref, with no
+  # default-branch requirement, unlike workflow_dispatch). Revert to the
+  # pull_request(paths) trigger below before merging.
+  push:
+    branches:
+      - piersy/docker-cache-test
+  # pull_request:
+  #   paths:
+  #     - 'fault-proof/Dockerfile.proposer.celo'
+  #     - 'fault-proof/Dockerfile.challenger.celo'
+  #     - '.github/workflows/docker-build-lite-celo.yaml'
+  #     - '.dockerignore'
+
+permissions:
+  contents: read
+  id-token: write   # GCP Workload Identity Federation
+
+jobs:
+  build:
+    name: build-${{ matrix.bin }}
+    runs-on: ["self-hosted", "org", "8-cpu"]
+    timeout-minutes: 60
+    # Fork PRs do not receive id-token: write, so GCP WIF auth and push are
+    # skipped for them; the build itself still runs and validates the Dockerfile
+    # + cache wiring. Internal-branch PRs and workflow_dispatch auth + push.
+    env:
+      IS_INTERNAL: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # ITERATION: proposer only, to keep each cycle cheap. Re-add the
+        # challenger entry below once the proposer cache is validated.
+        include:
+          - bin: proposer
+            file: fault-proof/Dockerfile.proposer.celo
+            image: us-west1-docker.pkg.dev/devopsre/dev-images/${{ github.event.repository.name }}-proposer
+            target_id: proposer-target
+          # - bin: challenger
+          #   file: fault-proof/Dockerfile.challenger.celo
+          #   image: us-west1-docker.pkg.dev/devopsre/dev-images/${{ github.event.repository.name }}-challenger
+          #   target_id: challenger-target
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Build the PR head (not the ephemeral merge commit) so sha-tagged
+          # images and cache keys track the actual reviewed commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      # docker-container driver (default for this action) is REQUIRED for the dance.
+      - id: buildx
+        uses: docker/setup-buildx-action@v3
+
+      # GCP auth using the dev Workload Identity provider + service account.
+      # The repo's reusable workflow uses
+      #   celo-org/reusable-workflows/.github/actions/auth-gcp-artifact-registry
+      # internally; this explicit auth + login pair is the documented equivalent.
+      - id: auth
+        if: env.IS_INTERNAL == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/1094498259535/locations/global/workloadIdentityPools/gh-op-succinct-dev/providers/github-by-repos
+          service_account: op-succinct-gh-dev@devopsre.iam.gserviceaccount.com
+          token_format: access_token
+          access_token_lifetime: 60m
+
+      - if: env.IS_INTERNAL == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: us-west1-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      # Shared dependency cache (registry + git): identical crate set for both
+      # images, so cache it ONCE under a bin-independent, Cargo.lock-keyed key.
+      # registry/git only change when Cargo.lock changes, so a fixed key is
+      # correct and avoids duplicating multi-GB deps per image (eases the 10 GB
+      # GHA cache cap). Declared first so its post-save runs LAST (after the
+      # dance post-extract repopulates the host dirs).
+      - name: Restore Rust dependency caches (registry + git)
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            cache-mounts/cargo-registry
+            cache-mounts/cargo-git
+          key: rust-deps-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            rust-deps-
+
+      # Per-bin target cache. Unique per-SHA key + restore-keys: actions/cache is
+      # immutable, so a fixed key would freeze target/ after the first save and
+      # never persist incremental rebuilds. NOTE: a release target/ for this
+      # SP1/kona/alloy tree can be multiple GB and may thrash the 10 GB/repo LRU
+      # cap (and is branch-scoped: cross-PR reuse is limited to the develop
+      # baseline + within-PR pushes). If hit rate degrades, move target/ to the
+      # GCS-backed store (these runners already authenticate to GCP).
+      - name: Restore Rust target cache (${{ matrix.bin }})
+        id: cache-target
+        uses: actions/cache@v4
+        with:
+          path: |
+            cache-mounts/${{ matrix.bin }}-target
+          key: rust-target-${{ matrix.bin }}-${{ hashFiles('**/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            rust-target-${{ matrix.bin }}-${{ hashFiles('**/Cargo.lock') }}-
+            rust-target-${{ matrix.bin }}-
+
+      # Inject host caches into the builder's BuildKit store. The cache-map host
+      # paths MUST match the actions/cache path: entries above, and each "id"
+      # MUST match the Dockerfile --mount id. NO skip-extraction: Rust target/
+      # changes on every source edit even when Cargo.lock is unchanged, so always
+      # extract + re-save.
+      - name: Inject caches into BuildKit
+        uses: reproducible-containers/buildkit-cache-dance@v3.4.0
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          cache-map: |
+            {
+              "cache-mounts/cargo-registry": { "target": "/usr/local/cargo/registry", "id": "cargo-registry" },
+              "cache-mounts/cargo-git": { "target": "/usr/local/cargo/git", "id": "cargo-git" },
+              "cache-mounts/${{ matrix.bin }}-target": { "target": "/app/target", "id": "${{ matrix.target_id }}" }
+            }
+
+      # Registry LAYER cache restores the stable base stage (apt+Go+SP1+toolchain)
+      # so the ephemeral runner does not rebuild it (~6-8 min) every run. It does
+      # NOT carry the --mount=type=cache contents — that is the dance's job.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          builder: ${{ steps.buildx.outputs.name }}
+          push: ${{ env.IS_INTERNAL == 'true' }}
+          provenance: false
+          tags: |
+            ${{ matrix.image }}:cache-dance-validation
+            ${{ matrix.image }}:sha-${{ github.sha }}
+          cache-from: type=registry,ref=${{ matrix.image }}:buildcache
+          cache-to: type=registry,ref=${{ matrix.image }}:buildcache,mode=max
