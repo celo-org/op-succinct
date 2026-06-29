@@ -101,6 +101,7 @@ use op_succinct_host_utils::{
 };
 use op_succinct_proof_utils::initialize_host;
 use tokio::sync::mpsc;
+use tracing::Instrument;
 
 use crate::game_monitor_embedded::{
     admission::{Admission, AdmissionConfig},
@@ -632,6 +633,12 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
             let l1_provider = l1_provider.clone();
             let timeout_secs = args.network_call_timeout_secs;
             let batch_size = args.batch_size;
+            // One span per unit of work (spec §4.6): every log line emitted while this game
+            // runs — including bridged `log::` lines from host.run/execute deep in the
+            // libraries — carries `game` + `attempt`, and the per-range child spans add
+            // `range`. Created before `pg` is moved into the task.
+            let game_span =
+                tracing::info_span!("game", index = pg.game_index, attempt = ?pg.kind);
             tokio::spawn(async move {
                 // Bound the control-plane game-data read; a timeout is a transient defer.
                 let fetched = network_call_with_timeout(timeout_secs, "fetch_game_data", async {
@@ -702,7 +709,8 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
                 // The receiver lives for the whole process; a send error only means
                 // shutdown, in which case dropping the result is fine.
                 let _ = tx.send(result);
-            });
+            }
+            .instrument(game_span));
         }
         pending_games = remaining;
     }

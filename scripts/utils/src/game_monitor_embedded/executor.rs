@@ -9,6 +9,7 @@ use op_succinct_host_utils::{
     witness_generation::WitnessGenerator,
 };
 use rkyv::rancor::Error as RkyvError;
+use tracing::Instrument;
 
 use crate::game_monitor_embedded::{admission::Admission, discovery::GameData};
 
@@ -50,8 +51,11 @@ where
     .map_err(EstimatorError::classify)?;
 
     // One future per sub-range; they run concurrently and are gated by admission, which
-    // bounds both projected memory and the in-flight count.
+    // bounds both projected memory and the in-flight count. Each runs in a per-range child
+    // span (spec §4.6) so its logs — and the host.run/get_sp1_stdin/execute child spans
+    // inside the estimator — are attributable to `range` under the enclosing `game` span.
     let range_futures = sub_ranges.iter().map(|range| {
+        let range_span = tracing::info_span!("range", start = range.start, end = range.end);
         async move {
             // Gas-weighted RSS projection key: sum the sub-range's L2 block gas. One extra
             // (cheap) fetch versus the SP1 execute that follows.
@@ -67,6 +71,7 @@ where
             let stats = estimator.execute_range(range).await?;
             Ok::<ExecutionStats, EstimatorError>(stats)
         }
+        .instrument(range_span)
     });
 
     let results = futures::future::join_all(range_futures).await;
