@@ -47,6 +47,8 @@ const MEDIAN_THRESHOLD: usize = 3;
 /// Kill a process if its time-per-block exceeds this multiplier of the median of completed
 /// processes.
 const RUNTIME_KILL_MULTIPLIER: f64 = 5.0;
+/// Factor by which a background retry's wait grows after each failed attempt.
+const BACKGROUND_BACKOFF_MULTIPLIER: u32 = 4;
 
 /// Top-level CLI for the game-monitor binary.
 ///
@@ -332,7 +334,8 @@ struct BackgroundRetry {
     /// Wall-clock time at which the next attempt becomes eligible. `SystemTime` is used (rather
     /// than `Instant`) so the value survives process restarts.
     next_attempt_at: SystemTime,
-    /// Wait used before the most recent attempt; the next wait is `last_wait * 4`.
+    /// Wait used before the most recent attempt; the next wait grows by 4x, clamped to the
+    /// background-retry max age so it can never overflow.
     last_wait: Duration,
     /// Number of background attempts performed so far for this game.
     attempts: u32,
@@ -704,7 +707,7 @@ impl MonitorState {
     /// - **Primary with retries remaining**: re-queue to `pending_games` with linear backoff.
     /// - **Primary with retries exhausted**: mark completed (so `last_contiguous` can advance),
     ///   move to `background_retries` with the first exponential wait.
-    /// - **Background**: quadruple `last_wait` on the existing entry for the next attempt.
+    /// - **Background**: grow `last_wait` by 4x (clamped to the max age) on the existing entry.
     fn maybe_requeue(
         &mut self,
         game_index: u64,
@@ -730,11 +733,16 @@ impl MonitorState {
             AttemptKind::Primary { .. } => {
                 // Primary retries exhausted: mark the game completed so last_contiguous can
                 // advance, and move it onto the background-retry queue for low-priority
-                // long-tail attempts. The first background wait is
-                // `initial_game_delay * 2 * max_retries * 4`, continuing the primary linear
-                // schedule scaled by 4x. `max_retries.max(1)` guards against a 0-length wait
-                // when max_retries is configured to 0.
-                let last_wait = self.initial_game_delay * 2 * self.max_retries.max(1) * 4;
+                // long-tail attempts. The first background wait continues the primary linear
+                // schedule (`initial_game_delay * 2 * max_retries`) scaled by the background
+                // backoff multiplier, clamped so the duration can never overflow.
+                // `max_retries.max(1)` guards against a 0-length wait when max_retries is 0.
+                let primary_final_wait = self
+                    .initial_game_delay
+                    .checked_mul(2u32.saturating_mul(self.max_retries.max(1)))
+                    .unwrap_or(self.background_retry_max_age);
+                let last_wait =
+                    next_background_wait(primary_final_wait, self.background_retry_max_age);
                 let next_attempt_at = SystemTime::now() + last_wait;
                 warn!(
                     "Game {} exhausted {} primary retries ({}); moving to background queue with \
@@ -754,10 +762,11 @@ impl MonitorState {
                 self.save_progress();
             }
             AttemptKind::Background { attempts } => {
-                // A background attempt failed. Update the existing entry with a 4x-longer wait
+                // A background attempt failed. Update the existing entry with a longer wait
                 // and bump the attempt counter. The game is already in the sequence tracker
                 // from the original primary-retry exhaustion, so we do not call
                 // mark_game_completed again.
+                let max_age = self.background_retry_max_age;
                 let Some(entry) =
                     self.background_retries.iter_mut().find(|bg| bg.game_index == game_index)
                 else {
@@ -768,7 +777,7 @@ impl MonitorState {
                     );
                     return;
                 };
-                entry.last_wait *= 4;
+                entry.last_wait = next_background_wait(entry.last_wait, max_age);
                 entry.next_attempt_at = SystemTime::now() + entry.last_wait;
                 entry.attempts = attempts;
                 warn!(
@@ -1108,6 +1117,14 @@ fn median(values: &[f64], threshold: usize) -> Option<f64> {
     } else {
         Some(sorted[mid])
     }
+}
+
+/// Grow a background-retry wait by [`BACKGROUND_BACKOFF_MULTIPLIER`] for the next attempt,
+/// saturating at `max` so the wait can never overflow `u64` seconds and panic the daemon.
+/// Waiting longer than the background-retry max age is pointless (the entry is evicted once it
+/// exceeds that age), so `max` doubles as the upper bound.
+fn next_background_wait(current: Duration, max: Duration) -> Duration {
+    current.checked_mul(BACKGROUND_BACKOFF_MULTIPLIER).unwrap_or(max).min(max)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1657,4 +1674,33 @@ async fn gen_background_retry(args: GenBackgroundRetryArgs) -> Result<()> {
         .context("failed to serialize progress state to JSON")?;
     println!("{}", json);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MAX_AGE: Duration = Duration::from_secs(302_400);
+
+    #[test]
+    fn next_background_wait_grows_by_the_multiplier() {
+        assert_eq!(
+            next_background_wait(Duration::from_secs(4_800), MAX_AGE),
+            Duration::from_secs(19_200),
+        );
+    }
+
+    #[test]
+    fn next_background_wait_caps_at_max() {
+        // 100_000 * 4 = 400_000 exceeds the max age, so it clamps to the max.
+        assert_eq!(next_background_wait(Duration::from_secs(100_000), MAX_AGE), MAX_AGE);
+    }
+
+    #[test]
+    fn next_background_wait_saturates_instead_of_overflowing() {
+        // 4800 * 4^25 fits in u64 seconds, but multiplying by 4 again overflows. This is the
+        // exact value that panicked the daemon in production; it must clamp to max, not abort.
+        let huge = Duration::from_secs(4_800 * 4u64.pow(25));
+        assert_eq!(next_background_wait(huge, MAX_AGE), MAX_AGE);
+    }
 }
