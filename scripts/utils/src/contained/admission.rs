@@ -183,9 +183,7 @@ impl Admission {
         let cpg = net / eff;
         {
             let mut max = self.max_cost_per_gas.lock().unwrap();
-            if cpg > *max {
-                *max = cpg;
-            }
+            *max = max.max(cpg);
         }
         self.sample_count.fetch_add(1, Relaxed);
     }

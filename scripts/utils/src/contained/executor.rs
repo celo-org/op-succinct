@@ -73,9 +73,6 @@ where
 
     // Propagate the first error (a successful sub-range's stdin is already cached, so a
     // later retry skips its build). Otherwise aggregate.
-    let mut per_range = Vec::with_capacity(results.len());
-    for result in results {
-        per_range.push(result?);
-    }
+    let per_range = results.into_iter().collect::<Result<Vec<_>, _>>()?;
     Ok((aggregate_execution_stats(&per_range, 0, 0), sub_ranges))
 }
