@@ -10,7 +10,7 @@ use op_succinct_host_utils::{
 };
 use rkyv::rancor::Error as RkyvError;
 
-use crate::contained::{admission::Admission, discovery::GameData};
+use crate::game_monitor_embedded::{admission::Admission, discovery::GameData};
 
 type WitnessOf<H> = <<H as OPSuccinctHost>::WitnessGenerator as WitnessGenerator>::WitnessData;
 

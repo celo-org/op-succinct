@@ -10,7 +10,7 @@ use std::{
 use op_succinct_estimator::memory::WorkKind;
 use serde::{Deserialize, Serialize};
 
-use crate::contained::{
+use crate::game_monitor_embedded::{
     registry::{AdmitGuard, WorkloadRegistry},
     rss_source::RssSource,
 };
@@ -237,7 +237,7 @@ impl Admission {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contained::rss_source::Unsupported;
+    use crate::game_monitor_embedded::rss_source::Unsupported;
 
     fn test_admission(
         budget: Option<u64>,

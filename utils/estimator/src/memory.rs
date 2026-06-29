@@ -71,7 +71,7 @@ mod tests {
 }
 
 /// The kind of work a unit performs. Memory accounting weights build and execute gas
-/// independently (see the admission cost-per-gas model in the contained monitor).
+/// independently (see the admission cost-per-gas model in the embedded monitor).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkKind {
     Build,

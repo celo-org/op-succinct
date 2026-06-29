@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use op_succinct_scripts::contained::ContainedArgs;
+use op_succinct_scripts::game_monitor_embedded::EmbeddedArgs;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 fn init_tracing() {
@@ -14,9 +14,9 @@ fn init_tracing() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = ContainedArgs::parse();
+    let args = EmbeddedArgs::parse();
     dotenv::from_path(&args.env_file).ok();
     init_tracing();
-    tracing::info!(?args, "starting contained game monitor");
-    op_succinct_scripts::contained::run(args).await
+    tracing::info!(?args, "starting embedded game monitor");
+    op_succinct_scripts::game_monitor_embedded::run(args).await
 }

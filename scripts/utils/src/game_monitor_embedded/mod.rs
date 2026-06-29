@@ -1,4 +1,4 @@
-//! Contained game monitor: a single in-process daemon that discovers OP Succinct
+//! Embedded game monitor: a single in-process daemon that discovers OP Succinct
 //! fault-dispute games on-chain and runs cost estimation (SP1 execution) for each,
 //! replacing the legacy monitor that shelled out to the `cost-estimator` binary and
 //! scraped its logs.
@@ -102,7 +102,7 @@ use op_succinct_host_utils::{
 use op_succinct_proof_utils::initialize_host;
 use tokio::sync::mpsc;
 
-use crate::contained::{
+use crate::game_monitor_embedded::{
     admission::{Admission, AdmissionConfig},
     discovery::{fetch_game_data, FetchGameError},
     executor::execute_game,
@@ -114,10 +114,10 @@ use crate::contained::{
     },
 };
 
-/// CLI for the contained game monitor. Preserves the legacy flags and adds the
+/// CLI for the embedded game monitor. Preserves the legacy flags and adds the
 /// pipeline/cache/memory knobs.
 #[derive(Debug, Clone, Parser)]
-pub struct ContainedArgs {
+pub struct EmbeddedArgs {
     #[arg(long, default_value = ".env")]
     pub env_file: PathBuf,
     /// Main loop polling interval (seconds).
@@ -255,7 +255,7 @@ fn apply_game_result(
     background_retries: &mut VecDeque<BackgroundRetry>,
     tracker: &mut SequenceTracker,
     prunables: &mut Vec<PrunableStdin>,
-    args: &ContainedArgs,
+    args: &EmbeddedArgs,
     progress_path: &Path,
     now_sys: SystemTime,
     now_instant: Instant,
@@ -342,7 +342,7 @@ fn apply_requeue(
     tracker: &mut SequenceTracker,
     pg: PendingGame,
     created_at: SystemTime,
-    args: &ContainedArgs,
+    args: &EmbeddedArgs,
     progress_path: &Path,
 ) -> anyhow::Result<()> {
     let initial_delay = Duration::from_secs(args.delay);
@@ -381,9 +381,9 @@ fn apply_requeue(
     Ok(())
 }
 
-/// Run the contained game monitor: build shared resources once, spawn the predictive
+/// Run the embedded game monitor: build shared resources once, spawn the predictive
 /// pipeline, and run the discovery/execute/retry loop.
-pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
+pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
     // ── Shared resources (built once) ──────────────────────────────────────
     let fetcher = Arc::new(OPSuccinctDataFetcher::new_with_rollup_config().await?);
     let chain_id = fetcher.get_l2_chain_id().await?;
@@ -697,7 +697,7 @@ mod tests {
     #[test]
     fn parses_required_proposal_interval_and_defaults() {
         let args =
-            ContainedArgs::parse_from(["game-monitor-contained", "--proposal-interval", "1800"]);
+            EmbeddedArgs::parse_from(["game-monitor-embedded", "--proposal-interval", "1800"]);
         assert_eq!(args.proposal_interval, 1800);
         assert_eq!(args.delay, 600);
         assert_eq!(args.batch_size, 200);
