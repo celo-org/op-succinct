@@ -67,13 +67,9 @@ pub fn make_source(kind: RssSourceKind) -> Box<dyn RssSource> {
 
 /// Parse the `VmRSS:` line of `/proc/self/status` (value is in kB) into bytes.
 pub fn parse_vmrss_bytes(status: &str) -> Option<u64> {
-    for line in status.lines() {
-        if let Some(rest) = line.strip_prefix("VmRSS:") {
-            let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
-            return Some(kb * 1024);
-        }
-    }
-    None
+    let rest = status.lines().find_map(|line| line.strip_prefix("VmRSS:"))?;
+    let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
+    Some(kb * 1024)
 }
 
 #[cfg(test)]

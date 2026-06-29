@@ -77,74 +77,71 @@ impl ReadyRangeProvider {
             }
         };
 
-        loop {
-            let window_end = self.window_start + self.proposal_interval;
-
-            // Whole window handed out → advance to the next predicted game window. (At most
-            // one advance per call: the new window_end is a full interval beyond the cursor.)
-            if self.cursor >= window_end {
-                self.window_start = window_end;
-                self.cursor = window_end;
-                self.safe_head_cache.clear();
-                continue;
-            }
-
-            // Only consider the finalized prefix of the window. Nothing new finalized → done.
-            let split_end = finalized_l2.min(window_end);
-            if self.cursor >= split_end {
-                return None;
-            }
-
-            // Split anchored at the window start so boundaries match the executor's split of
-            // the real game `[window_start, window_end]`.
-            let sub_ranges = match split_range_based_on_safe_heads_memoized(
-                fetcher,
-                self.window_start,
-                split_end,
-                self.batch_size,
-                &mut self.safe_head_cache,
-            )
-            .await
-            {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::debug!(error = %e, "ready range provider: split failed; retry next tick");
-                    return None;
-                }
-            };
-
-            // Locate the sub-range starting at the cursor (a real boundary from a prior hand-out,
-            // stable because boundaries below the finalized frontier don't move).
-            let idx = sub_ranges.iter().position(|r| r.start == self.cursor)?;
-
-            // The last sub-range of an INCOMPLETE window ends at the finalized cap — an
-            // artifact, not a real game boundary — so hold it until finalization reveals its
-            // real end. When the window is complete, every boundary is real.
-            let window_complete = split_end >= window_end;
-            if idx + 1 == sub_ranges.len() && !window_complete {
-                return None;
-            }
-
-            let range = sub_ranges[idx].clone();
-
-            // Soundness gate: defer until L1 has finalized past `l1_head + buffer`. Ranges are
-            // emitted in order and `l1_head` is monotonic in `range.end`, so if this one isn't
-            // ready none after it are either — wait rather than skip.
-            let range_l1_head = match fetcher.get_safe_l1_block_for_l2_block(range.end).await {
-                Ok((_, l1)) => l1,
-                Err(e) => {
-                    tracing::debug!(start = range.start, end = range.end, error = %e,
-                        "ready range provider: safe-head L1 lookup failed; retry next tick");
-                    return None;
-                }
-            };
-            if !l1_head_finalized(range_l1_head, finalized_l1, L1_HEAD_FINALITY_BUFFER) {
-                return None;
-            }
-
-            self.cursor = range.end;
-            return Some(range);
+        // Whole window handed out → advance to the next predicted game window. At most one
+        // advance per call: afterwards cursor == window_start, so the next window_end is a
+        // full interval ahead.
+        if self.cursor >= self.window_start + self.proposal_interval {
+            self.window_start += self.proposal_interval;
+            self.cursor = self.window_start;
+            self.safe_head_cache.clear();
         }
+        let window_end = self.window_start + self.proposal_interval;
+
+        // Only consider the finalized prefix of the window. Nothing new finalized → done.
+        let split_end = finalized_l2.min(window_end);
+        if self.cursor >= split_end {
+            return None;
+        }
+
+        // Split anchored at the window start so boundaries match the executor's split of
+        // the real game `[window_start, window_end]`.
+        let sub_ranges = match split_range_based_on_safe_heads_memoized(
+            fetcher,
+            self.window_start,
+            split_end,
+            self.batch_size,
+            &mut self.safe_head_cache,
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::debug!(error = %e, "ready range provider: split failed; retry next tick");
+                return None;
+            }
+        };
+
+        // Locate the sub-range starting at the cursor (a real boundary from a prior hand-out,
+        // stable because boundaries below the finalized frontier don't move).
+        let idx = sub_ranges.iter().position(|r| r.start == self.cursor)?;
+
+        // The last sub-range of an INCOMPLETE window ends at the finalized cap — an
+        // artifact, not a real game boundary — so hold it until finalization reveals its
+        // real end. When the window is complete, every boundary is real.
+        let window_complete = split_end >= window_end;
+        if idx + 1 == sub_ranges.len() && !window_complete {
+            return None;
+        }
+
+        let range = sub_ranges[idx].clone();
+
+        // Soundness gate: defer until L1 has finalized past `l1_head + buffer`. Ranges are
+        // emitted in order and `l1_head` is monotonic in `range.end`, so if this one isn't
+        // ready none after it are either — wait rather than skip.
+        let range_l1_head = match fetcher.get_safe_l1_block_for_l2_block(range.end).await {
+            Ok((_, l1)) => l1,
+            Err(e) => {
+                tracing::debug!(start = range.start, end = range.end, error = %e,
+                    "ready range provider: safe-head L1 lookup failed; retry next tick");
+                return None;
+            }
+        };
+        if !l1_head_finalized(range_l1_head, finalized_l1, L1_HEAD_FINALITY_BUFFER) {
+            return None;
+        }
+
+        self.cursor = range.end;
+        Some(range)
     }
 }
 

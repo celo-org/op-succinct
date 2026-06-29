@@ -1,3 +1,75 @@
+//! Contained game monitor: a single in-process daemon that discovers OP Succinct
+//! fault-dispute games on-chain and runs cost estimation (SP1 execution) for each,
+//! replacing the legacy monitor that shelled out to the `cost-estimator` binary and
+//! scraped its logs.
+//!
+//! # Two cooperating halves, joined by the cache
+//!
+//! Everything starts in [`run`], which builds the shared resources once and then drives
+//! two loops that never call each other directly — they meet only at the on-disk witness
+//! cache (keyed `chain_id/start/end/da_type`; the DA discriminator comes from `da_type`):
+//!
+//! * **Predictive pipeline** (proactive, a spawned task). A [`ReadyRangeProvider`] predicts
+//!   the next game window from the proposal cadence, splits it into safe-head sub-ranges
+//!   anchored at the window start, and hands out each sub-range once it is soundly
+//!   finalized (L2 past its end, L1 past its `l1_head + buffer`). [`pipeline::pipeline_step`]
+//!   builds the witness and SP1 stdin for each and caches both — running *ahead* of the
+//!   executor so the stdin is usually already on disk when the game arrives. Builds are
+//!   serial today.
+//!
+//! * **Reactive executor** (the main loop). Polls the dispute-game factory for newly
+//!   finalized games, applies the discover→execute `--delay`, then spawns each due game as
+//!   a task. [`executor::execute_game`] splits the real game into the same safe-head
+//!   sub-ranges, loads each prebuilt stdin from the cache (building on a miss), runs the
+//!   SP1 execute over the sub-ranges concurrently, and aggregates the stats.
+//!
+//! Because the pipeline anchors its splits at the proposal boundary, its sub-range
+//! boundaries match the executor's, the cache keys line up, and the happy path is a hit.
+//!
+//! # Concurrency and state
+//!
+//! Games run as concurrent tokio tasks, capped by `--max-concurrent-games`. Each task
+//! reports its outcome over an mpsc channel as a `GameTaskResult`; the main loop is the
+//! *only* writer of the scheduling state ([`PendingGame`] queue, [`BackgroundRetry`] queue,
+//! [`SequenceTracker`] frontier, prune list), so none of it needs locking. The outcome is
+//! applied single-threaded by `apply_game_result`.
+//!
+//! # Memory admission
+//!
+//! Both halves pass every build/execute unit through one shared [`Admission`] gate. A
+//! background sampler learns a cost-per-(effective-)gas coefficient from resident memory;
+//! admission projects whether one more unit fits the cgroup budget (less a margin) and also
+//! enforces a hard in-flight count cap. Until the first game completes it runs strictly
+//! serially (cold start). This is the only backpressure — there is no watchdog or freeze;
+//! a stuck RPC is bounded by per-call timeouts instead.
+//!
+//! # Retry policy
+//!
+//! Failures follow a two-tier policy ([`state::requeue_decision`]): a small **Primary**
+//! budget with linear backoff, then a long **Background** queue that quadruples the wait
+//! each attempt, up to `--background-retry-max-age-secs` (~3.5 days). Conditions that are
+//! nobody's fault — the finalized L2 head not yet reaching a game's end block, a
+//! control-plane RPC blip — are *deferred* (re-queued) without spending budget. Moving a
+//! game to the background queue advances the [`SequenceTracker`] frontier, so one stuck
+//! game never stalls the contiguous frontier or the daemon.
+//!
+//! # Restart
+//!
+//! Progress is persisted to `progress.json` (the contiguous-completed frontier plus the
+//! background queue) and restored on startup via [`state::resume_index`]; an explicit
+//! `--start-index` overrides it, otherwise it falls back to the latest on-chain game.
+//!
+//! # Submodules
+//!
+//! * [`admission`] — the memory-admission gate and its learned model.
+//! * [`registry`] — the in-flight gas/count tally and the RAII [`registry::AdmitGuard`].
+//! * [`rss_source`] — resident-memory sampling sources (proc / cgroup / unsupported).
+//! * [`ready_range_provider`] — window prediction, safe-head splitting, finalization gating.
+//! * [`pipeline`] — builds one witness per ready sub-range.
+//! * [`executor`] — runs a discovered game's sub-ranges and aggregates the stats.
+//! * [`discovery`] — reads game metadata from the factory and filters to type-42.
+//! * [`state`] — the queue/attempt types, the pure retry policy, and progress persistence.
+
 pub mod admission;
 pub mod discovery;
 pub mod executor;
@@ -198,13 +270,8 @@ fn apply_game_result(
                 ranges = ranges.len(),
                 "game executed"
             );
-            tracker.add(pg.game_index);
-            background_retries.retain(|b| b.game_index != pg.game_index);
-            // Purge any stale duplicate queue entry for this now-completed game.
-            pending_games.retain(|p| p.game_index != pg.game_index);
-            if let Err(e) = save_progress(progress_path, tracker, background_retries) {
-                tracing::warn!(error = %e, "failed to save progress");
-            }
+            // Completes the game and purges any stale duplicate queue entry.
+            complete_game(pg.game_index, tracker, background_retries, pending_games, progress_path);
             let eligible_at = now_sys + Duration::from_secs(args.stdin_grace_secs);
             for range in &ranges {
                 prunables.push(PrunableStdin { start: range.start, end: range.end, eligible_at });
@@ -212,12 +279,7 @@ fn apply_game_result(
         }
         GameTaskResult::WrongType { pg, game_type } => {
             tracing::info!(game_index = pg.game_index, game_type, "skipping non-type-42 game");
-            tracker.add(pg.game_index);
-            background_retries.retain(|b| b.game_index != pg.game_index);
-            pending_games.retain(|p| p.game_index != pg.game_index);
-            if let Err(e) = save_progress(progress_path, tracker, background_retries) {
-                tracing::warn!(error = %e, "failed to save progress");
-            }
+            complete_game(pg.game_index, tracker, background_retries, pending_games, progress_path);
         }
         GameTaskResult::Transient { pg, created_at, error } => {
             tracing::warn!(
@@ -243,12 +305,7 @@ fn apply_game_result(
                 error,
                 "game execution failed (fatal); skipping"
             );
-            tracker.add(pg.game_index);
-            background_retries.retain(|b| b.game_index != pg.game_index);
-            pending_games.retain(|p| p.game_index != pg.game_index);
-            if let Err(e) = save_progress(progress_path, tracker, background_retries) {
-                tracing::warn!(error = %e, "failed to save progress");
-            }
+            complete_game(pg.game_index, tracker, background_retries, pending_games, progress_path);
         }
         GameTaskResult::Defer { pg } => {
             // Re-queue the same attempt shortly (no retry budget spent).
@@ -258,6 +315,23 @@ fn apply_game_result(
                 kind: pg.kind,
             });
         }
+    }
+}
+
+/// Mark a game complete: advance the frontier, drop any queued/background entries
+/// for it, and persist progress (warn-only on failure).
+fn complete_game(
+    game_index: u64,
+    tracker: &mut SequenceTracker,
+    background_retries: &mut VecDeque<BackgroundRetry>,
+    pending_games: &mut VecDeque<PendingGame>,
+    progress_path: &Path,
+) {
+    tracker.add(game_index);
+    background_retries.retain(|b| b.game_index != game_index);
+    pending_games.retain(|p| p.game_index != game_index);
+    if let Err(e) = save_progress(progress_path, tracker, background_retries) {
+        tracing::warn!(error = %e, "failed to save progress");
     }
 }
 
@@ -376,15 +450,11 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
                 ReadyRangeProvider::new(game_data.end_block, proposal_interval, batch_size);
             loop {
                 // Pull every range the provider reports ready and build each (one witness per
-                // pipeline step), collecting the outcomes. Serial for now — threading TBD.
-                let mut outcomes = Vec::new();
+                // pipeline step), logging failures. Serial for now — threading TBD.
                 while let Some(range) = provider.next_range(&fetcher).await {
-                    let outcome =
-                        pipeline::pipeline_step(&estimator, &fetcher, &admission, &range).await;
-                    outcomes.push((range, outcome));
-                }
-                for (range, outcome) in outcomes {
-                    if let Err(e) = outcome {
+                    if let Err(e) =
+                        pipeline::pipeline_step(&estimator, &fetcher, &admission, &range).await
+                    {
                         tracing::warn!(
                             start = range.start,
                             end = range.end,
@@ -492,24 +562,22 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
         // (b) Drain due background retries into the pending queue as Background attempts,
         // skipping any game already running or already queued so no duplicate is enqueued.
         let now_sys = SystemTime::now();
-        let due: Vec<u64> = background_retries
+        let due: Vec<(u64, u32)> = background_retries
             .iter()
             .filter(|bg| bg.next_attempt_at <= now_sys)
-            .map(|bg| bg.game_index)
+            .map(|bg| (bg.game_index, bg.attempts))
             .collect();
-        for game_index in due {
+        for (game_index, attempts) in due {
             if running_games.contains(&game_index) ||
                 pending_games.iter().any(|p| p.game_index == game_index)
             {
                 continue;
             }
-            if let Some(bg) = background_retries.iter().find(|b| b.game_index == game_index) {
-                pending_games.push_back(PendingGame {
-                    executable_at: Instant::now(),
-                    game_index,
-                    kind: AttemptKind::Background { attempts: bg.attempts + 1 },
-                });
-            }
+            pending_games.push_back(PendingGame {
+                executable_at: Instant::now(),
+                game_index,
+                kind: AttemptKind::Background { attempts: attempts + 1 },
+            });
         }
 
         // (c) Evict aged-out background retries — but never one whose task is running.
