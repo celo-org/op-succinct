@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
 use op_succinct_host_utils::{
-    block_range::SpanBatchRange, fetcher::OPSuccinctDataFetcher, host::OPSuccinctHost,
-    stats::ExecutionStats, witness_generation::WitnessGenerator,
+    block_range::SpanBatchRange,
+    fetcher::{BlockInfo, OPSuccinctDataFetcher},
+    host::OPSuccinctHost,
+    stats::ExecutionStats,
+    witness_generation::WitnessGenerator,
 };
 use op_succinct_proof_utils::get_range_elf_embedded;
 use rkyv::rancor::Error as RkyvError;
@@ -91,10 +94,14 @@ where
     }
 
     /// Consumer: load the cached stdin (build on miss), run the SP1 execute, and
-    /// produce `ExecutionStats`. The caller must hold an RSS-admission slot.
+    /// produce `ExecutionStats`. `block_data` for the range is supplied by the caller — the
+    /// executor already fetched it to compute the admission gas key — so this avoids a
+    /// second `get_l2_block_data_range` round-trip per execute. The caller must hold an
+    /// RSS-admission slot.
     pub async fn execute_range(
         &self,
         range: &SpanBatchRange,
+        block_data: &[BlockInfo],
     ) -> Result<ExecutionStats, EstimatorError> {
         // Ensure stdin exists (cache hit is the common path; miss builds on demand).
         if !self.cache.has_stdin(range.start, range.end) {
@@ -105,13 +112,6 @@ where
             .load_stdin(range.start, range.end)
             .map_err(EstimatorError::Transient)?
             .ok_or_else(|| EstimatorError::Fatal(anyhow::anyhow!("stdin missing after build")))?;
-
-        // Block data for stats (cheap relative to witness-gen). Parity: l1_head passed as 0.
-        let block_data = self
-            .fetcher
-            .get_l2_block_data_range(range.start, range.end)
-            .await
-            .map_err(EstimatorError::classify)?;
 
         // SP1 execute must run off the async runtime: CpuProver spins its own tokio runtime.
         // `execute` as a child span (spec §4.6).
@@ -129,6 +129,6 @@ where
         let (_public_values, report) = exec
             .map_err(|e| EstimatorError::classify(anyhow::anyhow!("SP1 execute failed: {e:?}")))?;
 
-        Ok(ExecutionStats::new(0, &block_data, &report, 0, 0))
+        Ok(ExecutionStats::new(0, block_data, &report, 0, 0))
     }
 }

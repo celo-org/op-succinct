@@ -57,8 +57,9 @@ where
     let range_futures = sub_ranges.iter().map(|range| {
         let range_span = tracing::info_span!("range", start = range.start, end = range.end);
         async move {
-            // Gas-weighted RSS projection key: sum the sub-range's L2 block gas. One extra
-            // (cheap) fetch versus the SP1 execute that follows.
+            // Gas-weighted RSS projection key: sum the sub-range's L2 block gas. Fetched
+            // once here and threaded into `execute_range` below, which reuses it for stats
+            // instead of re-fetching the same range.
             let block_data = fetcher
                 .get_l2_block_data_range(range.start, range.end)
                 .await
@@ -68,7 +69,7 @@ where
             // concurrency cap. The guard keeps the execute's gas and slot registered until
             // it drops.
             let _admit = admission.admit(WorkKind::Execute, gas).await;
-            let stats = estimator.execute_range(range).await?;
+            let stats = estimator.execute_range(range, &block_data).await?;
             Ok::<ExecutionStats, EstimatorError>(stats)
         }
         .instrument(range_span)

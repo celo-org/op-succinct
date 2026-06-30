@@ -146,7 +146,7 @@ async fn prebuilt_stdin_is_consumed_by_executor() {
         return;
     };
 
-    build_estimator!(estimator, _fetcher, cache, _dir);
+    build_estimator!(estimator, fetcher, cache, _dir);
     let range = SpanBatchRange { start, end };
 
     // Pipeline producer: build the stdin (host.run → crunch → cache stdin → drop witness).
@@ -154,8 +154,10 @@ async fn prebuilt_stdin_is_consumed_by_executor() {
     assert!(cache.has_stdin(range.start, range.end));
     assert!(!cache.has_witness(range.start, range.end)); // witness dropped once stdin built
 
-    // Consumer: the executor reuses the prebuilt stdin and produces real stats.
-    let stats = estimator.execute_range(&range).await.unwrap();
+    // Consumer: the executor reuses the prebuilt stdin and produces real stats. Block data
+    // is fetched by the caller (as the executor does) and threaded into execute_range.
+    let block_data = fetcher.get_l2_block_data_range(range.start, range.end).await.unwrap();
+    let stats = estimator.execute_range(&range, &block_data).await.unwrap();
     assert!(stats.total_instruction_count > 0);
 }
 
