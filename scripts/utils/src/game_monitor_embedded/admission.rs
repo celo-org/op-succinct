@@ -138,7 +138,47 @@ impl Admission {
                 let within_count = self.registry.in_flight() < self.max_concurrent;
                 let memory_ok = if self.warmed.load(Relaxed) {
                     let cpg = *self.max_cost_per_gas.lock().unwrap();
-                    self.fits(self.project(cpg, sb, se, kind, gas))
+                    let projected = self.project(cpg, sb, se, kind, gas);
+                    let memory_ok = self.fits(projected);
+
+                    // One INFO line per prediction — the only visibility into why a slot is
+                    // granted or withheld. Reports the learned per-gas cost and the projected
+                    // total RSS, each beside its limit, plus the decision.
+                    let delta = match kind {
+                        WorkKind::Build => self.alpha * gas as f64,
+                        WorkKind::Execute => gas as f64,
+                    };
+                    let effective_gas = se as f64 + self.alpha * sb as f64 + delta;
+                    // Total RSS ceiling that still fits (budget less the safety margin).
+                    let total_limit_bytes =
+                        self.budget_bytes.map(|b| b.saturating_sub(self.margin_bytes));
+                    // Largest per-gas cost that would still fit this unit: (ceiling - baseline)
+                    // / effective_gas. The prediction is admitted while `cost_per_gas` stays at
+                    // or below this.
+                    let cost_per_gas_limit = total_limit_bytes.map(|limit| {
+                        if effective_gas > 0.0 {
+                            limit.saturating_sub(self.baseline_bytes) as f64 / effective_gas
+                        } else {
+                            f64::INFINITY
+                        }
+                    });
+                    tracing::info!(
+                        ?kind,
+                        gas,
+                        effective_gas,
+                        cost_per_gas = cpg,
+                        cost_per_gas_limit = ?cost_per_gas_limit,
+                        projected_bytes = projected,
+                        total_limit_bytes = ?total_limit_bytes,
+                        budget_bytes = ?self.budget_bytes,
+                        margin_bytes = self.margin_bytes,
+                        baseline_bytes = self.baseline_bytes,
+                        within_count,
+                        memory_ok,
+                        admitted = within_count && memory_ok,
+                        "admission prediction"
+                    );
+                    memory_ok
                 } else {
                     // Cold start: no model. Serial only.
                     sb == 0 && se == 0
