@@ -130,16 +130,25 @@ impl Admission {
     /// reservation until dropped. Two predicates, both required: the in-flight count must
     /// be below `max_concurrent` (hard cap), and memory must fit — by projection once
     /// warmed, or by running serially (registry empty) during cold start.
+    ///
+    /// Liveness floor: when nothing is in flight a unit is *always* admitted, even if the
+    /// projection forbids it. A pessimistic or poisoned model (e.g. a persisted
+    /// `max_cost_per_gas` learned from retained allocator memory) must never wedge the
+    /// daemon into admitting nothing at all — with the registry empty, real memory use is
+    /// bounded by that single unit, and the projection still gates every concurrent unit
+    /// after it.
     pub async fn admit(&self, kind: WorkKind, gas: u64) -> AdmitGuard {
         loop {
             {
                 let _decision = self.admit_lock.lock().await;
                 let (sb, se) = self.registry.snapshot();
+                let registry_empty = sb == 0 && se == 0;
                 let within_count = self.registry.in_flight() < self.max_concurrent;
                 let memory_ok = if self.warmed.load(Relaxed) {
                     let cpg = *self.max_cost_per_gas.lock().unwrap();
                     let projected = self.project(cpg, sb, se, kind, gas);
-                    let memory_ok = self.fits(projected);
+                    // Admit if the projection fits OR nothing is in flight (liveness floor).
+                    let memory_ok = registry_empty || self.fits(projected);
 
                     // One INFO line per prediction — the only visibility into why a slot is
                     // granted or withheld. Reports the learned per-gas cost and the projected
@@ -175,13 +184,14 @@ impl Admission {
                         baseline_bytes = self.baseline_bytes,
                         within_count,
                         memory_ok,
+                        serial_floor = registry_empty && !self.fits(projected),
                         admitted = within_count && memory_ok,
                         "admission prediction"
                     );
                     memory_ok
                 } else {
-                    // Cold start: no model. Serial only.
-                    sb == 0 && se == 0
+                    // Cold start: no model. Serial only (which is also the liveness floor).
+                    registry_empty
                 };
                 if within_count && memory_ok {
                     return AdmitGuard::new(self.registry.clone(), kind, gas);
@@ -437,5 +447,40 @@ mod tests {
         assert_eq!(adm.registry.in_flight(), 2);
         drop(g2);
         drop(g3);
+    }
+
+    #[tokio::test]
+    async fn liveness_floor_admits_one_unit_when_model_is_poisoned() {
+        let dir = tempfile::tempdir().unwrap();
+        // Tiny budget + warmed + an absurd learned cost: the projection can never fit, even
+        // for a single unit. The floor must still admit one unit when the registry is empty
+        // so a poisoned model can't wedge the daemon — but it must NOT admit a second.
+        let adm = test_admission(Some(1_000_000), 64, dir.path().join("model.json"));
+        adm.mark_warmed();
+        *adm.max_cost_per_gas.lock().unwrap() = 1.0e9; // ~1GB/gas: nothing fits a 1MB budget
+
+        // Registry empty → liveness floor admits the first unit despite the projection.
+        let g1 =
+            tokio::time::timeout(Duration::from_millis(200), adm.admit(WorkKind::Execute, 1_000))
+                .await
+                .expect("floor must admit one unit when nothing is in flight");
+        assert_eq!(adm.registry.in_flight(), 1);
+
+        // A second admit must block: the floor only covers an empty registry; the projection
+        // (which never fits) gates everything beyond the first.
+        let blocked = adm.admit(WorkKind::Build, 1_000);
+        tokio::pin!(blocked);
+        tokio::select! {
+            _ = &mut blocked => panic!("second admit must block while one unit is in flight"),
+            _ = tokio::time::sleep(Duration::from_millis(30)) => {}
+        }
+
+        // Free the first; the floor applies again and the blocked admit proceeds.
+        drop(g1);
+        let g2 = tokio::time::timeout(Duration::from_millis(200), &mut blocked)
+            .await
+            .expect("admit should proceed once the registry drains");
+        assert_eq!(adm.registry.in_flight(), 1);
+        drop(g2);
     }
 }
