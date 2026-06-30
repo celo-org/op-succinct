@@ -1,8 +1,6 @@
-use std::collections::HashMap;
-
 use alloy_eips::BlockId;
 use op_succinct_host_utils::{
-    block_range::{split_range_based_on_safe_heads_memoized, SpanBatchRange},
+    block_range::{split_range_basic, SpanBatchRange},
     fetcher::OPSuccinctDataFetcher,
 };
 
@@ -25,8 +23,8 @@ fn l1_head_finalized(range_l1_head: u64, finalized_l1: u64, buffer: u64) -> bool
 /// (build a witness, estimate, prove, …):
 ///   * predicts game windows from the proposal cadence (`[frontier, frontier + interval]`, which
 ///     equals the next game's `[start, end]`),
-///   * splits each window into safe-head sub-ranges **anchored at the window start**, so the
-///     boundaries match the executor's split of the real game (cache keys line up),
+///   * splits each window into fixed-size (`batch_size`) sub-ranges **anchored at the window
+///     start**, so the boundaries match the executor's split of the real game (cache keys line up),
 ///   * hands them out one at a time as each becomes soundly ready: its end is L2-finalized AND L1
 ///     has finalized past its `l1_head + buffer`.
 ///
@@ -39,9 +37,6 @@ pub struct ReadyRangeProvider {
     window_start: u64,
     /// Next sub-range start to hand out (`window_start <= cursor <= window_start + interval`).
     cursor: u64,
-    /// Memoized `safeHeadAtL1Block` lookups (immutable for finalized L1 blocks); the split
-    /// re-queries only newly-finalized blocks. Cleared when the window advances.
-    safe_head_cache: HashMap<u64, u64>,
 }
 
 impl ReadyRangeProvider {
@@ -49,13 +44,7 @@ impl ReadyRangeProvider {
     /// predicted windows align with future games — see `latest_game_end_block` in the daemon.
     pub fn new(seed: u64, proposal_interval: u64, batch_size: u64) -> Self {
         assert!(proposal_interval > 0, "proposal_interval must be > 0");
-        Self {
-            proposal_interval,
-            batch_size,
-            window_start: seed,
-            cursor: seed,
-            safe_head_cache: HashMap::new(),
-        }
+        Self { proposal_interval, batch_size, window_start: seed, cursor: seed }
     }
 
     /// The next sub-range ready to build, or `None` if nothing is ready right now (the caller
@@ -83,7 +72,6 @@ impl ReadyRangeProvider {
         if self.cursor >= self.window_start + self.proposal_interval {
             self.window_start += self.proposal_interval;
             self.cursor = self.window_start;
-            self.safe_head_cache.clear();
         }
         let window_end = self.window_start + self.proposal_interval;
 
@@ -93,23 +81,10 @@ impl ReadyRangeProvider {
             return None;
         }
 
-        // Split anchored at the window start so boundaries match the executor's split of
-        // the real game `[window_start, window_end]`.
-        let sub_ranges = match split_range_based_on_safe_heads_memoized(
-            fetcher,
-            self.window_start,
-            split_end,
-            self.batch_size,
-            &mut self.safe_head_cache,
-        )
-        .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::debug!(error = %e, "ready range provider: split failed; retry next tick");
-                return None;
-            }
-        };
+        // Fixed-size split (no SafeDB) anchored at the window start so boundaries match the
+        // executor's split of the real game `[window_start, window_end]` — both anchor at the
+        // same start with the same `batch_size`, so the cache keys line up.
+        let sub_ranges = split_range_basic(self.window_start, split_end, self.batch_size);
 
         // Locate the sub-range starting at the cursor (a real boundary from a prior hand-out,
         // stable because boundaries below the finalized frontier don't move).
@@ -127,12 +102,14 @@ impl ReadyRangeProvider {
 
         // Soundness gate: defer until L1 has finalized past `l1_head + buffer`. Ranges are
         // emitted in order and `l1_head` is monotonic in `range.end`, so if this one isn't
-        // ready none after it are either — wait rather than skip.
-        let range_l1_head = match fetcher.get_safe_l1_block_for_l2_block(range.end).await {
+        // ready none after it are either — wait rather than skip. `get_l1_head(.., true)`
+        // uses SafeDB when present and otherwise falls back to timestamp-based estimation,
+        // matching what the executor's witness bakes in — so the daemon needs no SafeDB.
+        let range_l1_head = match fetcher.get_l1_head(range.end, true).await {
             Ok((_, l1)) => l1,
             Err(e) => {
                 tracing::debug!(start = range.start, end = range.end, error = %e,
-                    "ready range provider: safe-head L1 lookup failed; retry next tick");
+                    "ready range provider: L1 head lookup failed; retry next tick");
                 return None;
             }
         };

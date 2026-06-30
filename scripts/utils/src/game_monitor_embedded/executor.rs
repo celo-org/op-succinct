@@ -2,7 +2,7 @@ use op_succinct_estimator::{
     aggregate_execution_stats, memory::WorkKind, Estimator, EstimatorError,
 };
 use op_succinct_host_utils::{
-    block_range::{split_range_based_on_safe_heads_with_fetcher, SpanBatchRange},
+    block_range::{split_range_basic, SpanBatchRange},
     fetcher::OPSuccinctDataFetcher,
     host::OPSuccinctHost,
     stats::ExecutionStats,
@@ -15,7 +15,7 @@ use crate::game_monitor_embedded::{admission::Admission, discovery::GameData};
 
 type WitnessOf<H> = <<H as OPSuccinctHost>::WitnessGenerator as WitnessGenerator>::WitnessData;
 
-/// Execute every safe-head sub-range of a game CONCURRENTLY and aggregate the stats.
+/// Execute every fixed-size sub-range of a game CONCURRENTLY and aggregate the stats.
 /// A cache hit (pipeline prebuilt the stdin) skips host.run; a miss builds on demand.
 /// Each execute passes through admission, which gates on both the projected memory budget
 /// and the hard concurrency cap, so the number of sub-ranges actually running at once is
@@ -41,14 +41,10 @@ where
     <WitnessOf<H> as rkyv::Archive>::Archived: rkyv::Deserialize<WitnessOf<H>, rkyv::api::high::HighDeserializer<RkyvError>>
         + for<'a> rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, RkyvError>>,
 {
-    let sub_ranges = split_range_based_on_safe_heads_with_fetcher(
-        fetcher,
-        game.start_block,
-        game.end_block,
-        batch_size,
-    )
-    .await
-    .map_err(EstimatorError::classify)?;
+    // Fixed-size split (no SafeDB dependency): chop `[start_block, end_block]` into
+    // `batch_size` chunks anchored at the game start. Anchored identically by the pipeline,
+    // so the prebuilt stdin's cache key lines up with the executor's.
+    let sub_ranges = split_range_basic(game.start_block, game.end_block, batch_size);
 
     // One future per sub-range; they run concurrently and are gated by admission, which
     // bounds both projected memory and the in-flight count. Each runs in a per-range child
