@@ -1,3 +1,4 @@
+// cache-dance warm-build test marker: edit 1 (forces recompile of only this crate)
 use std::sync::Arc;
 
 use alloy_provider::ProviderBuilder;

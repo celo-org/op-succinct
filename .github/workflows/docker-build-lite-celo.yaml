@@ -59,6 +59,24 @@ jobs:
           # images and cache keys track the actual reviewed commit.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
+      # DIAGNOSTIC (temporary): does the runner machine/docker daemon persist
+      # between jobs? If leftover builders/images/cache from a previous run are
+      # present, we can skip the costly cache-dance and use a persistent builder.
+      - name: Runner persistence probe
+        run: |
+          echo "HOSTNAME: $(hostname)"
+          echo "--- sentinel (exists => machine persisted across jobs) ---"
+          if [ -f /tmp/op-succinct-runner-sentinel ]; then echo "SENTINEL FOUND:"; cat /tmp/op-succinct-runner-sentinel; else echo "no sentinel"; fi
+          date -u +"run=${{ github.run_id }} %Y-%m-%dT%H:%M:%SZ" > /tmp/op-succinct-runner-sentinel || true
+          echo "--- docker buildx ls (leftover builder-* => persists) ---"
+          docker buildx ls 2>&1 || true
+          echo "--- docker buildx du (existing build cache) ---"
+          docker buildx du 2>&1 | tail -6 || true
+          echo "--- docker system df ---"
+          docker system df 2>&1 || true
+          echo "--- docker images (top) ---"
+          docker images 2>&1 | head -12 || true
+
       # docker-container driver (default for this action) is REQUIRED for the dance.
       - id: buildx
         uses: docker/setup-buildx-action@v3
