@@ -25,6 +25,8 @@ branch; line numbers are current as of that branch. Module path:
 | Log permanent abandonment of aged-out background retries | `d34eb5b2` |
 | `get_l2_block_data_range` no longer panics on a missing block (now a retryable error) | `20d92420` |
 | `execute_range` no longer re-fetches block data — executor threads it in (item #8) | `1e03045f` |
+| Daemon split with `split_range_basic`; SafeDB dependency removed (item #3) | `7702f04c` |
+| Admission liveness floor: a poisoned `max_cost_per_gas` can no longer wedge admission | `6863f30d` |
 
 ---
 
