@@ -601,14 +601,25 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
         }
 
         // (c) Evict aged-out background retries — but never one whose task is running.
+        // Eviction is terminal: the game will never be estimated again, so log it (the only
+        // game outcome that is otherwise invisible — successes and failures all log).
         let now_sys = SystemTime::now();
         background_retries.retain(|bg| {
-            !is_background_retry_aged_out(
+            let aged_out = is_background_retry_aged_out(
                 bg,
                 now_sys,
                 max_age,
                 running_games.contains(&bg.game_index),
-            )
+            );
+            if aged_out {
+                tracing::warn!(
+                    game_index = bg.game_index,
+                    attempts = bg.attempts,
+                    max_age_secs = max_age.as_secs(),
+                    "background retry aged out; abandoning game permanently"
+                );
+            }
+            !aged_out
         });
 
         // (d) Spawn due pending games as concurrent tasks, up to the concurrency cap.
