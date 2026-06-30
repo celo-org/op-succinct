@@ -48,14 +48,16 @@ the pod.
   (Don't gate admission — the count cap and memory projection already throttle a stuck
   unit, which keeps holding its slot and gas.)
 
-#### 3. No `split_range_basic` fallback when SafeDB is inactive
-Only the safe-head splitter is wired; on an L2 node without SafeDB every split fails.
-- **Sites:** `executor.rs:44`, `ready_range_provider.rs:98` call only
-  `split_range_based_on_safe_heads_*`. `is_safe_db_activated` (`fetcher.rs:911`) is never
-  called by the daemon.
-- **Caveat:** the chaos-testnet node has SafeDB active, so this is latent there.
-- **Fix:** probe `is_safe_db_activated()` once at startup; fall back to `split_range_basic`
-  (spec §6, line 150).
+#### 3. SafeDB dependency removed from the daemon — FIXED
+The daemon no longer uses safe-head splitting at all. Both the executor and the predictive
+pipeline now split with `split_range_basic` (a pure `start + k*batch_size` chop, anchored at
+the game/window start), so the two splits are identical and the cache keys line up with no
+SafeDB RPCs.
+- **Splitting:** `executor.rs:47` and `ready_range_provider.rs:97` call `split_range_basic`;
+  the safe-head splitters are gone from the daemon (still used by `cost_estimator.rs`).
+- **Soundness gate:** `ready_range_provider.rs` now calls `get_l1_head(range.end, true)`,
+  which uses SafeDB when present and otherwise falls back to timestamp-based L1-head
+  estimation — matching what the executor's witness bakes in — so the daemon needs no SafeDB.
 
 #### 4. No Kubernetes liveness / readiness probes
 A wedged process is never restarted by k8s.
@@ -79,13 +81,14 @@ Build and execute footprints can differ ~10×, but one learned coefficient model
 
 ### Minor
 
-#### 7. No `WindowPredictor` / lead-distance cap
+#### 7. No `WindowPredictor` / lead-distance cap — WON'T DO
 Window prediction was folded into `ReadyRangeProvider` with no cap; the planned
 `utils/estimator/src/window.rs` and `--max-lead-windows` flag never landed.
 - **Sites:** `ready_range_provider.rs:84` advances `window_start += proposal_interval` with
   no lead check; no flag in `EmbeddedArgs` (`mod.rs:121-184`). `window.rs` absent.
-- **Caveat:** the pipeline is still implicitly bounded by L2/L1 finalization, so it cannot
-  run away unboundedly. Spec §11 still wanted an explicit cap + age-based pruning of misses.
+- **Decision:** not doing it. The pipeline is already implicitly bounded by L2/L1
+  finalization, so it cannot run away unboundedly; an explicit lead-distance cap adds no
+  practical benefit.
 
 #### 8. `execute_range` re-fetches block data on every call — FIXED (`1e03045f`)
 `execute_range` ran `get_l2_block_data_range` for stats on every call, duplicating the fetch
