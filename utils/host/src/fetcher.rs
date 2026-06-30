@@ -265,8 +265,11 @@ impl OPSuccinctDataFetcher {
 
         let block_data = stream::iter(start + 1..=end)
             .map(|block_number| async move {
-                let block =
-                    self.l2_provider.get_block_by_number(block_number.into()).await?.unwrap();
+                let block = self
+                    .l2_provider
+                    .get_block_by_number(block_number.into())
+                    .await?
+                    .ok_or_else(|| anyhow!("L2 block {block_number} not found"))?;
                 let (total_l1_fees, total_tx_fees) =
                     match self.l2_provider.get_block_receipts(block_number.into()).await {
                         Ok(Some(receipts)) => {
