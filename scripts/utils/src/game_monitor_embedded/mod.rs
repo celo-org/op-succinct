@@ -174,10 +174,6 @@ pub struct EmbeddedArgs {
     /// Persist the learned memory model every N sampler ticks.
     #[arg(long, default_value = "300")]
     pub persist_every_ticks: u32,
-    /// Build-gas weighting (alpha) in the effective-gas memory model. `< 1` discounts
-    /// builds relative to executes; err high if unsure.
-    #[arg(long, default_value = "0.1")]
-    pub build_gas_weight: f64,
     /// Per-network-call timeout (seconds).
     #[arg(long, default_value = "120")]
     pub network_call_timeout_secs: u64,
@@ -402,8 +398,8 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
     // A background sampler folds resident memory into a learned cost-per-(effective-)gas
     // coefficient; admission projects whether one more unit fits the budget AND enforces a
     // hard in-flight count cap (bounding fds/RPC/CPU when memory isn't the binding
-    // constraint). Shared by the pipeline and the executor. Cold start runs serially until
-    // the first game completes.
+    // constraint). Shared by the pipeline and the executor. Cold start runs serially per
+    // kind until that kind's per-gas cost has been learned from a pure sample.
     let budget = read_cgroup_budget_bytes();
     let margin = args.rss_margin_mb * 1024 * 1024;
     tracing::info!(?budget, max_concurrent = args.max_concurrent_units, "memory admission sized");
@@ -411,7 +407,6 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
         AdmissionConfig {
             budget_bytes: budget,
             margin_bytes: margin,
-            alpha: args.build_gas_weight,
             max_concurrent: args.max_concurrent_units,
             admit_poll: Duration::from_secs(args.poll_interval),
             sample_period: Duration::from_millis(args.sample_period_ms),
@@ -519,11 +514,6 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
         let now_instant = Instant::now();
         while let Ok(result) = results_rx.try_recv() {
             running_games.remove(&result.game_index());
-            // First successful game completion → trust the memory model (leave cold-start
-            // serial mode). Idempotent, so calling on every success is fine.
-            if matches!(result, GameTaskResult::Success { .. }) {
-                admission.mark_warmed();
-            }
             apply_game_result(
                 result,
                 &mut pending_games,

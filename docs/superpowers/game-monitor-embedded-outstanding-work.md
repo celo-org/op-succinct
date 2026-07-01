@@ -27,6 +27,8 @@ branch; line numbers are current as of that branch. Module path:
 | `execute_range` no longer re-fetches block data — executor threads it in (item #8) | `1e03045f` |
 | Daemon split with `split_range_basic`; SafeDB dependency removed (item #3) | `7702f04c` |
 | Admission liveness floor: a poisoned `max_cost_per_gas` can no longer wedge admission | `6863f30d` |
+| SP1 executor logs attributed to the `execute` span (entered inside `spawn_blocking`) | `09d4de7a` |
+| Per-kind admission cost model (Build vs Execute), `alpha` removed; readable GiB logs (item #6) | `c7da269d` |
 
 ---
 
@@ -75,11 +77,15 @@ unimplemented — the prefetch half cannot keep ahead of the executor under load
   `pipeline_step` awaited before the next (comment at `mod.rs:473` "Serial for now").
 - **Fix:** drive N concurrent `pipeline_step`s bounded by the same RSS admission gate.
 
-#### 6. Single global `max_cost_per_gas`, not per-`WorkKind`
-Build and execute footprints can differ ~10×, but one learned coefficient models both
-(folded by a fixed `alpha`). Spec §7 (line 157) asked for peak RSS recorded per kind.
-- **Site:** `admission.rs:75` — `max_cost_per_gas: Mutex<f64>`.
-- **Fix:** keep separate learned peaks for `Build` vs `Execute`.
+#### 6. Single global `max_cost_per_gas`, not per-`WorkKind` — FIXED
+Build and execute footprints differ ~10×; the old single learned coefficient (folded by a
+fixed `alpha`) was learned from memory-heavy builds and then applied undiscounted to
+executes, over-projecting them ~10× and starving them (observed on chaos-testnet). Admission
+now keeps a `CostModel { cost_per_gas_build, cost_per_gas_execute }`, each a running max
+learned only from **pure single-kind** RSS samples; the projection charges each kind its own
+cost. `alpha` / `--build-gas-weight` is removed (per-kind costs make it unnecessary). Until a
+kind's cost is learned, admission stays serial for it. Projection logs now render GiB and log
+grants at INFO, waits at DEBUG.
 
 ### Minor
 
