@@ -28,7 +28,7 @@ branch; line numbers are current as of that branch. Module path:
 | Daemon split with `split_range_basic`; SafeDB dependency removed (item #3) | `7702f04c` |
 | Admission liveness floor: a poisoned `max_cost_per_gas` can no longer wedge admission | `6863f30d` |
 | SP1 executor logs attributed to the `execute` span (entered inside `spawn_blocking`) | `09d4de7a` |
-| Per-kind admission cost model (Build vs Execute), `alpha` removed; readable GiB logs (item #6) | `c7da269d` |
+| Per-kind admission cost model (Build vs Execute), `alpha` removed; readable GiB logs (item #6) | `cec85b11` |
 
 ---
 
