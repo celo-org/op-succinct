@@ -124,9 +124,9 @@ impl Admission {
         let baseline_bytes = rss_source.read().unwrap_or(0);
 
         tracing::info!(
-            baseline_gib = gib(baseline_bytes),
-            cost_per_gas_build = model.cost_per_gas_build,
-            cost_per_gas_execute = model.cost_per_gas_execute,
+            baseline_gib = %format!("{:.1}", gib(baseline_bytes)),
+            cost_per_gas_build = %format!("{:.0}", model.cost_per_gas_build),
+            cost_per_gas_execute = %format!("{:.0}", model.cost_per_gas_execute),
             samples_build = model.samples_build,
             samples_execute = model.samples_execute,
             "memory admission loaded"
@@ -189,7 +189,12 @@ impl Admission {
                 } else {
                     "over budget"
                 };
-                let limit_gib = self.budget_bytes.map(|b| gib(b.saturating_sub(self.margin_bytes)));
+                let projected_gib = format!("{:.1}", gib(projected));
+                let limit_gib = match self.budget_bytes {
+                    Some(b) => format!("{:.1}GiB", gib(b.saturating_sub(self.margin_bytes))),
+                    None => "unlimited".to_string(),
+                };
+                let cost_per_gas = format!("{:.0}", model.cost(kind));
 
                 // Grants log at INFO; waits at DEBUG. A wait repeats every poll for every
                 // queued unit, so keeping waits off the default INFO stream avoids drowning it.
@@ -197,9 +202,9 @@ impl Admission {
                     tracing::info!(
                         kind = ?kind,
                         gas,
-                        cost_per_gas = model.cost(kind),
-                        projected_gib = gib(projected),
-                        limit_gib = ?limit_gib,
+                        cost_per_gas = %cost_per_gas,
+                        projected_gib = %projected_gib,
+                        limit_gib = %limit_gib,
                         in_flight_build_gas = sb,
                         in_flight_execute_gas = se,
                         "admission admit ({reason})"
@@ -209,9 +214,9 @@ impl Admission {
                 tracing::debug!(
                     kind = ?kind,
                     gas,
-                    cost_per_gas = model.cost(kind),
-                    projected_gib = gib(projected),
-                    limit_gib = ?limit_gib,
+                    cost_per_gas = %cost_per_gas,
+                    projected_gib = %projected_gib,
+                    limit_gib = %limit_gib,
                     in_flight_build_gas = sb,
                     in_flight_execute_gas = se,
                     "admission wait ({reason})"
