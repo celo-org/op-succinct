@@ -958,7 +958,7 @@ impl OPSuccinctDataFetcher {
             server: true,
             rollup_config_path: self.rollup_config_path.clone(),
             l1_config_path: self.l1_config_path.clone(),
-            enable_experimental_witness_endpoint: false,
+            enable_experimental_witness_endpoint: true,
         })
     }
 }
