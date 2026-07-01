@@ -23,7 +23,6 @@ fn test_admission(persist_path: std::path::PathBuf) -> Arc<Admission> {
         AdmissionConfig {
             budget_bytes: None,
             margin_bytes: 0,
-            alpha: 0.1,
             max_concurrent: 8,
             admit_poll: std::time::Duration::from_millis(20),
             sample_period: std::time::Duration::from_millis(50),
