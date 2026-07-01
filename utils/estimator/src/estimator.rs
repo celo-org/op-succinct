@@ -114,15 +114,20 @@ where
             .ok_or_else(|| EstimatorError::Fatal(anyhow::anyhow!("stdin missing after build")))?;
 
         // SP1 execute must run off the async runtime: CpuProver spins its own tokio runtime.
-        // `execute` as a child span (spec §4.6).
+        // `execute` as a child span (spec §4.6). The span is entered INSIDE the blocking
+        // closure — instrumenting the JoinHandle future only covers the await, so the SP1
+        // executor's own logs (`sp1_core_executor::*`), which run on the blocking thread,
+        // would otherwise escape the span. Created here so it parents to the current
+        // range/game span, then moved onto the blocking thread.
+        let execute_span = tracing::info_span!("execute");
         let exec = tokio::task::spawn_blocking(move || {
+            let _entered = execute_span.enter();
             let prover = CpuProver::new();
             prover
                 .execute(Elf::Static(get_range_elf_embedded()), stdin)
                 .deferred_proof_verification(false)
                 .run()
         })
-        .instrument(tracing::info_span!("execute"))
         .await
         .map_err(|e| EstimatorError::Fatal(anyhow::anyhow!("execute task join error: {e}")))?;
 
