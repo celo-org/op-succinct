@@ -280,6 +280,21 @@ impl Admission {
         });
     }
 
+    /// Spawn a periodic status heartbeat: every `period`, log the number of build and execute
+    /// units currently in flight. Gives operators a pulse of what the daemon is doing that is
+    /// distinct from per-game/per-range worker logs. Detached; runs for the process lifetime.
+    pub fn spawn_status_reporter(self: Arc<Self>, period: Duration) {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(period);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                let (active_builds, active_executes) = self.registry.units();
+                tracing::info!(active_builds, active_executes, "status");
+            }
+        });
+    }
+
     /// Persist the learned model. Best-effort, atomic-rename; never holds the lock across the
     /// file write. Creates the parent directory if it does not yet exist — the cache dir is
     /// otherwise created lazily on the first witness save, so without this the very first

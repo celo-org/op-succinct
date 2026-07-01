@@ -14,7 +14,8 @@ use op_succinct_estimator::memory::WorkKind;
 pub struct WorkloadRegistry {
     sum_build_gas: AtomicU64,
     sum_execute_gas: AtomicU64,
-    in_flight: AtomicU64,
+    build_units: AtomicU64,
+    execute_units: AtomicU64,
 }
 
 impl WorkloadRegistry {
@@ -23,25 +24,40 @@ impl WorkloadRegistry {
         (self.sum_build_gas.load(Relaxed), self.sum_execute_gas.load(Relaxed))
     }
 
+    /// `(build_units, execute_units)` currently in flight.
+    pub fn units(&self) -> (u64, u64) {
+        (self.build_units.load(Relaxed), self.execute_units.load(Relaxed))
+    }
+
     /// Number of units (builds + executes) currently in flight.
     pub fn in_flight(&self) -> u64 {
-        self.in_flight.load(Relaxed)
+        self.build_units.load(Relaxed) + self.execute_units.load(Relaxed)
     }
 
     fn add(&self, kind: WorkKind, gas: u64) {
         match kind {
-            WorkKind::Build => self.sum_build_gas.fetch_add(gas, Relaxed),
-            WorkKind::Execute => self.sum_execute_gas.fetch_add(gas, Relaxed),
+            WorkKind::Build => {
+                self.sum_build_gas.fetch_add(gas, Relaxed);
+                self.build_units.fetch_add(1, Relaxed);
+            }
+            WorkKind::Execute => {
+                self.sum_execute_gas.fetch_add(gas, Relaxed);
+                self.execute_units.fetch_add(1, Relaxed);
+            }
         };
-        self.in_flight.fetch_add(1, Relaxed);
     }
 
     fn sub(&self, kind: WorkKind, gas: u64) {
         match kind {
-            WorkKind::Build => self.sum_build_gas.fetch_sub(gas, Relaxed),
-            WorkKind::Execute => self.sum_execute_gas.fetch_sub(gas, Relaxed),
+            WorkKind::Build => {
+                self.sum_build_gas.fetch_sub(gas, Relaxed);
+                self.build_units.fetch_sub(1, Relaxed);
+            }
+            WorkKind::Execute => {
+                self.sum_execute_gas.fetch_sub(gas, Relaxed);
+                self.execute_units.fetch_sub(1, Relaxed);
+            }
         };
-        self.in_flight.fetch_sub(1, Relaxed);
     }
 }
 
