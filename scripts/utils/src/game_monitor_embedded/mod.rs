@@ -417,6 +417,8 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
     );
     // Start sampling before any work is admitted; detached, self-persists periodically.
     admission.clone().spawn_sampler();
+    // Periodic heartbeat of in-flight build/execute counts, on the discovery poll cadence.
+    admission.clone().spawn_status_reporter(Duration::from_secs(args.poll_interval));
 
     // ── L1 provider + dispute game factory (from env, matching the legacy) ──
     // Built before the pipeline spawn so we can seed the predictor's frontier from the
