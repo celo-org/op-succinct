@@ -1,19 +1,24 @@
 use anyhow::Result;
 use clap::Parser;
+use op_succinct_host_utils::build_env_filter;
 use op_succinct_scripts::game_monitor_embedded::EmbeddedArgs;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{fmt, prelude::*};
 
 fn init_tracing() {
     // Output format is chosen by `LOG_FORMAT`: the default is a human-readable text format
     // (span context like `game{index=..}:range{start=..}:` is printed inline before each
     // message); `LOG_FORMAT=json` opts back into structured JSON for log aggregation.
     //
+    // The filter is the shared `build_env_filter` (utils/host/src/logger.rs): an `info`
+    // default with the noisy kona/sp1 internal modules turned down, `RUST_LOG` layered on
+    // top. Reused rather than duplicated so suppression lives in one place, matching the
+    // other host binaries (e.g. cost_estimator).
+    //
     // Either way `.init()` installs the `log` -> `tracing` bridge (a `LogTracer`) because the
     // `tracing-subscriber` `tracing-log` feature is enabled (see scripts/utils/Cargo.toml),
     // so `log::`-based library code (kona, alloy, …) is captured without a manual
     // `LogTracer::init()` — calling that here as well would double-install and panic.
-    let filter =
-        || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = build_env_filter;
     let json = std::env::var("LOG_FORMAT").is_ok_and(|v| v.eq_ignore_ascii_case("json"));
 
     if json {

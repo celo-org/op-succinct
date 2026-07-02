@@ -12,7 +12,11 @@ use tracing_subscriber::{
 
 static INIT: OnceLock<Result<()>> = OnceLock::new();
 
-fn build_env_filter() -> EnvFilter {
+/// Build the base `EnvFilter`: an `info` default with noisy kona/sp1 internal modules turned
+/// down, then any `RUST_LOG` directives layered on last so they override the defaults. Shared
+/// by [`setup_logger`] and by binaries that install their own subscriber (e.g. the embedded
+/// game monitor) so log suppression is defined in exactly one place.
+pub fn build_env_filter() -> EnvFilter {
     // Defaults first: suppress noisy internal modules from kona/sp1.
     let mut filter = EnvFilter::new("info")
         .add_directive("single_hint_handler=error".parse().unwrap())
