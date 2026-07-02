@@ -280,19 +280,11 @@ impl Admission {
         });
     }
 
-    /// Spawn a periodic status heartbeat: every `period`, log the number of build and execute
-    /// units currently in flight. Gives operators a pulse of what the daemon is doing that is
-    /// distinct from per-game/per-range worker logs. Detached; runs for the process lifetime.
-    pub fn spawn_status_reporter(self: Arc<Self>, period: Duration) {
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(period);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                ticker.tick().await;
-                let (active_builds, active_executes) = self.registry.units();
-                tracing::info!(active_builds, active_executes, "status");
-            }
-        });
+    /// `(build_units, execute_units)` currently in flight — the heavy sub-range work the
+    /// admission gate is tracking. Surfaced so the main loop can fold it into its periodic
+    /// orchestrator status line.
+    pub fn in_flight_units(&self) -> (u64, u64) {
+        self.registry.units()
     }
 
     /// Persist the learned model. Best-effort, atomic-rename; never holds the lock across the

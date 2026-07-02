@@ -417,8 +417,6 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
     );
     // Start sampling before any work is admitted; detached, self-persists periodically.
     admission.clone().spawn_sampler();
-    // Periodic heartbeat of in-flight build/execute counts, on the discovery poll cadence.
-    admission.clone().spawn_status_reporter(Duration::from_secs(args.poll_interval));
 
     // ── L1 provider + dispute game factory (from env, matching the legacy) ──
     // Built before the pipeline spawn so we can seed the predictor's frontier from the
@@ -716,6 +714,21 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
             .instrument(game_span));
         }
         pending_games = remaining;
+
+        // Orchestrator status snapshot, once per poll — the whole control plane at a glance:
+        // how far discovery has reached, the completion watermark, and the depth of each
+        // queue, plus the heavy sub-range units the admission gate has in flight.
+        let (active_builds, active_executes) = admission.in_flight_units();
+        tracing::info!(
+            highest_discovered = next_game_index.saturating_sub(1),
+            watermark = tracker.end(),
+            pending = pending_games.len(),
+            executing = running_games.len(),
+            background = background_retries.len(),
+            active_builds,
+            active_executes,
+            "monitor status"
+        );
     }
 }
 
