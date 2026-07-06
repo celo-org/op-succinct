@@ -26,6 +26,13 @@ pub struct BackgroundRetry {
     pub next_attempt_at: SystemTime,
     pub last_wait: Duration,
     pub attempts: u32,
+    /// Game's L2 block range, kept so the cache size-cap sweep can protect this pending
+    /// retry's prebuilt stdin from oldest-first eviction. Defaulted for progress files
+    /// written before this field existed (an un-ranged entry is simply unprotected).
+    #[serde(default)]
+    pub start_block: u64,
+    #[serde(default)]
+    pub end_block: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -169,6 +176,8 @@ mod tests {
             next_attempt_at: SystemTime::UNIX_EPOCH,
             last_wait: Duration::from_secs(1),
             attempts: 0,
+            start_block: 0,
+            end_block: 0,
         };
         let now = SystemTime::now();
         assert!(!is_background_retry_aged_out(&bg, now, Duration::from_secs(1), true));

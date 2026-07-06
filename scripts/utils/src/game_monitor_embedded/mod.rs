@@ -97,7 +97,9 @@ use op_succinct_estimator::{
     memory::read_cgroup_budget_bytes, network_call_with_timeout, DaType, Estimator, WitnessCache,
 };
 use op_succinct_host_utils::{
-    block_range::SpanBatchRange, fetcher::OPSuccinctDataFetcher, stats::ExecutionStats,
+    block_range::{split_range_basic, SpanBatchRange},
+    fetcher::OPSuccinctDataFetcher,
+    stats::ExecutionStats,
 };
 use op_succinct_proof_utils::initialize_host;
 use tokio::sync::mpsc;
@@ -177,6 +179,19 @@ pub struct EmbeddedArgs {
     /// Per-network-call timeout (seconds).
     #[arg(long, default_value = "120")]
     pub network_call_timeout_secs: u64,
+    /// Max total size for the on-disk witness/stdin cache, as a human-readable size
+    /// (e.g. `40GB`, `40GiB`). When the cache exceeds this after a poll, blobs are evicted
+    /// oldest-first until it fits, skipping the ranges of games still awaiting a background
+    /// retry. `0` disables the cap (unbounded). Set below the PVC size to leave headroom for
+    /// one poll's worth of in-flight writes.
+    #[arg(long, value_parser = parse_cache_size, default_value = "0")]
+    pub max_cache_size: u64,
+}
+
+/// Parse a human-readable cache size (`40GB`, `40GiB`, `0`, ...) into bytes. Decimal units
+/// (`GB`) are 1000-based, binary units (`GiB`) 1024-based.
+fn parse_cache_size(s: &str) -> Result<u64, String> {
+    parse_size::parse_size(s).map_err(|e| format!("invalid --max-cache-size '{s}': {e}"))
 }
 
 /// DA type for the cache key, selected by the build feature.
@@ -222,8 +237,9 @@ enum GameTaskResult {
     Success { pg: PendingGame, stats: Box<ExecutionStats>, ranges: Vec<SpanBatchRange> },
     /// Non-type-42 game: advance the frontier, drop any background entry.
     WrongType { pg: PendingGame, game_type: u32 },
-    /// Transient execution failure: apply the two-tier requeue policy.
-    Transient { pg: PendingGame, created_at: SystemTime, error: String },
+    /// Transient execution failure: apply the two-tier requeue policy. Carries the game's
+    /// block range so a move to the background queue records it (for cache protection).
+    Transient { pg: PendingGame, created_at: SystemTime, start_block: u64, end_block: u64, error: String },
     /// Fatal execution failure: advance the frontier (never stall), drop background entry.
     Fatal { pg: PendingGame, error: String },
     /// Pre-execution transient condition (L2 behind, control-plane blip): re-queue the
@@ -278,7 +294,7 @@ fn apply_game_result(
             tracing::info!(game_index = pg.game_index, game_type, "skipping non-type-42 game");
             complete_game(pg.game_index, tracker, background_retries, pending_games, progress_path);
         }
-        GameTaskResult::Transient { pg, created_at, error } => {
+        GameTaskResult::Transient { pg, created_at, start_block, end_block, error } => {
             tracing::warn!(
                 game_index = pg.game_index,
                 error,
@@ -290,6 +306,8 @@ fn apply_game_result(
                 tracker,
                 pg,
                 created_at,
+                start_block,
+                end_block,
                 args,
                 progress_path,
             ) {
@@ -333,12 +351,15 @@ fn complete_game(
 }
 
 /// Apply the two-tier retry policy to a failed game, mutating the queues + persisting.
+#[allow(clippy::too_many_arguments)]
 fn apply_requeue(
     pending: &mut VecDeque<PendingGame>,
     background: &mut VecDeque<BackgroundRetry>,
     tracker: &mut SequenceTracker,
     pg: PendingGame,
     created_at: SystemTime,
+    start_block: u64,
+    end_block: u64,
     args: &EmbeddedArgs,
     progress_path: &Path,
 ) -> anyhow::Result<()> {
@@ -362,6 +383,8 @@ fn apply_requeue(
                 next_attempt_at: SystemTime::now() + first_wait,
                 last_wait: first_wait,
                 attempts: 0,
+                start_block,
+                end_block,
             });
             save_progress(progress_path, tracker, background)?;
         }
@@ -541,6 +564,34 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
             }
         });
 
+        // Backstop GC: bound the cache to `--max-cache-bytes`, evicting oldest blobs first
+        // but never a range still owed to a background retry (whose stdin we keep cached for
+        // the retry). Reclaims the orphans the per-game prune misses — Fatal/WrongType
+        // outcomes, un-executed prebuilds, and everything leaked when a restart drops the
+        // in-memory prune list. Also reaps stray temp files from failed atomic writes.
+        if args.max_cache_size > 0 {
+            let protected: HashSet<(u64, u64)> = background_retries
+                .iter()
+                .flat_map(|bg| {
+                    split_range_basic(bg.start_block, bg.end_block, args.batch_size)
+                        .into_iter()
+                        .map(|r| (r.start, r.end))
+                })
+                .collect();
+            match estimator.cache.enforce_size_cap(args.max_cache_size, &protected) {
+                Ok(o) if o.files_deleted > 0 || o.tmp_deleted > 0 => tracing::info!(
+                    bytes_before = o.bytes_before,
+                    bytes_freed = o.bytes_freed,
+                    files_deleted = o.files_deleted,
+                    tmp_deleted = o.tmp_deleted,
+                    protected_ranges = protected.len(),
+                    "cache size-cap sweep"
+                ),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "cache size-cap sweep failed"),
+            }
+        }
+
         tokio::time::sleep(poll).await;
 
         // (a) Discovery: queue newly-created games with the discover→execute delay.
@@ -689,6 +740,8 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
                                 Err(e) if e.is_transient() => GameTaskResult::Transient {
                                     pg,
                                     created_at: game.created_at,
+                                    start_block: game.start_block,
+                                    end_block: game.end_block,
                                     error: format!("{e}"),
                                 },
                                 Err(e) => GameTaskResult::Fatal { pg, error: format!("{e}") },
@@ -747,6 +800,27 @@ mod tests {
         assert_eq!(args.stdin_grace_secs, 3600);
         assert_eq!(args.max_concurrent_games, 5);
         assert_eq!(args.max_concurrent_units, 8);
+        assert_eq!(args.max_cache_size, 0); // cap disabled by default
+    }
+
+    #[test]
+    fn max_cache_size_parses_human_units() {
+        let args = EmbeddedArgs::parse_from([
+            "game-monitor-embedded",
+            "--proposal-interval",
+            "900",
+            "--max-cache-size",
+            "40GB",
+        ]);
+        assert_eq!(args.max_cache_size, 40_000_000_000); // decimal GB = 1000^3
+        let gib = EmbeddedArgs::parse_from([
+            "game-monitor-embedded",
+            "--proposal-interval",
+            "900",
+            "--max-cache-size",
+            "40GiB",
+        ]);
+        assert_eq!(gib.max_cache_size, 40 * 1024 * 1024 * 1024); // binary GiB = 1024^3
     }
 
     #[test]

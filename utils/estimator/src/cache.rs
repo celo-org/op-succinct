@@ -2,8 +2,10 @@ use anyhow::Result;
 use rkyv::rancor::Error as RkyvError;
 use sp1_sdk::SP1Stdin;
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
 /// DA-type discriminator folded into every cache key. The on-disk `WitnessData`
@@ -163,6 +165,121 @@ impl WitnessCache {
     }
 }
 
+/// Summary of one [`WitnessCache::enforce_size_cap`] sweep, for logging.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct CapSweepOutcome {
+    /// Total bytes of cache blobs (excluding stray temps) before eviction.
+    pub bytes_before: u64,
+    /// Bytes reclaimed by this sweep (evicted blobs + stray temps).
+    pub bytes_freed: u64,
+    /// Number of whole blobs evicted to fit the cap.
+    pub files_deleted: usize,
+    /// Number of stray `*.tmp.*` files reaped (always removed, cap or not).
+    pub tmp_deleted: usize,
+}
+
+/// Parse the leading `{start}-{end}` block key from a cache file name (e.g.
+/// `10452239-10452439-eigenda-stdin.bin` → `(10452239, 10452439)`). Returns `None`
+/// for a name that does not begin with two dash-separated integers.
+fn parse_range_key(name: &str) -> Option<(u64, u64)> {
+    let mut parts = name.split('-');
+    let start = parts.next()?.parse().ok()?;
+    let end = parts.next()?.parse().ok()?;
+    Some((start, end))
+}
+
+impl WitnessCache {
+    /// Bound the on-disk cache to `max_bytes`. This is the backstop garbage collector for
+    /// blobs the per-game prune misses: orphans from a `Fatal`/`WrongType` outcome, prebuilt
+    /// ranges no game ever executed, and — crucially — everything whose in-memory prune was
+    /// lost when the process was replaced (the prune list is not persisted, so a pod swap
+    /// leaks every not-yet-pruned blob).
+    ///
+    /// Two phases:
+    /// 1. Always reap stray `*.tmp.*` files — leftovers from an interrupted or failed atomic
+    ///    write (e.g. an ENOSPC crash between `write` and `rename`); never useful.
+    /// 2. If the cache still exceeds `max_bytes`, evict whole blobs **oldest-first** (by
+    ///    mtime) until it fits, skipping any file whose `(start, end)` range is in
+    ///    `protected` — the ranges of games still awaiting a background retry, whose cached
+    ///    stdin we keep so the retry stays a cache hit.
+    ///
+    /// A protected set larger than the cap simply leaves the cache above `max_bytes` rather
+    /// than deleting data a pending retry needs.
+    pub fn enforce_size_cap(
+        &self,
+        max_bytes: u64,
+        protected: &HashSet<(u64, u64)>,
+    ) -> Result<CapSweepOutcome> {
+        let dir = self.cache_dir();
+        let read_dir = match fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            // A cache that was never created is trivially within budget.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(CapSweepOutcome::default())
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        struct Blob {
+            path: PathBuf,
+            size: u64,
+            mtime: SystemTime,
+            key: Option<(u64, u64)>,
+        }
+        let mut blobs: Vec<Blob> = Vec::new();
+        let mut outcome = CapSweepOutcome::default();
+
+        for entry in read_dir.flatten() {
+            let meta = match entry.metadata() {
+                Ok(m) if m.is_file() => m,
+                _ => continue,
+            };
+            let size = meta.len();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            // Phase 1: stray temp from a failed/abandoned atomic write — always drop.
+            if name.contains(".tmp.") {
+                if fs::remove_file(entry.path()).is_ok() {
+                    outcome.tmp_deleted += 1;
+                    outcome.bytes_freed += size;
+                }
+                continue;
+            }
+            outcome.bytes_before += size;
+            blobs.push(Blob {
+                path: entry.path(),
+                size,
+                mtime: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                key: parse_range_key(&name),
+            });
+        }
+
+        let mut total = outcome.bytes_before;
+        if total <= max_bytes {
+            return Ok(outcome);
+        }
+
+        // Phase 2: evict oldest-first until within budget, skipping protected ranges.
+        blobs.sort_by_key(|b| b.mtime);
+        for blob in blobs {
+            if total <= max_bytes {
+                break;
+            }
+            if let Some(key) = blob.key {
+                if protected.contains(&key) {
+                    continue;
+                }
+            }
+            if fs::remove_file(&blob.path).is_ok() {
+                total = total.saturating_sub(blob.size);
+                outcome.bytes_freed += blob.size;
+                outcome.files_deleted += 1;
+            }
+        }
+        Ok(outcome)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,6 +363,103 @@ mod tests {
         let age = cache.stdin_age_secs(1, 2, std::time::SystemTime::now());
         assert!(age.is_some());
         assert!(cache.stdin_age_secs(9, 9, std::time::SystemTime::now()).is_none());
+    }
+
+    fn set_mtime(path: &Path, secs: u64) {
+        use std::time::Duration;
+        let f = fs::OpenOptions::new().write(true).open(path).unwrap();
+        f.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(secs)).unwrap();
+    }
+
+    fn blob_size(cache: &WitnessCache, start: u64, end: u64) -> u64 {
+        fs::metadata(cache.stdin_path(start, end)).unwrap().len()
+    }
+
+    #[test]
+    fn parse_range_key_reads_leading_blocks() {
+        assert_eq!(parse_range_key("10452239-10452439-eigenda-stdin.bin"), Some((10452239, 10452439)));
+        assert_eq!(parse_range_key("100-200-eigenda-witness.tmp.7.3"), Some((100, 200)));
+        assert_eq!(parse_range_key("memory_model.json"), None);
+    }
+
+    #[test]
+    fn size_cap_evicts_oldest_first() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache = WitnessCache::new(dir.path(), 7, DaType::EigenDa);
+        for (s, e) in [(1, 2), (2, 3), (3, 4)] {
+            cache.save_stdin(s, e, &sp1_sdk::SP1Stdin::default()).unwrap();
+        }
+        set_mtime(&cache.stdin_path(1, 2), 100); // oldest
+        set_mtime(&cache.stdin_path(2, 3), 200);
+        set_mtime(&cache.stdin_path(3, 4), 300); // newest
+        let size = blob_size(&cache, 1, 2);
+
+        // Room for two of the three blobs → the single oldest is evicted.
+        let outcome = cache.enforce_size_cap(2 * size, &HashSet::new()).unwrap();
+
+        assert_eq!(outcome.files_deleted, 1);
+        assert_eq!(outcome.bytes_freed, size);
+        assert!(!cache.has_stdin(1, 2), "oldest should be evicted");
+        assert!(cache.has_stdin(2, 3));
+        assert!(cache.has_stdin(3, 4));
+    }
+
+    #[test]
+    fn size_cap_skips_protected_ranges() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache = WitnessCache::new(dir.path(), 7, DaType::EigenDa);
+        for (s, e) in [(1, 2), (2, 3), (3, 4)] {
+            cache.save_stdin(s, e, &sp1_sdk::SP1Stdin::default()).unwrap();
+        }
+        set_mtime(&cache.stdin_path(1, 2), 100); // oldest, but protected
+        set_mtime(&cache.stdin_path(2, 3), 200);
+        set_mtime(&cache.stdin_path(3, 4), 300);
+        let size = blob_size(&cache, 1, 2);
+
+        // Cap fits one blob; the oldest is protected, so the next-oldest go instead.
+        let protected = HashSet::from([(1u64, 2u64)]);
+        cache.enforce_size_cap(size, &protected).unwrap();
+
+        assert!(cache.has_stdin(1, 2), "protected range must survive even though oldest");
+        assert!(!cache.has_stdin(2, 3));
+        assert!(!cache.has_stdin(3, 4));
+    }
+
+    #[test]
+    fn size_cap_reaps_stray_temps_regardless_of_budget() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache = WitnessCache::new(dir.path(), 7, DaType::EigenDa);
+        cache.save_stdin(1, 2, &sp1_sdk::SP1Stdin::default()).unwrap();
+        let cache_dir = cache.stdin_path(1, 2).parent().unwrap().to_path_buf();
+        let stray = cache_dir.join("5-6-eigenda-stdin.tmp.999.0");
+        fs::write(&stray, b"garbage").unwrap();
+
+        let outcome = cache.enforce_size_cap(u64::MAX, &HashSet::new()).unwrap();
+
+        assert_eq!(outcome.tmp_deleted, 1);
+        assert_eq!(outcome.files_deleted, 0, "under budget: no blob eviction");
+        assert!(!stray.exists());
+        assert!(cache.has_stdin(1, 2));
+    }
+
+    #[test]
+    fn size_cap_is_noop_under_budget() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache = WitnessCache::new(dir.path(), 7, DaType::EigenDa);
+        cache.save_stdin(1, 2, &sp1_sdk::SP1Stdin::default()).unwrap();
+        let outcome = cache.enforce_size_cap(u64::MAX, &HashSet::new()).unwrap();
+        assert_eq!(outcome.files_deleted, 0);
+        assert_eq!(outcome.bytes_freed, 0);
+        assert!(outcome.bytes_before > 0);
+        assert!(cache.has_stdin(1, 2));
+    }
+
+    #[test]
+    fn size_cap_on_missing_dir_is_ok() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache = WitnessCache::new(dir.path(), 7, DaType::EigenDa);
+        let outcome = cache.enforce_size_cap(0, &HashSet::new()).unwrap();
+        assert_eq!(outcome, CapSweepOutcome::default());
     }
 
     #[cfg(feature = "eigenda")]
