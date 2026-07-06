@@ -82,6 +82,7 @@ serde.workspace = true
 futures.workspace = true
 rkyv.workspace = true
 rayon = "1.10.0"
+parse-size = "1"
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
