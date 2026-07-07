@@ -2,7 +2,17 @@ use anyhow::Result;
 use clap::Parser;
 use op_succinct_host_utils::build_env_filter;
 use op_succinct_scripts::game_monitor_embedded::EmbeddedArgs;
+use tikv_jemallocator::Jemalloc;
 use tracing_subscriber::{fmt, prelude::*};
+
+// jemalloc (over the default glibc allocator) so freed memory is returned to the OS promptly
+// instead of being stranded in per-thread arenas. This keeps process RSS tracking live usage,
+// which the memory-admission sampler depends on: with glibc, RSS stayed at its high-water mark
+// between units and poisoned the learned per-gas cost. The aggressive decay config
+// (`background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0`) is baked in at build time via
+// `JEMALLOC_SYS_WITH_MALLOC_CONF` in Dockerfile.game-monitor-embedded.
+#[global_allocator]
+static ALLOCATOR: Jemalloc = Jemalloc;
 
 fn init_tracing() {
     // Output format is chosen by `LOG_FORMAT`: the default is a human-readable text format

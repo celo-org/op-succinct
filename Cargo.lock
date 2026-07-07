@@ -8258,6 +8258,7 @@ dependencies = [
  "sp1-sdk",
  "tempfile",
  "thiserror 2.0.18",
+ "tikv-jemallocator",
  "tokio",
  "tracing",
  "tracing-subscriber 0.3.22",
