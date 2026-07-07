@@ -43,6 +43,12 @@ FROM rust-base AS builder
 # Copy the entire workspace
 COPY . .
 
+# Bake the jemalloc runtime config into the binary (jemalloc-sys reads this at build time).
+# Aggressively return freed memory to the OS so process RSS tracks live usage — the memory
+# admission sampler relies on RSS falling between units, otherwise sticky RSS poisons the
+# learned per-gas cost. Async purging via a background thread keeps this off the hot path.
+ENV JEMALLOC_SYS_WITH_MALLOC_CONF="background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0"
+
 # Build the embedded game-monitor. It runs cost estimation in-process, so the
 # DA feature (eigenda) must be compiled in rather than relying on a separate
 # cost-estimator binary.
