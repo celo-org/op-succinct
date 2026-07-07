@@ -111,7 +111,7 @@ dependencies = [
 [[package]]
 name = "alloy-celo-evm"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#f1c22894b655682c291e38a657b428e04e4dd938"
 dependencies = [
  "alloy-consensus",
  "alloy-evm 0.27.3",
@@ -2211,6 +2211,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "backon"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cffb0e931875b666fc4fcb20fee52e9bbd1ef836fd9e9e04ec21555f9f85f7ef"
+dependencies = [
+ "fastrand",
+ "gloo-timers",
+ "tokio",
+]
+
+[[package]]
 name = "backtrace"
 version = "0.3.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2898,7 +2909,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-consensus"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#f1c22894b655682c291e38a657b428e04e4dd938"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -2913,7 +2924,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-network"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#f1c22894b655682c291e38a657b428e04e4dd938"
 dependencies = [
  "alloy-consensus",
  "alloy-network",
@@ -2927,7 +2938,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-rpc-types"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#f1c22894b655682c291e38a657b428e04e4dd938"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -2946,7 +2957,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-rpc-types-engine"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#f1c22894b655682c291e38a657b428e04e4dd938"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -2962,7 +2973,7 @@ dependencies = [
 [[package]]
 name = "celo-client"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#f1c22894b655682c291e38a657b428e04e4dd938"
 dependencies = [
  "alloy-celo-evm",
  "alloy-consensus",
@@ -2987,7 +2998,7 @@ dependencies = [
 [[package]]
 name = "celo-driver"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#f1c22894b655682c291e38a657b428e04e4dd938"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -3017,7 +3028,7 @@ dependencies = [
 [[package]]
 name = "celo-executor"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#f1c22894b655682c291e38a657b428e04e4dd938"
 dependencies = [
  "alloy-celo-evm",
  "alloy-consensus",
@@ -3045,7 +3056,7 @@ dependencies = [
 [[package]]
 name = "celo-genesis"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#f1c22894b655682c291e38a657b428e04e4dd938"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3065,7 +3076,7 @@ dependencies = [
 [[package]]
 name = "celo-host"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#f1c22894b655682c291e38a657b428e04e4dd938"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3073,8 +3084,10 @@ dependencies = [
  "alloy-provider",
  "alloy-rlp",
  "alloy-rpc-types",
+ "alloy-transport",
  "anyhow",
  "async-trait",
+ "backon",
  "celo-alloy-network",
  "celo-alloy-rpc-types-engine",
  "celo-client",
@@ -3102,7 +3115,7 @@ dependencies = [
 [[package]]
 name = "celo-proof"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#f1c22894b655682c291e38a657b428e04e4dd938"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3137,7 +3150,7 @@ dependencies = [
 [[package]]
 name = "celo-protocol"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#f1c22894b655682c291e38a657b428e04e4dd938"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3166,7 +3179,7 @@ dependencies = [
 [[package]]
 name = "celo-registry"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#f1c22894b655682c291e38a657b428e04e4dd938"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -3180,7 +3193,7 @@ dependencies = [
 [[package]]
 name = "celo-revm"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#f1c22894b655682c291e38a657b428e04e4dd938"
 dependencies = [
  "alloy-eips",
  "alloy-evm 0.27.3",
@@ -4979,6 +4992,18 @@ name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
+name = "gloo-timers"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "js-sys",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "gmp-mpfr-sys"
