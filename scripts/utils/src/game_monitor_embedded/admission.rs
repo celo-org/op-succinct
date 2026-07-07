@@ -17,27 +17,55 @@ use crate::game_monitor_embedded::{
 /// flight".
 const MIN_SAMPLE_GAS: f64 = 1.0;
 
+/// EWMA weight applied to each completed episode's peak cost. Small, so a single outlier
+/// episode shifts the estimate by a bounded fraction and then decays over subsequent
+/// episodes — the property the old running max lacked (one outlier pinned it forever). The
+/// fixed `--rss-margin-mb` headroom, not this estimator, carries the safety tail, so tracking
+/// the typical peak (rather than a high quantile) is sufficient.
+const EWMA_ALPHA: f64 = 0.1;
+
 const BYTES_PER_GIB: f64 = (1u64 << 30) as f64;
+
+/// Fold a completed episode's peak cost into the running EWMA. The first sample seeds the
+/// estimate directly (so cold start reaches a real value immediately instead of `α·peak`);
+/// thereafter each peak moves it by `EWMA_ALPHA`.
+fn fold_ewma(current: f64, peak: f64) -> f64 {
+    if current <= 0.0 {
+        peak
+    } else {
+        (1.0 - EWMA_ALPHA) * current + EWMA_ALPHA * peak
+    }
+}
 
 /// Bytes rendered as GiB, for human-readable logs.
 fn gib(bytes: u64) -> f64 {
     bytes as f64 / BYTES_PER_GIB
 }
 
-/// Learned peak memory cost in bytes of RSS per unit of EVM gas, tracked SEPARATELY per work
-/// kind. A build's footprint per gas differs from an execute's by ~10x, so a single shared
-/// coefficient mis-projects whichever kind it was not learned from (it over-projects executes
-/// off build samples, starving them). Each kind keeps its own running max, learned only from
-/// samples taken while just that kind was in flight. Persisted verbatim across restarts.
+/// Learned memory cost in bytes of RSS per unit of EVM gas, tracked SEPARATELY per work
+/// kind. A build's footprint per gas differs from an execute's, so a single shared
+/// coefficient mis-projects whichever kind it was not learned from. Each kind's cost is an
+/// EWMA of per-episode PEAK cost: while only that kind is in flight (a pure "episode") the
+/// peak instantaneous `(rss - baseline)/gas` is accumulated, and when the episode ends it is
+/// blended into the EWMA. This decays outliers instead of pinning them (the old running max
+/// let one bad sample — e.g. sticky RSS charged to a small unit — lock the coefficient high
+/// forever, forcing serial execution). The costs and sample counts persist across restarts;
+/// the in-progress episode peaks are transient (`serde(skip)`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 struct CostModel {
-    /// Running max bytes/gas observed while only builds were in flight.
+    /// EWMA of per-episode peak bytes/gas, learned while only builds were in flight.
     cost_per_gas_build: f64,
-    /// Running max bytes/gas observed while only executes were in flight.
+    /// EWMA of per-episode peak bytes/gas, learned while only executes were in flight.
     cost_per_gas_execute: f64,
-    /// Pure-sample counts folded per kind (diagnostic).
+    /// Episodes folded per kind (diagnostic).
     samples_build: u64,
     samples_execute: u64,
+    /// Peak cost of the build episode currently in flight (0 = none). Transient.
+    #[serde(skip)]
+    episode_peak_build: f64,
+    /// Peak cost of the execute episode currently in flight (0 = none). Transient.
+    #[serde(skip)]
+    episode_peak_execute: f64,
 }
 
 impl CostModel {
@@ -81,10 +109,11 @@ pub struct AdmissionConfig {
 /// Memory admission via per-kind learned coefficients.
 ///
 /// A background sampler (see [`Admission::spawn_sampler`]) polls resident memory. When only
-/// one kind is in flight it folds `(rss - baseline) / gas_of_that_kind` into that kind's
-/// running max (mixed-kind readings can't be attributed and are skipped). Admission projects
-/// the footprint of the in-flight set plus one more unit as `baseline + cost_build *
-/// build_gas + cost_execute * execute_gas` and admits only if that plus a margin fits.
+/// one kind is in flight it tracks the peak `(rss - baseline) / gas_of_that_kind` over that
+/// episode and, when the episode ends, folds the peak into that kind's EWMA (mixed-kind
+/// readings can't be attributed and are skipped). Admission projects the footprint of the
+/// in-flight set plus one more unit as `baseline + cost_build * build_gas + cost_execute *
+/// execute_gas` and admits only if that plus a margin fits.
 ///
 /// Cold start / liveness floor: with nothing in flight a unit is always admitted, so a
 /// pessimistic model can never wedge the daemon; that single unit's memory is bounded by
@@ -245,16 +274,33 @@ impl Admission {
     /// Fold one resident-memory reading into the model. Called by the sampler. Only pure
     /// single-kind readings are attributed: with both kinds in flight a single RSS scalar
     /// can't be split between them, so mixed (and empty) readings are skipped.
+    ///
+    /// Per kind, the peak cost is accumulated while that kind is purely in flight (an
+    /// "episode"); the moment the episode ends — the other kind appears, or the registry
+    /// empties — the episode's peak is folded into the kind's EWMA. So the estimate tracks
+    /// the typical per-episode peak and a lone outlier decays out over subsequent episodes.
     pub fn observe(&self, rss: u64) {
         let (sb, se) = self.registry.snapshot();
         let net = rss.saturating_sub(self.baseline_bytes) as f64;
         let mut model = self.cost.lock().unwrap();
+
+        // Build episode: accumulate its peak while only builds are in flight; fold on end.
         if se == 0 && sb as f64 >= MIN_SAMPLE_GAS {
-            model.cost_per_gas_build = model.cost_per_gas_build.max(net / sb as f64);
+            model.episode_peak_build = model.episode_peak_build.max(net / sb as f64);
+        } else if model.episode_peak_build > 0.0 {
+            model.cost_per_gas_build = fold_ewma(model.cost_per_gas_build, model.episode_peak_build);
             model.samples_build += 1;
-        } else if sb == 0 && se as f64 >= MIN_SAMPLE_GAS {
-            model.cost_per_gas_execute = model.cost_per_gas_execute.max(net / se as f64);
+            model.episode_peak_build = 0.0;
+        }
+
+        // Execute episode: symmetric.
+        if sb == 0 && se as f64 >= MIN_SAMPLE_GAS {
+            model.episode_peak_execute = model.episode_peak_execute.max(net / se as f64);
+        } else if model.episode_peak_execute > 0.0 {
+            model.cost_per_gas_execute =
+                fold_ewma(model.cost_per_gas_execute, model.episode_peak_execute);
             model.samples_execute += 1;
+            model.episode_peak_execute = 0.0;
         }
     }
 
@@ -371,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn observe_attributes_pure_samples_per_kind() {
+    fn observe_attributes_pure_episode_peaks_per_kind() {
         let dir = tempfile::tempdir().unwrap();
         let adm = test_admission(None, 64, dir.path().join("model.json"));
 
@@ -379,31 +425,72 @@ mod tests {
         adm.observe(10_000);
         assert_eq!(*adm.cost.lock().unwrap(), CostModel::default());
 
-        // Only a build in flight → attributed to build; baseline is 0 (Unsupported source).
+        // Build episode: the peak is accumulated (max) while in flight, but NOT folded until
+        // the episode ends. Baseline is 0 (Unsupported source).
         {
             let _b = AdmitGuard::new(adm.registry.clone(), WorkKind::Build, 1_000);
-            adm.observe(10_000); // 10_000 / 1_000 = 10
-            assert_eq!(adm.cost.lock().unwrap().cost_per_gas_build, 10.0);
-            adm.observe(5_000); // lower ratio does not lower the max
-            assert_eq!(adm.cost.lock().unwrap().cost_per_gas_build, 10.0);
+            adm.observe(10_000); // peak = 10_000 / 1_000 = 10
+            adm.observe(5_000); // lower ratio doesn't lower the peak
+            // Episode still open → EWMA not updated yet.
+            assert_eq!(adm.cost.lock().unwrap().cost_per_gas_build, 0.0);
         }
-        // Execute cost is untouched by build samples.
+        // Episode ended (registry empty) → fold the peak; first sample seeds the EWMA at 10.
+        adm.observe(0);
+        assert_eq!(adm.cost.lock().unwrap().cost_per_gas_build, 10.0);
+        assert_eq!(adm.cost.lock().unwrap().samples_build, 1);
+        // Execute cost is untouched by build episodes.
         assert_eq!(adm.cost.lock().unwrap().cost_per_gas_execute, 0.0);
 
-        // Only an execute in flight → attributed to execute.
+        // Execute episode → attributed to execute, folded when it ends.
         {
             let _e = AdmitGuard::new(adm.registry.clone(), WorkKind::Execute, 2_000);
-            adm.observe(10_000); // 10_000 / 2_000 = 5
-            assert_eq!(adm.cost.lock().unwrap().cost_per_gas_execute, 5.0);
+            adm.observe(10_000); // peak = 10_000 / 2_000 = 5
         }
+        adm.observe(0);
+        assert_eq!(adm.cost.lock().unwrap().cost_per_gas_execute, 5.0);
 
-        // Mixed kinds in flight → not attributable, skipped (no change to either).
+        // Mixed kinds in flight → not attributable, no episode accumulates and nothing folds.
         let before = *adm.cost.lock().unwrap();
-        let _b = AdmitGuard::new(adm.registry.clone(), WorkKind::Build, 1_000);
-        let _e = AdmitGuard::new(adm.registry.clone(), WorkKind::Execute, 1_000);
-        adm.observe(999_999);
+        {
+            let _b = AdmitGuard::new(adm.registry.clone(), WorkKind::Build, 1_000);
+            let _e = AdmitGuard::new(adm.registry.clone(), WorkKind::Execute, 1_000);
+            adm.observe(999_999);
+        }
+        adm.observe(0);
         assert_eq!(adm.cost.lock().unwrap().cost_per_gas_build, before.cost_per_gas_build);
         assert_eq!(adm.cost.lock().unwrap().cost_per_gas_execute, before.cost_per_gas_execute);
+    }
+
+    #[test]
+    fn ewma_of_peaks_decays_outliers_instead_of_pinning() {
+        let dir = tempfile::tempdir().unwrap();
+        let adm = test_admission(None, 64, dir.path().join("model.json"));
+
+        // Run one build episode with the given net RSS peak, then close it so it folds.
+        let episode = |net: u64| {
+            {
+                let _b = AdmitGuard::new(adm.registry.clone(), WorkKind::Build, 1_000);
+                adm.observe(net);
+            }
+            adm.observe(0); // registry empty → episode ends → fold
+        };
+
+        episode(10_000); // seed EWMA at peak 10
+        assert_eq!(adm.cost.lock().unwrap().cost_per_gas_build, 10.0);
+
+        // A 10x outlier episode must NOT pin the estimate at 100 (the old running-max bug).
+        // With alpha=0.1: 0.9*10 + 0.1*100 = 19.
+        episode(100_000);
+        let after_outlier = adm.cost.lock().unwrap().cost_per_gas_build;
+        assert!((after_outlier - 19.0).abs() < 1e-9, "outlier should move it boundedly, got {after_outlier}");
+
+        // Subsequent normal episodes decay the outlier back down toward 10.
+        for _ in 0..5 {
+            episode(10_000);
+        }
+        let decayed = adm.cost.lock().unwrap().cost_per_gas_build;
+        assert!(decayed < after_outlier, "estimate must decay after the outlier");
+        assert!(decayed > 10.0, "still converging toward the true peak");
     }
 
     #[test]
@@ -429,12 +516,14 @@ mod tests {
         let adm = test_admission(None, 64, path.clone());
         {
             let _b = AdmitGuard::new(adm.registry.clone(), WorkKind::Build, 1_000);
-            adm.observe(7_000); // build cost = 7
+            adm.observe(7_000); // build episode peak = 7
         }
+        adm.observe(0); // close episode → fold (seeds build cost = 7)
         {
             let _e = AdmitGuard::new(adm.registry.clone(), WorkKind::Execute, 1_000);
-            adm.observe(3_000); // execute cost = 3
+            adm.observe(3_000); // execute episode peak = 3
         }
+        adm.observe(0); // close episode → fold (seeds execute cost = 3)
         adm.persist();
 
         let reloaded = test_admission(None, 64, path);
@@ -453,8 +542,11 @@ mod tests {
         assert!(!path.parent().unwrap().exists());
 
         let adm = test_admission(None, 64, path.clone());
-        let _b = AdmitGuard::new(adm.registry.clone(), WorkKind::Build, 1_000);
-        adm.observe(7_000); // build cost = 7
+        {
+            let _b = AdmitGuard::new(adm.registry.clone(), WorkKind::Build, 1_000);
+            adm.observe(7_000); // build episode peak = 7
+        }
+        adm.observe(0); // close episode → fold (seeds build cost = 7)
         adm.persist();
 
         assert!(path.exists(), "persist must create the file under a missing parent dir");
