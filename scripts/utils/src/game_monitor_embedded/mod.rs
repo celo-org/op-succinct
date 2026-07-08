@@ -797,17 +797,16 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
         pending_games = remaining;
 
         // Orchestrator status snapshot, once per poll — the whole control plane at a glance:
-        // how far discovery has reached, the completion watermark, and the depth of each
-        // queue, plus the heavy sub-range units the admission gate has in flight.
-        let (active_builds, active_executes) = admission.in_flight_units();
+        // the completion watermark, the depth of each queue, plus the heavy sub-range units
+        // the admission gate has in flight (witness builds and SP1 proves/executes).
+        let (active_witness, active_prove) = admission.in_flight_units();
         tracing::info!(
-            highest_discovered = next_game_index.saturating_sub(1),
             watermark = tracker.end(),
-            pending = pending_games.len(),
-            executing = running_games.len(),
-            background = background_retries.len(),
-            active_builds,
-            active_executes,
+            pending_games = pending_games.len(),
+            executing_games = running_games.len(),
+            background_games = background_retries.len(),
+            active_witness,
+            active_prove,
             "monitor status"
         );
     }
