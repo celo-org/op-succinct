@@ -76,6 +76,7 @@ pub mod discovery;
 pub mod executor;
 pub mod pipeline;
 pub mod ready_range_provider;
+pub mod readiness;
 pub mod registry;
 pub mod rss_source;
 pub mod state;
@@ -216,13 +217,6 @@ fn da_type() -> DaType {
     {
         DaType::Ethereum
     }
-}
-
-/// A game can only be executed once its end block is derivable from the finalized L2
-/// head. If the finalized head hasn't reached `end_block`, defer (re-queue) without
-/// consuming retry budget.
-fn game_is_executable(finalized_l2: u64, end_block: u64) -> bool {
-    finalized_l2 >= end_block
 }
 
 struct PrunableStdin {
@@ -735,29 +729,34 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
                         GameTaskResult::Defer { pg }
                     }
                     Ok(Ok(game)) => {
-                        // L2-behind defer: the end block must be derivable from the finalized
-                        // L2 head before execution; if not, re-queue (no retry budget spent).
-                        match fetcher.get_l2_header(BlockId::finalized()).await.map(|h| h.number) {
+                        // Soundness gate: defer until the game's end block is finalized on L2
+                        // AND L1 has finalized past its `l1_head + buffer` (so the witness's
+                        // baked-in l1_head is deterministic). Not-ready or a control-plane blip
+                        // both re-queue without spending retry budget.
+                        match readiness::range_ready(
+                            &fetcher,
+                            game.end_block,
+                            estimator.safe_db_fallback,
+                        )
+                        .await
+                        {
                             Err(e) => {
                                 tracing::warn!(
                                     game_index = pg.game_index,
                                     error = %e,
-                                    "failed to fetch finalized L2 head; will retry"
+                                    "readiness check failed; will retry"
                                 );
                                 GameTaskResult::Defer { pg }
                             }
-                            Ok(finalized_l2)
-                                if !game_is_executable(finalized_l2, game.end_block) =>
-                            {
+                            Ok(false) => {
                                 tracing::debug!(
                                     game_index = pg.game_index,
-                                    finalized_l2,
                                     end_block = game.end_block,
-                                    "deferring game: L2 behind"
+                                    "deferring game: end block not finalized on L2/L1 yet"
                                 );
                                 GameTaskResult::Defer { pg }
                             }
-                            Ok(_) => match execute_game(
+                            Ok(true) => match execute_game(
                                 &estimator, &fetcher, &admission, &game, batch_size,
                             )
                             .await
@@ -848,13 +847,6 @@ mod tests {
             "40GiB",
         ]);
         assert_eq!(gib.max_cache_size, 40 * 1024 * 1024 * 1024); // binary GiB = 1024^3
-    }
-
-    #[test]
-    fn game_deferred_until_l2_reaches_end_block() {
-        assert!(!super::game_is_executable(99, 100));
-        assert!(super::game_is_executable(100, 100));
-        assert!(super::game_is_executable(150, 100));
     }
 
     #[test]
