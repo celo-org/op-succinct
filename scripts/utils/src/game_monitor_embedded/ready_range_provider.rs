@@ -4,17 +4,7 @@ use op_succinct_host_utils::{
     fetcher::OPSuccinctDataFetcher,
 };
 
-/// L1 finality buffer (blocks) matching the DA host's `calculate_safe_l1_head`
-/// (`min(get_l1_head(end) + 20, finalized_l1)`). A range is only handed out once L1 has
-/// finalized past its `l1_head + buffer`, so the `min(.., finalized_l1)` cap never binds and
-/// the witness's baked-in `l1_head` is deterministic — i.e. equals what the executor
-/// recomputes later, keeping the (l1_head-free) cache key sound. Must be >= the host's buffer.
-const L1_HEAD_FINALITY_BUFFER: u64 = 20;
-
-/// True once L1 has finalized past a range's `l1_head` plus the finality buffer.
-fn l1_head_finalized(range_l1_head: u64, finalized_l1: u64, buffer: u64) -> bool {
-    range_l1_head + buffer <= finalized_l1
-}
+use crate::game_monitor_embedded::readiness::range_ready;
 
 /// Provides the next sub-range ready to be processed, ahead of the executor.
 ///
@@ -51,17 +41,13 @@ impl ReadyRangeProvider {
     /// polls again next tick). All window prediction, splitting, and finalization gating
     /// happen here. Transient RPC failures return `None` (retry next tick).
     pub async fn next_range(&mut self, fetcher: &OPSuccinctDataFetcher) -> Option<SpanBatchRange> {
+        // Finalized L2 head bounds which sub-ranges are even considered (splitting only up to
+        // the finalized prefix keeps boundaries stable); per-range readiness is gated below by
+        // the shared `range_ready`.
         let finalized_l2 = match fetcher.get_l2_header(BlockId::finalized()).await {
             Ok(h) => h.number,
             Err(e) => {
                 tracing::debug!(error = %e, "ready range provider: finalized-L2 fetch failed; retry next tick");
-                return None;
-            }
-        };
-        let finalized_l1 = match fetcher.get_l1_header(BlockId::finalized()).await {
-            Ok(h) => h.number,
-            Err(e) => {
-                tracing::debug!(error = %e, "ready range provider: finalized-L1 fetch failed; retry next tick");
                 return None;
             }
         };
@@ -100,21 +86,18 @@ impl ReadyRangeProvider {
 
         let range = sub_ranges[idx].clone();
 
-        // Soundness gate: defer until L1 has finalized past `l1_head + buffer`. Ranges are
-        // emitted in order and `l1_head` is monotonic in `range.end`, so if this one isn't
-        // ready none after it are either — wait rather than skip. `get_l1_head(.., true)`
-        // uses SafeDB when present and otherwise falls back to timestamp-based estimation,
-        // matching what the executor's witness bakes in — so the daemon needs no SafeDB.
-        let range_l1_head = match fetcher.get_l1_head(range.end, true).await {
-            Ok((_, l1)) => l1,
+        // Soundness gate (shared with the executor): defer until the range end is finalized on
+        // L2 AND L1 has finalized past its `l1_head + buffer`. Ranges are emitted in order and
+        // both conditions are monotonic in `range.end`, so if this one isn't ready none after it
+        // are either — wait rather than skip. A transient RPC failure is treated the same.
+        match range_ready(fetcher, range.end, true).await {
+            Ok(true) => {}
+            Ok(false) => return None,
             Err(e) => {
                 tracing::debug!(start = range.start, end = range.end, error = %e,
-                    "ready range provider: L1 head lookup failed; retry next tick");
+                    "ready range provider: readiness check failed; retry next tick");
                 return None;
             }
-        };
-        if !l1_head_finalized(range_l1_head, finalized_l1, L1_HEAD_FINALITY_BUFFER) {
-            return None;
         }
 
         self.cursor = range.end;
@@ -125,17 +108,6 @@ impl ReadyRangeProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn l1_head_finalized_requires_buffer_past_finalized() {
-        // bare head finalized but +20 buffer not → not ready (cap would bind).
-        assert!(!l1_head_finalized(90, 100, 20));
-        // buffer exactly finalized → ready.
-        assert!(l1_head_finalized(80, 100, 20));
-        // zero buffer reduces to a plain finalized check.
-        assert!(l1_head_finalized(100, 100, 0));
-        assert!(!l1_head_finalized(101, 100, 0));
-    }
 
     #[test]
     fn new_seeds_cursor_and_window_at_proposal_boundary() {
