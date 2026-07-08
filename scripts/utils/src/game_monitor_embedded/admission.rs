@@ -309,13 +309,34 @@ impl Admission {
     /// the process lifetime (periodic persistence means a kill loses at most one interval of
     /// learning).
     pub fn spawn_sampler(self: Arc<Self>) {
+        // TEMP instrumentation: emit a raw RSS-vs-in-flight-gas sample ~once per second while
+        // any work is in flight, to plot whether total RSS grows linearly with total in-flight
+        // gas or bends sub-linearly (the concurrency memory-model question). Filter with
+        // `admission rss sample`. Remove once the curve is characterised.
+        let log_every = (1000u128 / self.sample_period.as_millis().max(1)).max(1) as u32;
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(self.sample_period);
             let mut since_persist: u32 = 0;
+            let mut since_sample_log: u32 = 0;
             loop {
                 ticker.tick().await;
                 if let Some(rss) = self.rss_source.read() {
                     self.observe(rss);
+                    since_sample_log += 1;
+                    if since_sample_log >= log_every {
+                        since_sample_log = 0;
+                        let (build_gas, execute_gas) = self.registry.snapshot();
+                        if build_gas + execute_gas > 0 {
+                            tracing::info!(
+                                rss_gib = %format!("{:.2}", gib(rss)),
+                                net_gib = %format!("{:.2}", gib(rss.saturating_sub(self.baseline_bytes))),
+                                build_gas,
+                                execute_gas,
+                                total_gas = build_gas + execute_gas,
+                                "admission rss sample"
+                            );
+                        }
+                    }
                 }
                 since_persist += 1;
                 if since_persist >= self.persist_every {
