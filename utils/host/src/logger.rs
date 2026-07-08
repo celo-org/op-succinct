@@ -34,7 +34,19 @@ pub fn build_env_filter() -> EnvFilter {
         .add_directive("host_server=error".parse().unwrap())
         .add_directive("kona_protocol=error".parse().unwrap())
         .add_directive("sp1_core_executor=off".parse().unwrap())
-        .add_directive("sp1_core_machine=error".parse().unwrap());
+        .add_directive("sp1_core_machine=error".parse().unwrap())
+        // Per-build chatter from the SP1/canoe host + EigenDA (hokulea) proving stack. These
+        // fire once (or several times) per witness build and carry no actionable signal.
+        .add_directive("sp1_sdk=warn".parse().unwrap())
+        .add_directive("sp1_cc_host_executor=warn".parse().unwrap())
+        .add_directive("kzg_proof_provider=warn".parse().unwrap())
+        // `canoe_sp1_cc_host` also emits a benign `NETWORK_PRIVATE_KEY is not set` WARN each
+        // build, so drop it to error.
+        .add_directive("canoe_sp1_cc_host=error".parse().unwrap())
+        .add_directive("eigenda_preimage_source=warn".parse().unwrap())
+        // hokulea warns every DA cert that recency checking is disabled — expected for the
+        // V2/V3 EigenDA certs in use (only V4 certs carry a recency window), so drop to error.
+        .add_directive("hokulea_eigenda=error".parse().unwrap());
 
     // RUST_LOG directives added last so they override matching defaults.
     if let Ok(var) = env::var(EnvFilter::DEFAULT_ENV) {
