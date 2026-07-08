@@ -1007,14 +1007,20 @@ enum FailureType {
     /// `-32011`). The proxy in front of the L1/L2 nodes returned 503 because none of its
     /// backends were healthy.
     NoHealthyBackend,
-    /// `No state available for block ...` (JSON-RPC code `-32002`). The RPC node pruned or
-    /// never had state for the requested historical block.
+    /// The RPC node pruned or never had state for the requested historical block. Each execution
+    /// client phrases this differently, so several anchors map here: Nethermind `No state
+    /// available for block ...` (JSON-RPC code `-32002`); geth path-scheme (PBSS) `state 0x... is
+    /// not available` / `historical state ... is not available`; and reth `state at block #N is
+    /// pruned` / `no state found for block ...` (forwarded through an Internal `-32603`).
     NoStateAvailable,
     /// `distance to target block exceeds maximum proof window` (JSON-RPC code `-32602`). The
     /// requested block is too far from the node's head for an `eth_getProof` call.
     ExceedsProofWindow,
-    /// `missing trie node ... is not available` (JSON-RPC code `-32000`). The RPC node is
-    /// missing a trie node for the requested state.
+    /// A trie node is missing from the RPC node's state DB. Two node implementations phrase this
+    /// differently: geth-style `missing trie node ... is not available` (JSON-RPC code `-32000`),
+    /// and Nethermind-style `MissingTrieNodeException: ... is missing from the DB` (surfaced as
+    /// JSON-RPC code `-32603` Internal error). Both mean the node pruned or never had the
+    /// requested state.
     MissingTrieNode,
     /// `Failed to fetch safe head` with a `dns error` cause. The op-node hostname could not be
     /// resolved (typically a transient cluster-DNS hiccup).
@@ -1071,6 +1077,16 @@ const FAILURE_PATTERNS: &[(&[&str], FailureType)] = &[
     (&["No state available for block"], FailureType::NoStateAvailable),
     (&["distance to target block exceeds maximum proof window"], FailureType::ExceedsProofWindow),
     (&["missing trie node"], FailureType::MissingTrieNode),
+    (&["MissingTrieNodeException"], FailureType::MissingTrieNode),
+    // geth path-scheme (PBSS) pruned/unavailable state: `state 0x… is not available` /
+    // `historical state … is not available`. Placed after the trie-node anchors so a geth or
+    // Nethermind `missing trie node … is not available` line classifies as MissingTrieNode.
+    (&["state", "is not available"], FailureType::NoStateAvailable),
+    // reth pruned/absent historical state: `state at block #N is pruned` /
+    // `no state found for block …`, forwarded through an Internal (-32603) error whose
+    // transparent inner message is the reth ProviderError text.
+    (&["is pruned"], FailureType::NoStateAvailable),
+    (&["no state found for block"], FailureType::NoStateAvailable),
     (&["Failed to fetch safe head", "dns error"], FailureType::DnsLookupFailure),
     (&["Temporary failure in name resolution"], FailureType::DnsLookupFailure),
     (
