@@ -14,8 +14,9 @@
 //!   anchored at the window start, and hands out each sub-range once it is soundly
 //!   finalized (L2 past its end, L1 past its `l1_head + buffer`). [`pipeline::pipeline_step`]
 //!   builds the witness and SP1 stdin for each and caches both — running *ahead* of the
-//!   executor so the stdin is usually already on disk when the game arrives. Builds are
-//!   serial today.
+//!   executor so the stdin is usually already on disk when the game arrives. Builds run
+//!   concurrently (bounded by `--max-concurrent-builds`, default the admission unit cap),
+//!   with the shared memory admission gate governing how many actually run at once.
 //!
 //! * **Reactive executor** (the main loop). Polls the dispute-game factory for newly
 //!   finalized games, applies the discover→execute `--delay`, then spawns each due game as
@@ -102,6 +103,7 @@ use op_succinct_host_utils::{
     stats::ExecutionStats,
 };
 use op_succinct_proof_utils::initialize_host;
+use futures::StreamExt;
 use tokio::sync::mpsc;
 use tracing::Instrument;
 
@@ -166,6 +168,12 @@ pub struct EmbeddedArgs {
     /// the only cap when the budget is unlimited or the model has no signal yet.
     #[arg(long, default_value = "8")]
     pub max_concurrent_units: usize,
+    /// Max concurrent prebuild-pipeline builds. Bounds how far ahead the pipeline reads and
+    /// how many build futures are in flight; the shared memory admission gate remains the
+    /// real governor of how many run at once. Defaults to `--max-concurrent-units`; set lower
+    /// to reserve admission capacity for executes.
+    #[arg(long)]
+    pub max_concurrent_builds: Option<usize>,
     /// Resident-memory sampling source: `auto` (per-process on Linux), `proc`
     /// (`/proc/self/status`), or `cgroup` (`memory.current`).
     #[arg(long, value_enum, default_value_t = RssSourceKind::Auto)]
@@ -484,23 +492,43 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
         let admission = admission.clone();
         let proposal_interval = args.proposal_interval;
         let batch_size = args.batch_size;
+        // Default the pipeline's build fan-out to the admission unit cap, so by default the
+        // shared memory admission gate is the effective governor of build concurrency.
+        let max_concurrent_builds =
+            args.max_concurrent_builds.unwrap_or(args.max_concurrent_units).max(1);
         tokio::spawn(async move {
             let mut provider = ReadyRangeProvider::new(seed, proposal_interval, batch_size);
             loop {
-                // Pull every range the provider reports ready and build each (one witness per
-                // pipeline step), logging failures. Serial for now — threading TBD.
+                // Collect every sub-range the provider reports ready right now — cheap
+                // finality checks plus a forward cursor advance, so this stays sequential.
+                let mut ready = Vec::new();
                 while let Some(range) = provider.next_range(&fetcher).await {
-                    if let Err(e) =
-                        pipeline::pipeline_step(&estimator, &fetcher, &admission, &range).await
-                    {
-                        tracing::warn!(
-                            start = range.start,
-                            end = range.end,
-                            error = %e,
-                            "pipeline build failed"
-                        );
-                    }
+                    ready.push(range);
                 }
+                // Build them concurrently, capped at `max_concurrent_builds`. Each step still
+                // passes through the shared memory admission gate, which is what actually
+                // bounds how many run at once (memory budget + the in-flight unit cap); this
+                // limit just bounds how many build futures we hold in flight.
+                futures::stream::iter(ready)
+                    .for_each_concurrent(max_concurrent_builds, |range| {
+                        let estimator = estimator.clone();
+                        let fetcher = fetcher.clone();
+                        let admission = admission.clone();
+                        async move {
+                            if let Err(e) =
+                                pipeline::pipeline_step(&estimator, &fetcher, &admission, &range)
+                                    .await
+                            {
+                                tracing::warn!(
+                                    start = range.start,
+                                    end = range.end,
+                                    error = %e,
+                                    "pipeline build failed"
+                                );
+                            }
+                        }
+                    })
+                    .await;
                 tokio::time::sleep(poll).await;
             }
         });
