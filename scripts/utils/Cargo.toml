@@ -83,6 +83,7 @@ futures.workspace = true
 rkyv.workspace = true
 rayon = "1.10.0"
 parse-size = "1"
+humantime = "2"
 tikv-jemallocator = "0.6.0"
 serde_json.workspace = true
 thiserror.workspace = true

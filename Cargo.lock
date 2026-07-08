@@ -8265,6 +8265,7 @@ dependencies = [
  "csv",
  "dotenv",
  "futures",
+ "humantime",
  "log",
  "op-succinct-build-utils",
  "op-succinct-client-utils",
