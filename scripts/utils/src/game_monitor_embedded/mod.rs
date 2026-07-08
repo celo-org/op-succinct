@@ -129,9 +129,18 @@ pub struct EmbeddedArgs {
     /// Main loop polling interval (seconds).
     #[arg(long, default_value = "30")]
     pub poll_interval: u64,
-    /// Discover→execute delay (seconds) — avoids the multi-backend 404 race.
-    #[arg(long, default_value = "600")]
-    pub delay: u64,
+    /// Base delay for the two-tier retry backoff, as a human duration (`10s`, `3m`, `5h`).
+    ///
+    /// Applied ONLY to retries of *failed* games — first execution is not delayed (readiness is
+    /// gated by L2/L1 finalization instead). With base `d` and `--max-retries` `m`, a game that
+    /// keeps failing is re-queued, in order:
+    ///
+    /// - Primary (in-loop) retry `n` in `1..=m`: after `d * 2 * n` (linear — `2d`, `4d`, ...).
+    /// - First Background retry (Primary budget spent): after `d * 2 * m * 4`.
+    /// - Each subsequent Background retry: after the previous wait `* 4`, up to
+    ///   `--background-retry-max-age-secs`.
+    #[arg(long, value_parser = parse_duration, default_value = "10m")]
+    pub retry_backoff_delay: Duration,
     /// Blocks per range — caps SP1 guest memory per execution.
     #[arg(long, default_value = "200")]
     pub batch_size: u64,
@@ -201,6 +210,11 @@ pub struct EmbeddedArgs {
 /// (`GB`) are 1000-based, binary units (`GiB`) 1024-based.
 fn parse_cache_size(s: &str) -> Result<u64, String> {
     parse_size::parse_size(s).map_err(|e| format!("invalid --max-cache-size '{s}': {e}"))
+}
+
+/// Parse a human-readable duration (`10s`, `3m`, `5h`, `1h30m`, ...) into a [`Duration`].
+fn parse_duration(s: &str) -> Result<Duration, String> {
+    humantime::parse_duration(s).map_err(|e| format!("invalid duration '{s}': {e}"))
 }
 
 /// DA type for the cache key, selected by the build feature.
@@ -365,7 +379,7 @@ fn apply_requeue(
     args: &EmbeddedArgs,
     progress_path: &Path,
 ) -> anyhow::Result<()> {
-    let initial_delay = Duration::from_secs(args.delay);
+    let initial_delay = args.retry_backoff_delay;
     let prev_wait = background.iter().find(|b| b.game_index == pg.game_index).map(|b| b.last_wait);
     match requeue_decision(pg.kind, initial_delay, args.max_retries, prev_wait) {
         RequeueDecision::Primary { retries, delay } => {
@@ -540,7 +554,6 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
         persisted.map(|p| p.background_retries.into_iter().collect()).unwrap_or_default();
     let mut pending_games: VecDeque<PendingGame> = VecDeque::new();
 
-    let delay = Duration::from_secs(args.delay);
     let max_age = Duration::from_secs(args.background_retry_max_age_secs);
 
     let mut prunables: Vec<PrunableStdin> = Vec::new();
@@ -634,9 +647,11 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
         while next_game_index < count {
             let game_index = next_game_index;
             next_game_index += 1;
-            tracing::info!(game_index, ?delay, "discovered new game");
+            tracing::info!(game_index, "discovered new game");
+            // Immediately eligible; the readiness gate (L2/L1 finalization) and Defer handle
+            // "not ready yet" without a fixed delay.
             pending_games.push_front(PendingGame {
-                executable_at: Instant::now() + delay,
+                executable_at: Instant::now(),
                 game_index,
                 kind: AttemptKind::Primary { retries: 0 },
             });
@@ -821,7 +836,7 @@ mod tests {
         let args =
             EmbeddedArgs::parse_from(["game-monitor-embedded", "--proposal-interval", "1800"]);
         assert_eq!(args.proposal_interval, 1800);
-        assert_eq!(args.delay, 600);
+        assert_eq!(args.retry_backoff_delay, Duration::from_secs(600)); // default 10m
         assert_eq!(args.batch_size, 200);
         assert_eq!(args.stdin_grace_secs, 3600);
         assert_eq!(args.max_concurrent_games, 5);
@@ -847,6 +862,26 @@ mod tests {
             "40GiB",
         ]);
         assert_eq!(gib.max_cache_size, 40 * 1024 * 1024 * 1024); // binary GiB = 1024^3
+    }
+
+    #[test]
+    fn retry_backoff_delay_parses_human_durations() {
+        let args = EmbeddedArgs::parse_from([
+            "game-monitor-embedded",
+            "--proposal-interval",
+            "900",
+            "--retry-backoff-delay",
+            "90s",
+        ]);
+        assert_eq!(args.retry_backoff_delay, Duration::from_secs(90));
+        let h = EmbeddedArgs::parse_from([
+            "game-monitor-embedded",
+            "--proposal-interval",
+            "900",
+            "--retry-backoff-delay",
+            "2m",
+        ]);
+        assert_eq!(h.retry_backoff_delay, Duration::from_secs(120));
     }
 
     #[test]
