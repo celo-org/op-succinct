@@ -72,7 +72,7 @@ A transient L2 RPC returning `Ok(None)` panicked the whole daemon. The `.unwrap(
 `utils/host/src/fetcher.rs:269` is now `.ok_or_else(|| anyhow!("L2 block {block_number} not
 found"))?`, so it surfaces as a retryable `EstimatorError::Transient`.
 
-#### 2. No watchdog: log if a process runs for too long
+#### 2. No watchdog: log if a process runs for too long — DEFERRED
 Nothing tracks per-execute runtime, so a wedged/frozen execute is never surfaced (spec §7,
 §11; plan Task 24). The memory gate is silent and won't catch it, and since SP1 execute
 can't be killed (line 204), a logged alert is what a liveness probe (#4) needs to restart
@@ -82,6 +82,8 @@ the pod.
 - **Fix:** track each in-flight execute's start time; on overrun emit `tracing::error!`.
   (Don't gate admission — the count cap and memory projection already throttle a stuck
   unit, which keeps holding its slot and gas.)
+- **Deferred:** with the panic slot-leak (#23) and its beacon trigger fixed, the acute wedge this
+  guarded against is gone; revisit if a genuinely frozen/slow execute becomes a problem.
 
 #### 3. SafeDB dependency removed from the daemon — FIXED
 The daemon no longer uses safe-head splitting at all. Both the executor and the predictive
@@ -94,12 +96,13 @@ SafeDB RPCs.
   which uses SafeDB when present and otherwise falls back to timestamp-based L1-head
   estimation — matching what the executor's witness bakes in — so the daemon needs no SafeDB.
 
-#### 4. No Kubernetes liveness / readiness probes
+#### 4. No Kubernetes liveness / readiness probes — DEFERRED
 A wedged process is never restarted by k8s.
 - **Evidence:** `infrastructure/helm-charts/succinct-game-monitor-embedded/templates/statefulset.yaml`
   — container block has no `livenessProbe`/`readinessProbe`.
 - **Fix:** add probes (the daemon has no HTTP port today, so an `exec`/process-liveness
   probe, or add a tiny health endpoint).
+- **Deferred:** paired with #2 (auto-restart hardening); deferred for the same reason.
 
 #### 5. Predictive pipeline builds sub-ranges serially — FIXED (`3e4fd211`)
 Spec §4.2 step 4 ("Bounded concurrency. Multiple sub-range builds run concurrently") is now
@@ -223,6 +226,36 @@ Absent from the chart. With `replicas: 1` and an SP1 execute that cannot be canc
 No `runAsNonRoot` / `podSecurityContext` / `securityContext` in the chart — the container
 runs as image default (root).
 
+### Enhancements
+
+#### 24. Speculative execute for predicted games
+The prebuild pipeline already builds witnesses ahead of a game appearing, but the expensive zk
+`execute` only runs once the game is discovered on-chain (`pending_games` fed from `gameCount`,
+`mod.rs:635-658`) and passes the readiness gate. `execute_range`'s `ExecutionStats` is a pure
+function of the range, not the game index (`estimator.rs:101-138`, `executor.rs:47`/`68`), so a
+predicted range can be executed ahead of time and reused when its game appears — hiding execute
+latency the way the pipeline hides build latency.
+- **Sketch:** after the pipeline builds a ready range, also `execute_range` it and cache the
+  `ExecutionStats` keyed by `(chain_id, start, end, da)` (mirror `WitnessCache`, persisted). At
+  discovery, map the game's range → cached result → attribute and advance the `SequenceTracker`,
+  else fall back to on-demand (same best-effort pattern as the witness cache).
+- **Must-haves:** SP1 execute is uncancellable, so speculation must not head-of-line-block real
+  games — reserve execute capacity for discovered games and add a lead cap (item #7's "won't do"
+  reasoning flips here: over-executing is expensive). A misprediction wastes the dominant execute
+  cost, not just a build (bounded by prediction accuracy — the same bet the prebuild makes). Sound
+  for estimation; reusing a speculative result as a real proof would need the game's committed L1
+  anchor to match the witness's baked-in `l1_head`.
+- **Status:** promoted from spec §12 (deferred) to an active todo.
+
+#### 25. Canoe proof memoization by input-hash
+Witness build produces canoe proofs per range (seen in `host.run`: "canoe witness provider:
+producing N canoe proof(s) for M DA certs"); identical inputs are re-proved across overlapping or
+retried builds. Memoize canoe proofs keyed by a hash of their input so a repeat input reuses the
+cached proof instead of recomputing.
+- **Fix:** locate where the canoe proof is produced in the witness/DA path and wrap it in an
+  input-hash-keyed cache (persisted alongside the witness cache); consult before proving.
+- **Status:** promoted from spec §12 (deferred) to an active todo.
+
 ---
 
 ## Not gaps (by design / verified benign)
@@ -247,9 +280,7 @@ runs as image default (root).
 
 - Retrofit `cost_estimator.rs` to call the `utils/estimator` library.
 - Wire the cache + retry into the live validity proposer.
-- Speculative execute for predicted games.
 - True per-channel / span-batch range alignment (safe-head granularity is the chosen scope).
 - Metrics / DB backend for run history and health.
-- Canoe proof memoization by input-hash.
 - Force-kill of in-flight SP1 execute (accepted tradeoff).
 - Cross-DA support beyond EigenDA.
