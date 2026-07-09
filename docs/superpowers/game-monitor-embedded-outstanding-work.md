@@ -30,6 +30,7 @@ branch; line numbers are current as of that branch. Module path:
 | SP1 executor logs attributed to the `execute` span (entered inside `spawn_blocking`) | `09d4de7a` |
 | Per-kind admission cost model (Build vs Execute), `alpha` removed; readable GiB logs (item #6) | `cec85b11` |
 | Concurrent predictive prebuild pipeline, gated by the shared memory admission gate (item #5) | `3e4fd211` |
+| Game-task panics caught and requeued as Transient — no more slot leak / wedge (item #23) | `763a641e` |
 
 ---
 
@@ -37,8 +38,8 @@ branch; line numbers are current as of that branch. Module path:
 
 ### Important
 
-#### 23. A panicking game task leaks its concurrency slot → permanent execute deadlock
-Highest severity — observed wedging chaos-testnet for 8+ hours with zero completions. Each game
+#### 23. A panicking game task leaks its concurrency slot → permanent execute deadlock — FIXED (`763a641e`)
+Was highest severity — observed wedging chaos-testnet for 8+ hours with zero completions. Each game
 runs in a spawned task that reports its outcome exactly once via `tx.send(result)` (`mod.rs:807`),
 and the main loop frees the game's slot only when that result arrives (`running_games.remove`,
 `mod.rs:574`). If `execute_game` **panics** (`mod.rs:774`) instead of returning `Err` — e.g. a hard
@@ -55,12 +56,16 @@ pod still looks alive.
   5 slots; last `game executed` 00:28:54 UTC, then wedged 8.7 h with the loop still polling.
 - **Trigger vs bug:** the beacon-client HTTP flake is transient; the monitor converts it into a
   permanent deadlock via the slot leak. (kona's `unwrap` is upstream under `~/.cargo` — not ours.)
-- **Fix (two options, to be decided):** (a) wrap the task body in
-  `AssertUnwindSafe(..).catch_unwind()` and translate a panic into a `Transient`/`Fatal`
-  `GameTaskResult` so the slot frees and requeues; (b) track tasks in a `JoinSet` and reclaim the
-  slot when a handle resolves to a panic/cancel. Either makes the leak impossible regardless of what
-  panics downstream. Secondary: a watchdog / liveness probe (#2/#4) would auto-restart, and a more
-  reliable L1 beacon endpoint removes the trigger.
+- **Fix (Option A, `763a641e`):** the spawned body is wrapped in `catch_game_panic`
+  (`AssertUnwindSafe(..).catch_unwind()`); a caught panic is logged at `error!` and mapped to a
+  `Transient` `GameTaskResult`, so the existing slot-release and two-tier retry still run. Transient
+  self-heals a flaky-dependency panic and is bounded for a deterministic one (retry budget →
+  background → age-out). SP1-execute panics are unaffected — they already surface as a `JoinError`
+  via `spawn_blocking`. Unit-tested (`panicking_game_body_is_caught_as_transient`).
+- **Root cause also fixed upstream:** celo-kona now loads the beacon genesis/slot config under
+  backoff instead of panicking (celo-kona #239, cherry-picked onto `game-monitor-improvements`), so
+  the specific trigger no longer fires. Option B (`JoinSet` slot tracking) and the watchdog (#2)
+  remain as deferred hardening that would also cover this class.
 
 #### 1. `get_l2_block_data_range` panics on a missing block — FIXED (`20d92420`)
 A transient L2 RPC returning `Ok(None)` panicked the whole daemon. The `.unwrap()` at
