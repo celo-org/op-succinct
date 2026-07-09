@@ -3,10 +3,10 @@
 //! A range (a pipeline sub-range, or a game's `[start, end]`) may only be built or executed
 //! once it is *finalized on both sides*:
 //!   * its **end block is finalized on L2**, so the L2 data needed to derive it is available; and
-//!   * **L1 has finalized past its `l1_head + buffer`**, so the host's
-//!     `calculate_safe_l1_head` finality cap (`min(l1_head + 20, finalized_l1)`) never binds and
-//!     the baked-in `l1_head` is deterministic — i.e. equals what a later executor recomputes,
-//!     keeping the (l1_head-free) witness cache key sound.
+//!   * **L1 has finalized past its `l1_head + buffer`**, so the host's `calculate_safe_l1_head`
+//!     finality cap (`min(l1_head + 20, finalized_l1)`) never binds and the baked-in `l1_head` is
+//!     deterministic — i.e. equals what a later executor recomputes, keeping the (l1_head-free)
+//!     witness cache key sound.
 //!
 //! Both the predictive pipeline (`ready_range_provider`) and the reactive executor gate on this
 //! single function, so the readiness rule lives in exactly one place.
