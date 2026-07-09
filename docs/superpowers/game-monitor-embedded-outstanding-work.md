@@ -29,6 +29,7 @@ branch; line numbers are current as of that branch. Module path:
 | Admission liveness floor: a poisoned `max_cost_per_gas` can no longer wedge admission | `6863f30d` |
 | SP1 executor logs attributed to the `execute` span (entered inside `spawn_blocking`) | `09d4de7a` |
 | Per-kind admission cost model (Build vs Execute), `alpha` removed; readable GiB logs (item #6) | `cec85b11` |
+| Concurrent predictive prebuild pipeline, gated by the shared memory admission gate (item #5) | `3e4fd211` |
 
 ---
 
@@ -70,12 +71,16 @@ A wedged process is never restarted by k8s.
 - **Fix:** add probes (the daemon has no HTTP port today, so an `exec`/process-liveness
   probe, or add a tiny health endpoint).
 
-#### 5. Predictive pipeline builds sub-ranges serially
-Spec §4.2 step 4 ("Bounded concurrency. Multiple sub-range builds run concurrently") is
-unimplemented — the prefetch half cannot keep ahead of the executor under load.
-- **Site:** `mod.rs:474` serial `while let Some(range) = provider.next_range(...)`, each
-  `pipeline_step` awaited before the next (comment at `mod.rs:473` "Serial for now").
-- **Fix:** drive N concurrent `pipeline_step`s bounded by the same RSS admission gate.
+#### 5. Predictive pipeline builds sub-ranges serially — FIXED (`3e4fd211`)
+Spec §4.2 step 4 ("Bounded concurrency. Multiple sub-range builds run concurrently") is now
+implemented, so the prefetch half can keep ahead of the executor under load. The pipeline
+task collects the ready sub-ranges with a sequential cursor walk, then builds them
+concurrently, capped at `max_concurrent_builds` (default `--max-concurrent-units`), with the
+shared RSS admission gate as the real governor of how many run at once.
+- **Sites:** `mod.rs:513` collects ready ranges (`while let Some(range) =
+  provider.next_range(...)`); `mod.rs:520-521` drives the builds via
+  `for_each_concurrent(max_concurrent_builds, ...)`; fan-out default at `mod.rs:505-506`; each
+  `pipeline_step` still awaits `admission.admit(WorkKind::Build, ..)` (`pipeline.rs:51`).
 
 #### 6. Single global `max_cost_per_gas`, not per-`WorkKind` — FIXED
 Build and execute footprints differ ~10×; the old single learned coefficient (folded by a
