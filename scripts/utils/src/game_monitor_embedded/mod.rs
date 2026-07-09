@@ -9,20 +9,20 @@
 //! two loops that never call each other directly — they meet only at the on-disk witness
 //! cache (keyed `chain_id/start/end/da_type`; the DA discriminator comes from `da_type`):
 //!
-//! * **Predictive pipeline** (proactive, a spawned task). A [`ReadyRangeProvider`] predicts
-//!   the next game window from the proposal cadence, splits it into safe-head sub-ranges
-//!   anchored at the window start, and hands out each sub-range once it is soundly
-//!   finalized (L2 past its end, L1 past its `l1_head + buffer`). [`pipeline::pipeline_step`]
-//!   builds the witness and SP1 stdin for each and caches both — running *ahead* of the
-//!   executor so the stdin is usually already on disk when the game arrives. Builds run
-//!   concurrently (bounded by `--max-concurrent-builds`, default the admission unit cap),
-//!   with the shared memory admission gate governing how many actually run at once.
+//! * **Predictive pipeline** (proactive, a spawned task). A [`ReadyRangeProvider`] predicts the
+//!   next game window from the proposal cadence, splits it into safe-head sub-ranges anchored at
+//!   the window start, and hands out each sub-range once it is soundly finalized (L2 past its end,
+//!   L1 past its `l1_head + buffer`). [`pipeline::pipeline_step`] builds the witness and SP1 stdin
+//!   for each and caches both — running *ahead* of the executor so the stdin is usually already on
+//!   disk when the game arrives. Builds run concurrently (bounded by `--max-concurrent-builds`,
+//!   default the admission unit cap), with the shared memory admission gate governing how many
+//!   actually run at once.
 //!
-//! * **Reactive executor** (the main loop). Polls the dispute-game factory for newly
-//!   finalized games, applies the discover→execute `--delay`, then spawns each due game as
-//!   a task. [`executor::execute_game`] splits the real game into the same safe-head
-//!   sub-ranges, loads each prebuilt stdin from the cache (building on a miss), runs the
-//!   SP1 execute over the sub-ranges concurrently, and aggregates the stats.
+//! * **Reactive executor** (the main loop). Polls the dispute-game factory for newly finalized
+//!   games, applies the discover→execute `--delay`, then spawns each due game as a task.
+//!   [`executor::execute_game`] splits the real game into the same safe-head sub-ranges, loads each
+//!   prebuilt stdin from the cache (building on a miss), runs the SP1 execute over the sub-ranges
+//!   concurrently, and aggregates the stats.
 //!
 //! Because the pipeline anchors its splits at the proposal boundary, its sub-range
 //! boundaries match the executor's, the cache keys line up, and the happy path is a hit.
@@ -75,14 +75,15 @@ pub mod admission;
 pub mod discovery;
 pub mod executor;
 pub mod pipeline;
-pub mod ready_range_provider;
 pub mod readiness;
+pub mod ready_range_provider;
 pub mod registry;
 pub mod rss_source;
 pub mod state;
 
 use std::{
     collections::{HashSet, VecDeque},
+    panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant, SystemTime},
@@ -94,6 +95,7 @@ use alloy_provider::ProviderBuilder;
 use anyhow::Context;
 use clap::Parser;
 use fault_proof::contract::DisputeGameFactory::DisputeGameFactoryInstance;
+use futures::{FutureExt, StreamExt};
 use op_succinct_common::SequenceTracker;
 use op_succinct_estimator::{
     memory::read_cgroup_budget_bytes, network_call_with_timeout, DaType, Estimator, WitnessCache,
@@ -104,7 +106,6 @@ use op_succinct_host_utils::{
     stats::ExecutionStats,
 };
 use op_succinct_proof_utils::initialize_host;
-use futures::StreamExt;
 use tokio::sync::mpsc;
 use tracing::Instrument;
 
@@ -255,7 +256,13 @@ enum GameTaskResult {
     WrongType { pg: PendingGame, game_type: u32 },
     /// Transient execution failure: apply the two-tier requeue policy. Carries the game's
     /// block range so a move to the background queue records it (for cache protection).
-    Transient { pg: PendingGame, created_at: SystemTime, start_block: u64, end_block: u64, error: String },
+    Transient {
+        pg: PendingGame,
+        created_at: SystemTime,
+        start_block: u64,
+        end_block: u64,
+        error: String,
+    },
     /// Fatal execution failure: advance the frontier (never stall), drop background entry.
     Fatal { pg: PendingGame, error: String },
     /// Pre-execution transient condition (L2 behind, control-plane blip): re-queue the
@@ -417,6 +424,47 @@ fn apply_requeue(
     Ok(())
 }
 
+/// Run a spawned game task's body, converting a panic into a `Transient` result instead of
+/// letting it unwind the task. The main loop frees a game's concurrency slot only when the task
+/// reports a result (`running_games.remove`), so an uncaught panic would send nothing and leak
+/// the slot forever — enough of them wedge the monitor (item #23). A panic is treated as
+/// transient: the two-tier retry recovers a flaky-dependency panic and bounds a deterministic one
+/// (retry budget -> background -> age-out). `recovery_pg` is a clone kept outside `body`, since
+/// `body` moves its own `pg` and it is gone once the task unwinds; the game's block range is
+/// unknown here, so it defaults (an un-ranged background entry is simply unprotected).
+async fn catch_game_panic(
+    recovery_pg: PendingGame,
+    body: impl std::future::Future<Output = GameTaskResult>,
+) -> GameTaskResult {
+    match AssertUnwindSafe(body).catch_unwind().await {
+        Ok(result) => result,
+        Err(payload) => {
+            let msg = panic_message(&*payload);
+            tracing::error!(
+                game_index = recovery_pg.game_index,
+                panic = %msg,
+                "game task panicked; requeuing as transient"
+            );
+            GameTaskResult::Transient {
+                pg: recovery_pg,
+                created_at: SystemTime::now(),
+                start_block: 0,
+                end_block: 0,
+                error: format!("panic: {msg}"),
+            }
+        }
+    }
+}
+
+/// Best-effort message from a caught panic payload; `&str` / `String` cover virtually all panics.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".to_string())
+}
+
 /// Run the embedded game monitor: build shared resources once, spawn the predictive
 /// pipeline, and run the discovery/execute/retry loop.
 pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
@@ -481,15 +529,15 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
             tracing::info!("no finalized games yet; predictive pipeline not seeded");
             None
         }
-        Some(latest_index) => match fetch_game_data(latest_index, &factory, l1_provider.clone())
-            .await
-        {
-            Ok(game_data) => Some(game_data.end_block),
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to fetch latest game; predictive pipeline not seeded");
-                None
+        Some(latest_index) => {
+            match fetch_game_data(latest_index, &factory, l1_provider.clone()).await {
+                Ok(game_data) => Some(game_data.end_block),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to fetch latest game; predictive pipeline not seeded");
+                    None
+                }
             }
-        },
+        }
     };
 
     // ── Predictive pipeline task ───────────────────────────────────────────
@@ -726,87 +774,105 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
             // runs — including bridged `log::` lines from host.run/execute deep in the
             // libraries — carries `game` + `attempt`, and the per-range child spans add
             // `range`. Created before `pg` is moved into the task.
-            let game_span =
-                tracing::info_span!("game", index = pg.game_index, attempt = ?pg.kind);
-            tokio::spawn(async move {
-                // Bound the control-plane game-data read; a timeout is a transient defer.
-                let fetched = network_call_with_timeout(timeout_secs, "fetch_game_data", async {
-                    Ok(fetch_game_data(pg.game_index, &factory, l1_provider.clone()).await)
-                })
-                .await;
-                let result = match fetched {
-                    Err(e) => {
-                        tracing::warn!(
-                            game_index = pg.game_index,
-                            error = %e,
-                            "fetch_game_data timed out; will retry"
-                        );
-                        GameTaskResult::Defer { pg }
-                    }
-                    Ok(Ok(game)) => {
-                        // Soundness gate: defer until the game's end block is finalized on L2
-                        // AND L1 has finalized past its `l1_head + buffer` (so the witness's
-                        // baked-in l1_head is deterministic). Not-ready or a control-plane blip
-                        // both re-queue without spending retry budget.
-                        match readiness::range_ready(
-                            &fetcher,
-                            game.end_block,
-                            estimator.safe_db_fallback,
-                        )
-                        .await
-                        {
+            let game_span = tracing::info_span!("game", index = pg.game_index, attempt = ?pg.kind);
+            tokio::spawn(
+                async move {
+                    // Recover a panic anywhere in the task body (fetch / readiness / execute /
+                    // on-demand build, incl. panics deep in kona/sp1) into a `Transient` result so
+                    // the main loop's slot release still runs; without this a
+                    // panicking task sends no result and permanently leaks its
+                    // concurrency slot (item #23).
+                    let recovery_pg = pg.clone();
+                    let result = catch_game_panic(recovery_pg, async move {
+                        // Bound the control-plane game-data read; a timeout is a transient defer.
+                        let fetched =
+                            network_call_with_timeout(timeout_secs, "fetch_game_data", async {
+                                Ok(fetch_game_data(pg.game_index, &factory, l1_provider.clone())
+                                    .await)
+                            })
+                            .await;
+                        match fetched {
                             Err(e) => {
                                 tracing::warn!(
                                     game_index = pg.game_index,
                                     error = %e,
-                                    "readiness check failed; will retry"
+                                    "fetch_game_data timed out; will retry"
                                 );
                                 GameTaskResult::Defer { pg }
                             }
-                            Ok(false) => {
-                                tracing::debug!(
-                                    game_index = pg.game_index,
-                                    end_block = game.end_block,
-                                    "deferring game: end block not finalized on L2/L1 yet"
-                                );
-                                GameTaskResult::Defer { pg }
-                            }
-                            Ok(true) => match execute_game(
-                                &estimator, &fetcher, &admission, &game, batch_size,
-                            )
-                            .await
-                            {
-                                Ok((stats, ranges)) => {
-                                    GameTaskResult::Success { pg, stats: Box::new(stats), ranges }
+                            Ok(Ok(game)) => {
+                                // Soundness gate: defer until the game's end block is finalized on
+                                // L2 AND L1 has finalized past its
+                                // `l1_head + buffer` (so the witness's
+                                // baked-in l1_head is deterministic). Not-ready or a control-plane
+                                // blip both re-queue without
+                                // spending retry budget.
+                                match readiness::range_ready(
+                                    &fetcher,
+                                    game.end_block,
+                                    estimator.safe_db_fallback,
+                                )
+                                .await
+                                {
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            game_index = pg.game_index,
+                                            error = %e,
+                                            "readiness check failed; will retry"
+                                        );
+                                        GameTaskResult::Defer { pg }
+                                    }
+                                    Ok(false) => {
+                                        tracing::debug!(
+                                            game_index = pg.game_index,
+                                            end_block = game.end_block,
+                                            "deferring game: end block not finalized on L2/L1 yet"
+                                        );
+                                        GameTaskResult::Defer { pg }
+                                    }
+                                    Ok(true) => match execute_game(
+                                        &estimator, &fetcher, &admission, &game, batch_size,
+                                    )
+                                    .await
+                                    {
+                                        Ok((stats, ranges)) => GameTaskResult::Success {
+                                            pg,
+                                            stats: Box::new(stats),
+                                            ranges,
+                                        },
+                                        Err(e) if e.is_transient() => GameTaskResult::Transient {
+                                            pg,
+                                            created_at: game.created_at,
+                                            start_block: game.start_block,
+                                            end_block: game.end_block,
+                                            error: format!("{e}"),
+                                        },
+                                        Err(e) => {
+                                            GameTaskResult::Fatal { pg, error: format!("{e}") }
+                                        }
+                                    },
                                 }
-                                Err(e) if e.is_transient() => GameTaskResult::Transient {
-                                    pg,
-                                    created_at: game.created_at,
-                                    start_block: game.start_block,
-                                    end_block: game.end_block,
-                                    error: format!("{e}"),
-                                },
-                                Err(e) => GameTaskResult::Fatal { pg, error: format!("{e}") },
-                            },
+                            }
+                            Ok(Err(FetchGameError::WrongGameType { game_type, .. })) => {
+                                GameTaskResult::WrongType { pg, game_type }
+                            }
+                            Ok(Err(FetchGameError::Other(e))) => {
+                                tracing::warn!(
+                                    game_index = pg.game_index,
+                                    error = %e,
+                                    "failed to fetch game data; will retry"
+                                );
+                                GameTaskResult::Defer { pg }
+                            }
                         }
-                    }
-                    Ok(Err(FetchGameError::WrongGameType { game_type, .. })) => {
-                        GameTaskResult::WrongType { pg, game_type }
-                    }
-                    Ok(Err(FetchGameError::Other(e))) => {
-                        tracing::warn!(
-                            game_index = pg.game_index,
-                            error = %e,
-                            "failed to fetch game data; will retry"
-                        );
-                        GameTaskResult::Defer { pg }
-                    }
-                };
-                // The receiver lives for the whole process; a send error only means
-                // shutdown, in which case dropping the result is fine.
-                let _ = tx.send(result);
-            }
-            .instrument(game_span));
+                    })
+                    .await;
+                    // The receiver lives for the whole process; a send error only means
+                    // shutdown, in which case dropping the result is fine.
+                    let _ = tx.send(result);
+                }
+                .instrument(game_span),
+            );
         }
         pending_games = remaining;
 
@@ -890,5 +956,35 @@ mod tests {
         let eligible_at = SystemTime::now() + Duration::from_secs(3600);
         assert!(!super::is_prune_eligible(SystemTime::now(), eligible_at));
         assert!(super::is_prune_eligible(eligible_at + Duration::from_secs(1), eligible_at));
+    }
+
+    #[tokio::test]
+    async fn panicking_game_body_is_caught_as_transient() {
+        let pg = PendingGame {
+            executable_at: Instant::now(),
+            game_index: 42,
+            kind: AttemptKind::Primary { retries: 0 },
+        };
+        let result = catch_game_panic(pg, async { panic!("boom in kona") }).await;
+        match result {
+            GameTaskResult::Transient { pg, error, .. } => {
+                assert_eq!(pg.game_index, 42);
+                assert!(error.contains("boom in kona"), "unexpected error: {error}");
+            }
+            _ => panic!("expected a Transient result from a panicking body"),
+        }
+    }
+
+    #[tokio::test]
+    async fn non_panicking_game_body_passes_through() {
+        let pg = PendingGame {
+            executable_at: Instant::now(),
+            game_index: 7,
+            kind: AttemptKind::Primary { retries: 0 },
+        };
+        let body_pg = pg.clone();
+        let result =
+            catch_game_panic(pg, async move { GameTaskResult::Defer { pg: body_pg } }).await;
+        assert!(matches!(result, GameTaskResult::Defer { .. }));
     }
 }
