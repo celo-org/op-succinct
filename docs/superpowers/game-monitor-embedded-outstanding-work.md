@@ -37,6 +37,31 @@ branch; line numbers are current as of that branch. Module path:
 
 ### Important
 
+#### 23. A panicking game task leaks its concurrency slot → permanent execute deadlock
+Highest severity — observed wedging chaos-testnet for 8+ hours with zero completions. Each game
+runs in a spawned task that reports its outcome exactly once via `tx.send(result)` (`mod.rs:807`),
+and the main loop frees the game's slot only when that result arrives (`running_games.remove`,
+`mod.rs:574`). If `execute_game` **panics** (`mod.rs:774`) instead of returning `Err` — e.g. a hard
+`unwrap` deep in kona during on-demand witness build — the task unwinds before the send, so no
+`GameTaskResult` is ever emitted and the slot is never released. There is no `catch_unwind` or
+`JoinSet`/`JoinHandle` tracking. Once `max_concurrent_games` panics accumulate, `running_games` is
+permanently full, the spawn guard (`mod.rs:711`, `running_games.len() < max_concurrent_games`) is
+always false, and no game is scheduled again: `executing=N, active_executes=0`, watermark frozen,
+`pending` unbounded — while the main loop and the *separate* prebuild pipeline keep running, so the
+pod still looks alive.
+- **Evidence:** 2026-07-09 incident — 5× `thread 'tokio-rt-worker' panicked at
+  kona/.../providers-alloy/src/blobs.rs:61: Failed to load genesis time from beacon client:
+  Backend("HTTP request failed: error decoding response body")` between 00:23–00:29 UTC leaked all
+  5 slots; last `game executed` 00:28:54 UTC, then wedged 8.7 h with the loop still polling.
+- **Trigger vs bug:** the beacon-client HTTP flake is transient; the monitor converts it into a
+  permanent deadlock via the slot leak. (kona's `unwrap` is upstream under `~/.cargo` — not ours.)
+- **Fix (two options, to be decided):** (a) wrap the task body in
+  `AssertUnwindSafe(..).catch_unwind()` and translate a panic into a `Transient`/`Fatal`
+  `GameTaskResult` so the slot frees and requeues; (b) track tasks in a `JoinSet` and reclaim the
+  slot when a handle resolves to a panic/cancel. Either makes the leak impossible regardless of what
+  panics downstream. Secondary: a watchdog / liveness probe (#2/#4) would auto-restart, and a more
+  reliable L1 beacon endpoint removes the trigger.
+
 #### 1. `get_l2_block_data_range` panics on a missing block — FIXED (`20d92420`)
 A transient L2 RPC returning `Ok(None)` panicked the whole daemon. The `.unwrap()` at
 `utils/host/src/fetcher.rs:269` is now `.ok_or_else(|| anyhow!("L2 block {block_number} not
