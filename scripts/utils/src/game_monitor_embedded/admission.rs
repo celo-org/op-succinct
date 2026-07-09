@@ -81,8 +81,8 @@ impl CostModel {
     /// cost. A zero (unknown) cost would under-project, so admission stays serial for a kind
     /// until at least one pure sample of it has been observed.
     fn known_for(&self, build_gas: u64, execute_gas: u64) -> bool {
-        (build_gas == 0 || self.cost_per_gas_build > 0.0)
-            && (execute_gas == 0 || self.cost_per_gas_execute > 0.0)
+        (build_gas == 0 || self.cost_per_gas_build > 0.0) &&
+            (execute_gas == 0 || self.cost_per_gas_execute > 0.0)
     }
 }
 
@@ -258,9 +258,9 @@ impl Admission {
     /// Project total resident memory for the in-flight set `(build_gas, execute_gas)` (which
     /// already includes the unit under consideration), charging each kind its own cost.
     fn project(&self, model: &CostModel, build_gas: u64, execute_gas: u64) -> u64 {
-        (self.baseline_bytes as f64
-            + model.cost_per_gas_build * build_gas as f64
-            + model.cost_per_gas_execute * execute_gas as f64) as u64
+        (self.baseline_bytes as f64 +
+            model.cost_per_gas_build * build_gas as f64 +
+            model.cost_per_gas_execute * execute_gas as f64) as u64
     }
 
     /// Whether `projected` plus the margin fits the budget. Unlimited budget always fits.
@@ -288,7 +288,8 @@ impl Admission {
         if se == 0 && sb as f64 >= MIN_SAMPLE_GAS {
             model.episode_peak_build = model.episode_peak_build.max(net / sb as f64);
         } else if model.episode_peak_build > 0.0 {
-            model.cost_per_gas_build = fold_ewma(model.cost_per_gas_build, model.episode_peak_build);
+            model.cost_per_gas_build =
+                fold_ewma(model.cost_per_gas_build, model.episode_peak_build);
             model.samples_build += 1;
             model.episode_peak_build = 0.0;
         }
@@ -452,7 +453,7 @@ mod tests {
             let _b = AdmitGuard::new(adm.registry.clone(), WorkKind::Build, 1_000);
             adm.observe(10_000); // peak = 10_000 / 1_000 = 10
             adm.observe(5_000); // lower ratio doesn't lower the peak
-            // Episode still open → EWMA not updated yet.
+                                // Episode still open → EWMA not updated yet.
             assert_eq!(adm.cost.lock().unwrap().cost_per_gas_build, 0.0);
         }
         // Episode ended (registry empty) → fold the peak; first sample seeds the EWMA at 10.
@@ -503,7 +504,10 @@ mod tests {
         // With alpha=0.1: 0.9*10 + 0.1*100 = 19.
         episode(100_000);
         let after_outlier = adm.cost.lock().unwrap().cost_per_gas_build;
-        assert!((after_outlier - 19.0).abs() < 1e-9, "outlier should move it boundedly, got {after_outlier}");
+        assert!(
+            (after_outlier - 19.0).abs() < 1e-9,
+            "outlier should move it boundedly, got {after_outlier}"
+        );
 
         // Subsequent normal episodes decay the outlier back down toward 10.
         for _ in 0..5 {
