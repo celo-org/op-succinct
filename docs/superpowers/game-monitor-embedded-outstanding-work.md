@@ -181,6 +181,22 @@ Primary discovery applies `--delay`; background drains set `executable_at: Insta
   `cost_estimator.rs`, `gen_sp1_test_artifacts.rs`, and prove tests, never by
   `game_monitor_embedded`. Low priority; listed for completeness.
 
+#### 27. Above-watermark completions are not persisted (re-run after restart)
+Successful executions ahead of the contiguous watermark live only in `SequenceTracker`'s in-memory
+`pending: HashSet<u64>` (`sequence_tracker.rs:9`, advanced in `add()` at `:24-34`). `ProgressState`
+persists only `last_contiguous` + `background_retries` (`state.rs:38-43`); `save_progress` writes
+`tracker.end()` (`state.rs:124`), never the `pending` set. On restart `resume_index` returns
+`last_contiguous + 1` (`state.rs:106`) with an empty tracker, so every out-of-order success from the
+watermark up is re-discovered and re-executed. Idempotent and usually cache-cheap (witness/stdin
+cache survives on the PVC), but wasteful — and a genuine re-compute if that range's stdin was
+pruned/evicted or the PVC was wiped. Amplified by newest-first scheduling, which keeps the watermark
+trailing and the above-watermark set large.
+- **Fix:** serialize the above-watermark set — add a `pending: Vec<u64>` to `ProgressState` and an
+  accessor on `SequenceTracker`, rehydrate it on resume so already-executed games are skipped (still
+  re-scan from `last_contiguous + 1`, but short-circuit any index already in the restored set).
+- **Relates to:** #26 (scheduling) and the watermark trade-off. Low risk, contained to
+  `sequence_tracker.rs` + `state.rs`.
+
 ### Testing
 
 #### 15. Parity test checks shape only
