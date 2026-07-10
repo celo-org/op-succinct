@@ -256,6 +256,47 @@ cached proof instead of recomputing.
   input-hash-keyed cache (persisted alongside the witness cache); consult before proving.
 - **Status:** promoted from spec §12 (deferred) to an active todo.
 
+#### 26. Cache-fronted scheduling: LIFO games + per-type FIFO-priority / LIFO-speculative queues
+Reshapes prioritization around two result caches — a **witness cache** and a **proof cache** —
+both fillable ahead of a game landing on-chain (the proposer's ranges and their splits are
+predictable from chain progression). Replaces today's unordered admission poll-race
+(`admission.rs:184-255`), which has no game/kind ordering and lets the prebuild pipeline
+(`max_concurrent_builds` defaults to the whole gate, `mod.rs:505-506`) starve real executes
+(observed `active_witness=6` vs `active_prove=2` at startup).
+
+Model:
+- **Per work type (witness build, proof execute)** a worker pool drains two feeders in strict
+  order: (1) an **on-demand FIFO priority queue** — ranges a currently-executing game needs that
+  are not cached and not already in flight; (2) a **speculative LIFO queue** — fed only by chain
+  progression, newest available range pushed to the front. Workers pull from the FIFO priority
+  queue first; only when it is empty do they pull from the LIFO speculative queue.
+- **Games** sit on their own **LIFO queue** (newest first). Pop a game → look up its components in
+  the caches: all present → it completes almost instantly (assemble cached results); anything
+  missing (and not already in flight) → enqueue those pieces onto the FIFO priority queue for the
+  relevant type (witness and/or proof).
+
+Why: games LIFO ⇒ newest games start first; FIFO-priority-before-LIFO-speculative ⇒ once a game is
+underway its dependencies leap ahead of all speculative work; the priority queue is **FIFO, not
+LIFO**, so components are served in the order games demanded them — an in-flight game's needs are
+satisfied before a later-started game's, so newer games / new speculative work cannot starve a game
+already executing. Speculative pre-compute only ever consumes spare capacity.
+
+Subsumes/relates to: the prove-priority + depth-first concern (raised against the current gate);
+generalises the prebuild pipeline (#5) and speculative execute (#24) into the two LIFO-speculative
+feeders; the proof cache is where #24's `ExecutionStats` would live.
+
+Open questions for the plan:
+- **Capacity:** queues are per-type, but do witness-build and proof-execute share one
+  memory/concurrency budget (today's single admission gate) or become independent pools? They still
+  contend for RAM either way.
+- **Witness→proof dependency:** proving a range needs its witness first — does a proof demand for an
+  un-built range promote a witness demand that feeds it, or does the proof worker build inline on a
+  miss (as `execute_range` does today)?
+- **Watermark:** newest-first keeps the contiguous completion watermark trailing (oldest games
+  finish last). Accept per-game latency as the goal, or pair with oldest-first selection for
+  watermark progress?
+- **Status:** design captured; not yet planned/implemented.
+
 ---
 
 ## Not gaps (by design / verified benign)
