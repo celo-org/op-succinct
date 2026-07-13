@@ -17,13 +17,12 @@
 //! single function, so the readiness rule lives in exactly one place.
 
 use alloy_eips::BlockId;
-use op_succinct_host_utils::fetcher::OPSuccinctDataFetcher;
+use op_succinct_host_utils::{fetcher::OPSuccinctDataFetcher, host::L1_HEAD_BUFFER};
 
-/// L1 finality buffer (blocks). MUST match the host's `calculate_safe_l1_head` offset
-/// (`+ 20` in `utils/ethereum/host/src/host.rs`): a range is only ready once L1 has finalized
-/// past `l1_head + L1_HEAD_FINALITY_BUFFER`, which is exactly what keeps that host's
-/// `min(l1_head + 20, finalized_l1)` cap from binding.
-pub const L1_HEAD_FINALITY_BUFFER: u64 = 20;
+/// L1 finality buffer (blocks): the host's `calculate_safe_l1_head` read-ahead offset. A range
+/// is only ready once L1 has finalized past `l1_head + L1_HEAD_FINALITY_BUFFER`, which is
+/// exactly what keeps the host's `min(l1_head + L1_HEAD_BUFFER, finalized_l1)` cap from binding.
+pub const L1_HEAD_FINALITY_BUFFER: u64 = L1_HEAD_BUFFER;
 
 /// True once L2 has finalized the range's end block.
 fn l2_finalized(finalized_l2: u64, end_block: u64) -> bool {
