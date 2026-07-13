@@ -197,6 +197,32 @@ trailing and the above-watermark set large.
 - **Relates to:** #26 (scheduling) and the watermark trade-off. Low risk, contained to
   `sequence_tracker.rs` + `state.rs`.
 
+#### 28. Admission `baseline_bytes` is measured once at startup (too early) → mis-calibrated projection
+`baseline_bytes` is read once in `load()` before any work runs (`admission.rs:152-153`) and then
+frozen (`:130`, `:168`). At that instant the process hasn't warmed up (heap/allocator high-water,
+resident buffers), so it captures ~50 MB — while the RSS debug data shows a real steady-state idle
+floor of ~2.5–5 GiB that accumulates afterwards and is never re-measured. With `baseline ≈ 0`,
+`observe()` learns each kind's `cost_per_gas` from `(rss − ~0)/gas` (`:284`), folding the fixed floor
+into the per-gas slope — a through-origin fit to affine data (`rss ≈ F + s·gas`). Net effect:
+`project()` (`:261-263`) under-projects at low concurrency (misses the floor → over-admits) and
+over-projects at high (error ∝ `F·(gas/g_ep − 1)`).
+- **Fix (learn it, don't hardcode):** treat the floor like the costs — an EWMA of *idle* RSS. In
+  `observe()`, when nothing is in flight (`sb == 0 && se == 0`), fold the current `rss` into the
+  baseline via `fold_ewma`/`EWMA_ALPHA`. Idle ticks never fold a cost, so it slots in cleanly beside
+  the per-kind episode logic. Move `baseline_bytes` into `CostModel` (already behind the `self.cost`
+  mutex `observe` holds, and `project` already takes `&CostModel`) so it is mutable, persisted and
+  re-seeded across restarts; keep the startup read as the initial seed. Then `net = rss − baseline`
+  yields the true marginal `cost_per_gas` and `project` becomes a correct `floor + slope·gas` at all
+  concurrency levels.
+- **Edge cases:** never-idle → hold last estimate (the RSS data shows ~12–16% of ticks fully idle, so
+  there is plenty to learn from; avoid a min-over-window fallback that conflates idle with low-work);
+  when the baseline rises, the previously-inflated `cost_per_gas` must re-converge (the EWMA handles
+  it — reset/ignore the persisted model once on first deploy); use EWMA (not min/max) so a transient
+  dip cannot crater the floor.
+- **Evidence:** 20k `admission rss sample` points (09:00–15:30 BST, `sha-dc929b7`) — fixed floor
+  ~2.5–5 GiB vs model baseline ~50 MB (`net_gib ≈ rss_gib − 0.05`).
+- **Relates to:** #6 (per-kind cost model), #26 (scheduling). Contained to `admission.rs`.
+
 ### Testing
 
 #### 15. Parity test checks shape only
