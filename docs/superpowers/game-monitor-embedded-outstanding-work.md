@@ -339,28 +339,31 @@ Open questions for the plan:
   watermark progress?
 - **Status:** design captured; not yet planned/implemented.
 
-#### 29. Kind-aware admission gate (memory-primary + per-kind count backstop) — first step done (`c1baa130`)
+#### 29. Kind-aware admission gate: separate per-kind count caps — first step done (`c1baa130`)
 The shared `max_concurrent` count cap was kind-blind: a build unit (~2 GiB, ~250 B/gas from the RSS
 data) and an execute unit (~8–12 GiB, ~2000 B/gas envelope) each counted as one slot, so the cheap
 prebuild pipeline could hold slots expensive executes needed (`active_witness=6, active_prove=2`).
-Memory is not the only constraint, so the cap stays — but per kind.
-- **Why not just drop the count cap and gate purely on memory:** (1) it's a backstop for model
-  error — the projection is a scattered EWMA (R²≈0.63) and `baseline_bytes` is currently
-  mis-calibrated (#28), so memory-only would over-admit and OOM when it under-projects, and an OOM
-  SIGKILLs an uncancellable execute + restarts the pod; (2) CPU co-limits executes — the cap doubles
-  as a core-oversubscription bound that stays sane across node sizes (memory-only recouples
-  concurrency to whatever RAM the node happens to have); (3) cold start has no trustworthy
-  projection to gate on.
-- **Plan:** keep the memory projection as the primary gate; retain a **per-kind** count cap as the
-  CPU/fd/RPC + model-error backstop; let builds run on a generous/uncoupled allowance (cheap in RAM,
-  already bounded by the pipeline's `max_concurrent_builds` fan-out and by memory).
-- **Done (`c1baa130`):** the count cap is now per-kind — build and execute units are each capped at
-  `max_concurrent` independently, so builds no longer consume execute slots; the memory projection
-  still bounds the two jointly. Tested (`builds_do_not_consume_execute_slots`).
-- **Follow-ups:** a separate/tunable build cap (or reserve execute headroom) rather than reusing
-  `max_concurrent` for both kinds; and once #28 lands a correct baseline, revisit making executes
-  memory-primary with a looser count backstop.
-- **Relates to:** #6 (per-kind cost), #26 (scheduling sits on this gate), #28 (baseline).
+The count caps stay the **primary** concurrency control — memory is too hard to estimate reliably to
+lean on — but they become per-kind and separately sized.
+- **Why the count cap stays primary (not memory-gated):** the memory projection is only a scattered
+  EWMA (R²≈0.63) with a mis-calibrated baseline (#28), so leaning on it would over-admit and OOM when
+  it under-projects — and an OOM SIGKILLs an uncancellable execute + restarts the pod. The count cap
+  is also the CPU/fd/RPC bound the memory model ignores, and cold start has no projection to gate on
+  at all. So memory stays a *secondary* safety bound (a unit must pass both the count cap and
+  `fits`), never the primary knob.
+- **Plan:** give build and execute **separate, independently tunable caps** (distinct config knobs)
+  instead of both reusing `max_concurrent`. Size each to its real footprint — executes to the
+  memory/CPU ceiling, builds looser (cheap in RAM, already bounded by the pipeline's
+  `max_concurrent_builds` fan-out). The memory projection (`fits`) is retained as-is, as the
+  secondary safety bound.
+- **Done (`c1baa130`):** the count cap is now per-kind — build and execute units are each capped
+  independently, so builds no longer consume execute slots; memory still bounds the two jointly.
+  Interim: both kinds still reuse `max_concurrent`. Tested (`builds_do_not_consume_execute_slots`).
+- **Follow-up:** add distinct config for the build vs execute caps (e.g. a gate-side build cap,
+  separate from the pipeline fan-out, plus an execute cap) so each is sized on purpose rather than
+  sharing `max_concurrent`.
+- **Relates to:** #6 (per-kind cost), #26 (scheduling sits on this gate), #28 (baseline — sharpens
+  the *secondary* memory bound, but the caps stay primary).
 
 ---
 
