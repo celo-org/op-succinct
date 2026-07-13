@@ -120,8 +120,10 @@ pub struct AdmissionConfig {
 /// reality and yields a clean pure sample. Until a kind's cost is learned, admission stays
 /// serial for it (an unknown cost is not trusted to project concurrency).
 ///
-/// Independently of memory, a hard `max_concurrent` count caps in-flight units to bound
-/// file descriptors, RPC fan-out, and CPU — the resources the memory model ignores.
+/// Independently of memory, a hard `max_concurrent` count caps in-flight units **per kind**
+/// (builds and executes each get their own budget) to bound file descriptors, RPC fan-out,
+/// and CPU — the resources the memory model ignores — so a cheap build can't consume the slot
+/// an expensive execute needs.
 pub struct Admission {
     budget_bytes: Option<u64>,
     margin_bytes: u64,
@@ -187,7 +189,14 @@ impl Admission {
                 let _decision = self.admit_lock.lock().await;
                 let (sb, se) = self.registry.snapshot();
                 let registry_empty = sb == 0 && se == 0;
-                let within_count = self.registry.in_flight() < self.max_concurrent;
+                // Count cap is per kind: a cheap build must not consume a slot an expensive
+                // execute needs (builds are ~10-20x lighter in RAM — see the RSS
+                // characterisation). The `fits` projection below still bounds the two jointly.
+                let (build_units, execute_units) = self.registry.units();
+                let within_count = match kind {
+                    WorkKind::Build => build_units < self.max_concurrent,
+                    WorkKind::Execute => execute_units < self.max_concurrent,
+                };
 
                 let model = *self.cost.lock().unwrap();
                 // Gas of each kind in flight AFTER admitting this unit.
@@ -580,20 +589,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn count_cap_bounds_concurrency_even_when_memory_fits() {
+    async fn count_cap_bounds_concurrency_per_kind_even_when_memory_fits() {
         let dir = tempfile::tempdir().unwrap();
-        // Unlimited budget → memory never gates. Only the count cap (2) can bound concurrency.
+        // Unlimited budget → memory never gates. Only the per-kind count cap (2) bounds it.
         let adm = test_admission(None, 2, dir.path().join("model.json"));
 
-        let g1 = adm.admit(WorkKind::Build, 1).await;
+        let g1 = adm.admit(WorkKind::Execute, 1).await;
         let g2 = adm.admit(WorkKind::Execute, 1).await;
-        assert_eq!(adm.registry.in_flight(), 2);
+        assert_eq!(adm.registry.units(), (0, 2));
 
-        // Third admit must block at the cap.
-        let blocked = adm.admit(WorkKind::Build, 1);
+        // A third execute must block at the execute cap.
+        let blocked = adm.admit(WorkKind::Execute, 1);
         tokio::pin!(blocked);
         tokio::select! {
-            _ = &mut blocked => panic!("third admit should block at the concurrency cap"),
+            _ = &mut blocked => panic!("third execute should block at the per-kind cap"),
             _ = tokio::time::sleep(Duration::from_millis(30)) => {}
         }
 
@@ -602,9 +611,38 @@ mod tests {
         let g3 = tokio::time::timeout(Duration::from_millis(200), &mut blocked)
             .await
             .expect("admit should proceed once a slot frees");
-        assert_eq!(adm.registry.in_flight(), 2);
+        assert_eq!(adm.registry.units(), (0, 2));
         drop(g2);
         drop(g3);
+    }
+
+    #[tokio::test]
+    async fn builds_do_not_consume_execute_slots() {
+        let dir = tempfile::tempdir().unwrap();
+        // Unlimited budget → only the per-kind count cap (2) gates.
+        let adm = test_admission(None, 2, dir.path().join("model.json"));
+
+        // Fill the build cap.
+        let _b1 = adm.admit(WorkKind::Build, 1).await;
+        let _b2 = adm.admit(WorkKind::Build, 1).await;
+        assert_eq!(adm.registry.units(), (2, 0));
+
+        // Executes still admit with the build cap full — builds hold their own slots.
+        let _e1 = tokio::time::timeout(Duration::from_millis(200), adm.admit(WorkKind::Execute, 1))
+            .await
+            .expect("execute must admit even when the build cap is full");
+        let _e2 = tokio::time::timeout(Duration::from_millis(200), adm.admit(WorkKind::Execute, 1))
+            .await
+            .expect("execute must admit even when the build cap is full");
+        assert_eq!(adm.registry.units(), (2, 2));
+
+        // The execute cap is now full → a third execute blocks (its own cap, not the builds').
+        let blocked = adm.admit(WorkKind::Execute, 1);
+        tokio::pin!(blocked);
+        tokio::select! {
+            _ = &mut blocked => panic!("third execute should block at the execute cap"),
+            _ = tokio::time::sleep(Duration::from_millis(30)) => {}
+        }
     }
 
     #[tokio::test]
