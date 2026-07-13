@@ -86,7 +86,7 @@ impl ReadyRangeProvider {
 
         let range = sub_ranges[idx].clone();
 
-        // Soundness gate (shared with the executor): defer until the range end is finalized on
+        // Readiness gate (shared with the executor): defer until the range end is finalized on
         // L2 AND L1 has finalized past its `l1_head + buffer`. Ranges are emitted in order and
         // both conditions are monotonic in `range.end`, so if this one isn't ready none after it
         // are either — wait rather than skip. A transient RPC failure is treated the same.

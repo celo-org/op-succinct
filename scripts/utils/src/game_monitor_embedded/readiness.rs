@@ -1,12 +1,17 @@
-//! Shared soundness gate for building/executing a range.
+//! Shared readiness gate for building/executing a range.
 //!
 //! A range (a pipeline sub-range, or a game's `[start, end]`) may only be built or executed
 //! once it is *finalized on both sides*:
-//!   * its **end block is finalized on L2**, so the L2 data needed to derive it is available; and
+//!   * its **end block is finalized on L2**, so the batch covering it is already in finalized
+//!     L1 and the data needed to derive it is available; and
 //!   * **L1 has finalized past its `l1_head + buffer`**, so the host's `calculate_safe_l1_head`
-//!     finality cap (`min(l1_head + 20, finalized_l1)`) never binds and the baked-in `l1_head` is
-//!     deterministic — i.e. equals what a later executor recomputes, keeping the (l1_head-free)
-//!     witness cache key sound.
+//!     finality cap (`min(l1_head + 20, finalized_l1)`) never binds and the witness gets the
+//!     host's full `+ 20` read-ahead slack. Derivation can need L1 blocks beyond the
+//!     batch-posting block (the reason for the `+ 20` is unexplained; see the FIXME in
+//!     `utils/ethereum/host/src/host.rs`) and cannot walk past the baked-in `l1_head`, so a
+//!     capped head risks a failed `host.run` near the finality frontier. A minor bonus: the
+//!     baked-in head no longer depends on when the witness is built, so an evicted blob
+//!     rebuilds identically.
 //!
 //! Both the predictive pipeline (`ready_range_provider`) and the reactive executor gate on this
 //! single function, so the readiness rule lives in exactly one place.
@@ -30,7 +35,7 @@ fn l1_head_finalized(l1_head: u64, finalized_l1: u64, buffer: u64) -> bool {
     l1_head + buffer <= finalized_l1
 }
 
-/// Whether the range/game ending at `end_block` is soundly ready to build or execute: its end
+/// Whether the range/game ending at `end_block` is ready to build or execute: its end
 /// block is finalized on L2 AND L1 is finalized past its `l1_head + [`L1_HEAD_FINALITY_BUFFER`]`.
 ///
 /// A transient RPC failure surfaces as `Err`; callers treat that the same as "not ready"

@@ -801,12 +801,11 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
                                 GameTaskResult::Defer { pg }
                             }
                             Ok(Ok(game)) => {
-                                // Soundness gate: defer until the game's end block is finalized on
-                                // L2 AND L1 has finalized past its
-                                // `l1_head + buffer` (so the witness's
-                                // baked-in l1_head is deterministic). Not-ready or a control-plane
-                                // blip both re-queue without
-                                // spending retry budget.
+                                // Readiness gate: defer until the game's end block is finalized on
+                                // L2 AND L1 has finalized past its `l1_head + buffer` (so the
+                                // host's finality cap can't shrink the `+ 20` derivation
+                                // read-ahead slack). Not-ready or a control-plane blip both
+                                // re-queue without spending retry budget.
                                 match readiness::range_ready(
                                     &fetcher,
                                     game.end_block,
