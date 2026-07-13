@@ -5,7 +5,10 @@ use alloy_primitives::B256;
 use anyhow::Result;
 use async_trait::async_trait;
 use celo_host::single::CeloSingleChainHost;
-use op_succinct_host_utils::{fetcher::OPSuccinctDataFetcher, host::OPSuccinctHost};
+use op_succinct_host_utils::{
+    fetcher::OPSuccinctDataFetcher,
+    host::{OPSuccinctHost, L1_HEAD_BUFFER},
+};
 
 use crate::witness_generator::EigenDAWitnessGenerator;
 
@@ -68,7 +71,7 @@ impl OPSuccinctHost for EigenDAOPSuccinctHost {
         let (_, l1_head_number) = fetcher.get_l1_head(l2_end_block, safe_db_fallback).await?;
 
         // Add a buffer for EigenDA similar to Ethereum DA.
-        let l1_head_number = l1_head_number + 20;
+        let l1_head_number = l1_head_number + L1_HEAD_BUFFER;
 
         // Ensure we don't exceed the finalized L1 header.
         let finalized_l1_header = fetcher.get_l1_header(BlockId::finalized()).await?;

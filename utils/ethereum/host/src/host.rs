@@ -7,7 +7,10 @@ use anyhow::Result;
 use async_trait::async_trait;
 use celo_host::single::CeloSingleChainHost;
 use op_succinct_ethereum_client_utils::executor::ETHDAWitnessExecutor;
-use op_succinct_host_utils::{fetcher::OPSuccinctDataFetcher, host::OPSuccinctHost};
+use op_succinct_host_utils::{
+    fetcher::OPSuccinctDataFetcher,
+    host::{OPSuccinctHost, L1_HEAD_BUFFER},
+};
 
 #[derive(Clone)]
 pub struct SingleChainOPSuccinctHost {
@@ -68,7 +71,7 @@ impl OPSuccinctHost for SingleChainOPSuccinctHost {
         // FIXME(fakedev9999): Investigate requirement for L1 head offset beyond batch posting block
         // with safe head > L2 end block.
         // Add a small buffer for Ethereum DA.
-        let l1_head_number = l1_head_number + 20;
+        let l1_head_number = l1_head_number + L1_HEAD_BUFFER;
 
         // Ensure we don't exceed the finalized L1 header.
         let finalized_l1_header = fetcher.get_l1_header(BlockId::finalized()).await?;
