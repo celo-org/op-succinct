@@ -29,6 +29,10 @@ branch; line numbers are current as of that branch. Module path:
 | Admission liveness floor: a poisoned `max_cost_per_gas` can no longer wedge admission | `6863f30d` |
 | SP1 executor logs attributed to the `execute` span (entered inside `spawn_blocking`) | `09d4de7a` |
 | Per-kind admission cost model (Build vs Execute), `alpha` removed; readable GiB logs (item #6) | `cec85b11` |
+| Admission cost is an EWMA (α=0.1) of per-episode peak bytes/gas, not a running max (item #6) | `c3c40601` |
+| Shared L2+L1 readiness gate extracted to `readiness.rs` (items #3, #10) | `f1a6ba85` |
+| `--delay` renamed `--retry-backoff-delay`; discovery no longer delays, only the retry path does (item #13) | `d034b638` |
+| Per-kind admission concurrency cap so builds don't starve executes (item #29) | `c1baa130` |
 | Concurrent predictive prebuild pipeline, gated by the shared memory admission gate (item #5) | `3e4fd211` |
 | Game-task panics caught and requeued as Transient — no more slot leak / wedge (item #23) | `763a641e` |
 
@@ -40,13 +44,13 @@ branch; line numbers are current as of that branch. Module path:
 
 #### 23. A panicking game task leaks its concurrency slot → permanent execute deadlock — FIXED (`763a641e`)
 Was highest severity — observed wedging chaos-testnet for 8+ hours with zero completions. Each game
-runs in a spawned task that reports its outcome exactly once via `tx.send(result)` (`mod.rs:807`),
+runs in a spawned task that reports its outcome exactly once via `tx.send(result)` (`mod.rs:872`),
 and the main loop frees the game's slot only when that result arrives (`running_games.remove`,
-`mod.rs:574`). If `execute_game` **panics** (`mod.rs:774`) instead of returning `Err` — e.g. a hard
+`mod.rs:622`). If `execute_game` **panics** (`mod.rs:833`) instead of returning `Err` — e.g. a hard
 `unwrap` deep in kona during on-demand witness build — the task unwinds before the send, so no
 `GameTaskResult` is ever emitted and the slot is never released. There is no `catch_unwind` or
 `JoinSet`/`JoinHandle` tracking. Once `max_concurrent_games` panics accumulate, `running_games` is
-permanently full, the spawn guard (`mod.rs:711`, `running_games.len() < max_concurrent_games`) is
+permanently full, the spawn guard (`mod.rs:759`, `running_games.len() < max_concurrent_games`) is
 always false, and no game is scheduled again: `executing=N, active_executes=0`, watermark frozen,
 `pending` unbounded — while the main loop and the *separate* prebuild pipeline keep running, so the
 pod still looks alive.
@@ -69,15 +73,15 @@ pod still looks alive.
 
 #### 1. `get_l2_block_data_range` panics on a missing block — FIXED (`20d92420`)
 A transient L2 RPC returning `Ok(None)` panicked the whole daemon. The `.unwrap()` at
-`utils/host/src/fetcher.rs:269` is now `.ok_or_else(|| anyhow!("L2 block {block_number} not
+`utils/host/src/fetcher.rs:272` is now `.ok_or_else(|| anyhow!("L2 block {block_number} not
 found"))?`, so it surfaces as a retryable `EstimatorError::Transient`.
 
 #### 2. No watchdog: log if a process runs for too long — DEFERRED
 Nothing tracks per-execute runtime, so a wedged/frozen execute is never surfaced (spec §7,
 §11; plan Task 24). The memory gate is silent and won't catch it, and since SP1 execute
-can't be killed (line 204), a logged alert is what a liveness probe (#4) needs to restart
+can't be killed (spec §7), a logged alert is what a liveness probe (#4) needs to restart
 the pod.
-- **Evidence:** `mod.rs:43` docstring — "there is no watchdog or freeze". No
+- **Evidence:** `mod.rs:44` docstring — "there is no watchdog or freeze". No
   `max_process_duration` anywhere.
 - **Fix:** track each in-flight execute's start time; on overrun emit `tracing::error!`.
   (Don't gate admission — the count cap and memory projection already throttle a stuck
@@ -90,11 +94,13 @@ The daemon no longer uses safe-head splitting at all. Both the executor and the 
 pipeline now split with `split_range_basic` (a pure `start + k*batch_size` chop, anchored at
 the game/window start), so the two splits are identical and the cache keys line up with no
 SafeDB RPCs.
-- **Splitting:** `executor.rs:47` and `ready_range_provider.rs:97` call `split_range_basic`;
+- **Splitting:** `executor.rs:47` and `ready_range_provider.rs:73` call `split_range_basic`;
   the safe-head splitters are gone from the daemon (still used by `cost_estimator.rs`).
-- **Soundness gate:** `ready_range_provider.rs` now calls `get_l1_head(range.end, true)`,
-  which uses SafeDB when present and otherwise falls back to timestamp-based L1-head
-  estimation — matching what the executor's witness bakes in — so the daemon needs no SafeDB.
+- **Soundness gate:** extracted into the shared `readiness.rs` (`f1a6ba85`). `range_ready`
+  (`readiness.rs:40-53`) calls `get_l1_head(range.end, true)` (`readiness.rs:50`), which uses
+  SafeDB when present and otherwise falls back to timestamp-based L1-head estimation — matching
+  what the executor's witness bakes in — so the daemon needs no SafeDB; `ready_range_provider.rs:93`
+  invokes it.
 
 #### 4. No Kubernetes liveness / readiness probes — DEFERRED
 A wedged process is never restarted by k8s.
@@ -110,17 +116,19 @@ implemented, so the prefetch half can keep ahead of the executor under load. The
 task collects the ready sub-ranges with a sequential cursor walk, then builds them
 concurrently, capped at `max_concurrent_builds` (default `--max-concurrent-units`), with the
 shared RSS admission gate as the real governor of how many run at once.
-- **Sites:** `mod.rs:513` collects ready ranges (`while let Some(range) =
-  provider.next_range(...)`); `mod.rs:520-521` drives the builds via
-  `for_each_concurrent(max_concurrent_builds, ...)`; fan-out default at `mod.rs:505-506`; each
+- **Sites:** `mod.rs:561` collects ready ranges (`while let Some(range) =
+  provider.next_range(...)`); `mod.rs:568-569` drives the builds via
+  `for_each_concurrent(max_concurrent_builds, ...)`; fan-out default at `mod.rs:553-554`; each
   `pipeline_step` still awaits `admission.admit(WorkKind::Build, ..)` (`pipeline.rs:51`).
 
 #### 6. Single global `max_cost_per_gas`, not per-`WorkKind` — FIXED
 Build and execute footprints differ ~10×; the old single learned coefficient (folded by a
 fixed `alpha`) was learned from memory-heavy builds and then applied undiscounted to
 executes, over-projecting them ~10× and starving them (observed on chaos-testnet). Admission
-now keeps a `CostModel { cost_per_gas_build, cost_per_gas_execute }`, each a running max
-learned only from **pure single-kind** RSS samples; the projection charges each kind its own
+now keeps a `CostModel { cost_per_gas_build, cost_per_gas_execute }`, each an **EWMA (α=0.1) of
+per-episode peak** bytes/gas learned only from **pure single-kind** RSS samples (`admission.rs:25-38`,
+folded at `:300-311`; `c3c40601` replaced the original running max, which one outlier pinned
+forever); the projection charges each kind its own
 cost. `alpha` / `--build-gas-weight` is removed (per-kind costs make it unnecessary). Until a
 kind's cost is learned, admission stays serial for it. Projection logs now render GiB and log
 grants at INFO, waits at DEBUG.
@@ -130,8 +138,8 @@ grants at INFO, waits at DEBUG.
 #### 7. No `WindowPredictor` / lead-distance cap — WON'T DO
 Window prediction was folded into `ReadyRangeProvider` with no cap; the planned
 `utils/estimator/src/window.rs` and `--max-lead-windows` flag never landed.
-- **Sites:** `ready_range_provider.rs:84` advances `window_start += proposal_interval` with
-  no lead check; no flag in `EmbeddedArgs` (`mod.rs:121-184`). `window.rs` absent.
+- **Sites:** `ready_range_provider.rs:59` advances `window_start += proposal_interval` with
+  no lead check; no flag in `EmbeddedArgs` (`mod.rs:127-208`). `window.rs` absent.
 - **Decision:** not doing it. The pipeline is already implicitly bounded by L2/L1
   finalization, so it cannot run away unboundedly; an explicit lead-distance cap adds no
   practical benefit.
@@ -139,40 +147,44 @@ Window prediction was folded into `ReadyRangeProvider` with no cap; the planned
 #### 8. `execute_range` re-fetches block data on every call — FIXED (`1e03045f`)
 `execute_range` ran `get_l2_block_data_range` for stats on every call, duplicating the fetch
 the executor already does to compute the admission gas key. `execute_range` now takes
-`block_data: &[BlockInfo]` and the executor (`executor.rs:71`) threads in the slice it
+`block_data: &[BlockInfo]` and the executor (`executor.rs:68`) threads in the slice it
 already fetched, halving L2 RPC round-trips per executed sub-range.
 
 #### 9. Orphan stdin not pruned on `WrongType` / `Fatal`
 `prunables.push` runs only on `Success`; a `Fatal`-after-partial-execution leaves cached
 stdin on disk indefinitely. No age-based sweep reclaims orphans.
-- **Sites:** push at `mod.rs:278` (Success only); `mod.rs:283` (WrongType) and `mod.rs:309`
+- **Sites:** push at `mod.rs:313` (Success only); `mod.rs:316` (WrongType) and `mod.rs:340`
   (Fatal) call `complete_game` without scheduling a prune.
 - **Caveat:** a `WrongType` (non-type-42) game usually never built stdin, so its leak is
   typically vacuous.
 
 #### 10. `L1_HEAD_FINALITY_BUFFER` hard-coded
-- **Site:** `ready_range_provider.rs:14` — `const L1_HEAD_FINALITY_BUFFER: u64 = 20;`. Linked
+- **Site:** `readiness.rs:21` — `pub const L1_HEAD_FINALITY_BUFFER: u64 = 20;`. Linked
   to the host's `calculate_safe_l1_head` buffer by comment only; no flag, no compile-time tie.
 - **Fix:** derive from / assert against the host constant, or expose a flag.
 
 #### 11. `Mutex::lock().unwrap()` panic sites in admission
 A poisoned mutex would crash the calling task.
-- **Sites:** `admission.rs:140` (`admit`), `:225` (`observe`), `:264` (`persist`).
+- **Sites:** `admission.rs:201` (`admit`), `:294` (`observe`), `:372` (`persist`).
 - **Fix:** handle the `PoisonError` (recover the guard) instead of `unwrap()`.
 
 #### 12. `drop_witness` failure leaks the witness blob
 On a `drop_witness` error after stdin is saved, the build returns `Transient`; the retry
 short-circuits at `has_stdin` and never re-drops, leaking the `.bin` and logging a false
 "build failed".
-- **Sites:** `estimator.rs:89` (drop → Transient), short-circuit at `estimator.rs:45-47`.
+- **Sites:** `estimator.rs:92` (drop → Transient), short-circuit at `estimator.rs:48-49`.
 - **Fix:** treat a post-stdin `drop_witness` failure as non-fatal (log + continue), and/or
   best-effort drop on the next sweep.
 
-#### 13. Background retries bypass the `--delay` 404-race window
-Primary discovery applies `--delay`; background drains set `executable_at: Instant::now()`.
-- **Sites:** primary push `mod.rs:576` (`+ delay`); background drain push `mod.rs:597`
-  (`Instant::now()`).
-- **Fix:** apply the same delay when draining background retries.
+#### 13. `--delay` repurposed as retry backoff; discovery/background drains are immediate — LARGELY OBSOLETE
+The `--delay` flag was renamed `--retry-backoff-delay` (`d034b638`) and no longer gates
+discovery. Both primary discovery (`mod.rs:701-705`) and background-retry drains
+(`mod.rs:722-725`) now push with `executable_at: Instant::now()`; the backoff applies only to
+same-game requeues on the Primary retry path (`apply_requeue`, `mod.rs:394`, `+ delay`).
+Background-retry spacing is instead governed by each entry's `next_attempt_at` in
+`background_retries`. The original "primary applies delay, background bypasses it" asymmetry no
+longer exists, so this item is moot.
+- **Residual:** a stale `--delay` mention lingers in the module doc comment (`mod.rs:22`).
 
 #### 14. Residual `.expect()` panics in `block_range.rs`
 - **Sites:** `block_range.rs:40` (`get_validated_block_range`), `:83`
@@ -198,13 +210,13 @@ trailing and the above-watermark set large.
   `sequence_tracker.rs` + `state.rs`.
 
 #### 28. Admission `baseline_bytes` is measured once at startup (too early) → mis-calibrated projection
-`baseline_bytes` is read once in `load()` before any work runs (`admission.rs:152-153`) and then
-frozen (`:130`, `:168`). At that instant the process hasn't warmed up (heap/allocator high-water,
+`baseline_bytes` is read once in `load()` before any work runs (`admission.rs:155`) and then
+frozen (`:132`, `:170`). At that instant the process hasn't warmed up (heap/allocator high-water,
 resident buffers), so it captures ~50 MB — while the RSS debug data shows a real steady-state idle
 floor of ~2.5–5 GiB that accumulates afterwards and is never re-measured. With `baseline ≈ 0`,
-`observe()` learns each kind's `cost_per_gas` from `(rss − ~0)/gas` (`:284`), folding the fixed floor
+`observe()` learns each kind's `cost_per_gas` from `(rss − ~0)/gas` (`:293`), folding the fixed floor
 into the per-gas slope — a through-origin fit to affine data (`rss ≈ F + s·gas`). Net effect:
-`project()` (`:261-263`) under-projects at low concurrency (misses the floor → over-admits) and
+`project()` (`:269-273`) under-projects at low concurrency (misses the floor → over-admits) and
 over-projects at high (error ∝ `F·(gas/g_ep − 1)`).
 - **Fix (learn it, don't hardcode):** treat the floor like the costs — an EWMA of *idle* RSS. In
   `observe()`, when nothing is in flight (`sb == 0 && se == 0`), fold the current `rss` into the
@@ -227,13 +239,13 @@ over-projects at high (error ∝ `F·(gas/g_ep − 1)`).
 
 #### 15. Parity test checks shape only
 `execute_game_aggregates_over_real_range`
-(`scripts/utils/tests/game_monitor_embedded_integration.rs:99-133`) asserts `batch_end`,
+(`scripts/utils/tests/game_monitor_embedded_integration.rs:99-132`) asserts `batch_end`,
 `nb_blocks`, `total_instruction_count > 0`, `!ranges.is_empty()` — never compares against a
 real `cost-estimator` baseline (plan Task 22 Step 1 recommended it as optional).
 
 #### 16. Forced-failure recovery test is degraded
 `second_build_is_noop_fast_path`
-(`integration.rs:165-186`) only asserts a second `build_range_witness` returns `Ok` with
+(`integration.rs:166-187`) only asserts a second `build_range_witness` returns `Ok` with
 cached stdin; it injects no failure and never proves `host.run` was skipped. (The plan had
 already softened this from true fault injection.)
 
@@ -250,13 +262,13 @@ integration-only coverage — borderline, listed for completeness.)
 ### Deployment
 
 #### 19. Dockerfile builds with default features on
-`scripts/utils/Dockerfile.game-monitor-embedded:49` —
+`scripts/utils/Dockerfile.game-monitor-embedded:55` —
 `cargo build --release --bin game-monitor-embedded --features eigenda` — pulls in the
 default `ethereum` DA alongside `eigenda`. Plan line 17 required
 `--no-default-features --features eigenda`.
 
 #### 20. Dockerfile has no `ENTRYPOINT` / `CMD`
-`Dockerfile.game-monitor-embedded` ends at the binary `COPY` (line 63). `docker run`
+`Dockerfile.game-monitor-embedded` ends at the binary `COPY` (line 69). `docker run`
 produces nothing; the run command comes from Helm `command:`. Harmless in k8s, surprising
 elsewhere.
 
@@ -273,7 +285,7 @@ runs as image default (root).
 #### 24. Speculative execute for predicted games
 The prebuild pipeline already builds witnesses ahead of a game appearing, but the expensive zk
 `execute` only runs once the game is discovered on-chain (`pending_games` fed from `gameCount`,
-`mod.rs:635-658`) and passes the readiness gate. `execute_range`'s `ExecutionStats` is a pure
+`mod.rs:695-706`) and passes the readiness gate. `execute_range`'s `ExecutionStats` is a pure
 function of the range, not the game index (`estimator.rs:101-138`, `executor.rs:47`/`68`), so a
 predicted range can be executed ahead of time and reused when its game appears — hiding execute
 latency the way the pipeline hides build latency.
@@ -302,8 +314,8 @@ cached proof instead of recomputing.
 Reshapes prioritization around two result caches — a **witness cache** and a **proof cache** —
 both fillable ahead of a game landing on-chain (the proposer's ranges and their splits are
 predictable from chain progression). Replaces today's unordered admission poll-race
-(`admission.rs:184-255`), which has no game/kind ordering and lets the prebuild pipeline
-(`max_concurrent_builds` defaults to the whole gate, `mod.rs:505-506`) starve real executes
+(`admission.rs:186-265`), which has no game/kind ordering and lets the prebuild pipeline
+(`max_concurrent_builds` defaults to the whole gate, `mod.rs:553-554`) starve real executes
 (observed `active_witness=6` vs `active_prove=2` at startup).
 
 Model:
@@ -369,7 +381,7 @@ lean on — but they become per-kind and separately sized.
 
 ## Not gaps (by design / verified benign)
 
-- **Cache key** includes `chain_id` (`cache.rs:44`), `start`, `end`, `da_type` — as
+- **Cache key** includes `chain_id` (`cache.rs:46`), `start`, `end`, `da_type` — as
   specified. Only `l1_head` is omitted, deliberately.
 - **`log` → `tracing` bridge** is active (`tracing-subscriber`'s `tracing-log` feature +
   `.init()` install a `LogTracer`); now pinned explicitly.
