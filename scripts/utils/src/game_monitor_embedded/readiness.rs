@@ -19,11 +19,6 @@
 use alloy_eips::BlockId;
 use op_succinct_host_utils::{fetcher::OPSuccinctDataFetcher, host::L1_HEAD_BUFFER};
 
-/// L1 finality buffer (blocks): the host's `calculate_safe_l1_head` read-ahead offset. A range
-/// is only ready once L1 has finalized past `l1_head + L1_HEAD_FINALITY_BUFFER`, which is
-/// exactly what keeps the host's `min(l1_head + L1_HEAD_BUFFER, finalized_l1)` cap from binding.
-pub const L1_HEAD_FINALITY_BUFFER: u64 = L1_HEAD_BUFFER;
-
 /// True once L2 has finalized the range's end block.
 fn l2_finalized(finalized_l2: u64, end_block: u64) -> bool {
     finalized_l2 >= end_block
@@ -35,7 +30,7 @@ fn l1_head_finalized(l1_head: u64, finalized_l1: u64, buffer: u64) -> bool {
 }
 
 /// Whether the range/game ending at `end_block` is ready to build or execute: its end
-/// block is finalized on L2 AND L1 is finalized past its `l1_head + [`L1_HEAD_FINALITY_BUFFER`]`.
+/// block is finalized on L2 AND L1 is finalized past its `l1_head + [`L1_HEAD_BUFFER`]`.
 ///
 /// A transient RPC failure surfaces as `Err`; callers treat that the same as "not ready"
 /// (re-queue / retry next tick) rather than a hard failure. `get_l1_head(.., true)` uses SafeDB
@@ -53,7 +48,7 @@ pub async fn range_ready(
 
     let (_, l1_head) = fetcher.get_l1_head(end_block, safe_db_fallback).await?;
     let finalized_l1 = fetcher.get_l1_header(BlockId::finalized()).await?.number;
-    Ok(l1_head_finalized(l1_head, finalized_l1, L1_HEAD_FINALITY_BUFFER))
+    Ok(l1_head_finalized(l1_head, finalized_l1, L1_HEAD_BUFFER))
 }
 
 #[cfg(test)]
