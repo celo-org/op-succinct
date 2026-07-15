@@ -7998,6 +7998,7 @@ dependencies = [
  "op-succinct-proof-utils",
  "rkyv",
  "serde",
+ "sp1-core-executor",
  "sp1-sdk",
  "tempfile",
  "thiserror 2.0.18",
