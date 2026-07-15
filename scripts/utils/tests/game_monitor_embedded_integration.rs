@@ -119,9 +119,8 @@ async fn execute_game_aggregates_over_real_range() {
     };
 
     let admission = test_admission(_dir.path().join("memory_model.json"));
-    let (ranges, result) =
-        execute_game(&estimator, &fetcher, &admission, &game, batch_size).await;
-    let stats = result.unwrap();
+    let (stats, ranges) =
+        execute_game(&estimator, &fetcher, &admission, &game, batch_size).await.unwrap();
 
     assert_eq!(stats.batch_end, end);
     // The safe-head split is contiguous and get_l2_block_data_range covers start+1..=end
@@ -231,9 +230,8 @@ async fn pipeline_window_aligned_to_game_boundary_hits_cache() {
     };
 
     let admission = test_admission(_dir.path().join("memory_model.json"));
-    let (ranges, result) =
-        execute_game(&estimator, &fetcher, &admission, &game, batch_size).await;
-    let stats = result.unwrap();
+    let (stats, ranges) =
+        execute_game(&estimator, &fetcher, &admission, &game, batch_size).await.unwrap();
 
     // execute_game succeeds and produces real stats over the aligned range.
     assert_eq!(stats.batch_end, end);

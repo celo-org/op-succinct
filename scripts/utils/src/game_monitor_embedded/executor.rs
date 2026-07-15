@@ -19,16 +19,17 @@ type WitnessOf<H> = <<H as OPSuccinctHost>::WitnessGenerator as WitnessGenerator
 /// A cache hit (pipeline prebuilt the stdin) skips host.run; a miss builds on demand.
 /// Each execute passes through admission, which gates on both the projected memory budget
 /// and the hard concurrency cap, so the number of sub-ranges actually running at once is
-/// bounded regardless of how many ranges (or games) are in flight. Returns the sub-ranges
-/// FIRST and always — on success or failure — alongside the aggregate-stats result, so the
-/// caller can schedule stdin pruning for whatever was built after a success OR a fatal failure.
+/// bounded regardless of how many ranges (or games) are in flight. On success returns the
+/// aggregate AND the sub-ranges so the caller can schedule stdin pruning per range; a failure
+/// returns just the error (a transient keeps its stdin for the retry, a fatal deliberately
+/// retains it for debugging), so the ranges are not needed on the error path.
 pub async fn execute_game<H: OPSuccinctHost>(
     estimator: &Estimator<H>,
     fetcher: &OPSuccinctDataFetcher,
     admission: &Admission,
     game: &GameData,
     batch_size: u64,
-) -> (Vec<SpanBatchRange>, Result<ExecutionStats, EstimatorError>)
+) -> Result<(ExecutionStats, Vec<SpanBatchRange>), EstimatorError>
 where
     // Mirror Estimator<H>'s impl rkyv bounds so this can call execute_range/build_range_witness.
     WitnessOf<H>: for<'a> rkyv::Serialize<
@@ -73,12 +74,8 @@ where
 
     let results = futures::future::join_all(range_futures).await;
 
-    // Surface the first error, else aggregate. Either way hand back `sub_ranges` so the
-    // caller can schedule pruning — a successful sub-range's stdin is cached (a later retry
-    // skips its build), and a partial-then-failed game leaves cached stdin to reclaim.
-    let result = results
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()
-        .map(|per_range| aggregate_execution_stats(&per_range, 0, 0));
-    (sub_ranges, result)
+    // Propagate the first error (a successful sub-range's stdin is already cached, so a
+    // later retry skips its build). Otherwise aggregate.
+    let per_range = results.into_iter().collect::<Result<Vec<_>, _>>()?;
+    Ok((aggregate_execution_stats(&per_range, 0, 0), sub_ranges))
 }
