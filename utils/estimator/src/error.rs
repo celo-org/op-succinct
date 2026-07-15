@@ -9,6 +9,8 @@ pub enum EstimatorError {
     NoStateAvailable,
     #[error("distance to target block exceeds maximum proof window")]
     ExceedsProofWindow,
+    /// The RPC backend lacks the requested state. Usually a lagging or load-balanced node, so a
+    /// retry can land on a healthy/archive backend — hence transient (see `is_transient`).
     #[error("missing trie node")]
     MissingTrieNode,
     #[error("dns lookup failure")]
