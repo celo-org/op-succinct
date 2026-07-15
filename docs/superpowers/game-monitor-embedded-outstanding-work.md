@@ -39,6 +39,7 @@ branch; line numbers are current as of that branch. Module path:
 | Stdin pruned immediately on success (grace window + `--stdin-grace-secs` removed); `Fatal` stdin retained for debugging (item #9) | `2c7b2125`, `2fa136ce` |
 | Above-watermark completions persisted (`pending`); restart skips completed games (item #27) | `d18f55f8` |
 | Readiness buffer and host offset unified into one shared `L1_HEAD_BUFFER` constant (item #10) | `7cd3a581`, `d28c38f7` |
+| Post-stdin `drop_witness` made best-effort (no false build failure); short-circuit re-drops leaked blobs (item #12) | this change |
 
 ---
 
@@ -183,13 +184,15 @@ A poisoned mutex would crash the calling task.
 - **Sites:** `admission.rs:201` (`admit`), `:294` (`observe`), `:372` (`persist`).
 - **Fix:** handle the `PoisonError` (recover the guard) instead of `unwrap()`.
 
-#### 12. `drop_witness` failure leaks the witness blob
-On a `drop_witness` error after stdin is saved, the build returns `Transient`; the retry
-short-circuits at `has_stdin` and never re-drops, leaking the `.bin` and logging a false
-"build failed".
-- **Sites:** `estimator.rs:92` (drop → Transient), short-circuit at `estimator.rs:48-49`.
-- **Fix:** treat a post-stdin `drop_witness` failure as non-fatal (log + continue), and/or
-  best-effort drop on the next sweep.
+#### 12. `drop_witness` failure leaked the witness blob and faked a build failure — FIXED
+A post-stdin `drop_witness` error made `build_range_witness` return `Transient` even though stdin
+was already durably cached — a false "build failed" (spurious retry) — and the leaked witness blob
+was never reclaimed, because the retry short-circuits at `has_stdin` and never reached the drop.
+- **Fix:** the post-stdin `drop_witness` is now **best-effort** — a failure is logged (`warn`) and
+  the build returns `Ok`, since stdin is the durable product (`estimator.rs`, step 3). The
+  `has_stdin` short-circuit now also **re-attempts the drop** best-effort, so a re-request of the
+  range self-heals a previously-leaked blob; the size-cap GC remains the final backstop. Dropping
+  is always safe once stdin exists (the witness is only needed to re-crunch stdin).
 
 #### 13. `--delay` repurposed as retry backoff; discovery/background drains are immediate — LARGELY OBSOLETE
 The `--delay` flag was renamed `--retry-backoff-delay` (`d034b638`) and no longer gates
