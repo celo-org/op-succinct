@@ -294,6 +294,40 @@ impl DriverDBClient {
         Ok(requests)
     }
 
+    /// Fetch the maximum `l1_head_block_number` across the consecutive complete range proofs that
+    /// will be aggregated over `[start_block, end_block]`.
+    ///
+    /// This is the L1 head the aggregation guest must anchor to: the guest walks headers back from
+    /// the checkpointed head and requires every range proof's `l1Head` to appear in that chain, so
+    /// the checkpoint must be at or after this block. Returns `None` if no matching range proof has
+    /// an `l1_head_block_number` recorded (e.g. proofs predating that column).
+    ///
+    /// The WHERE clause must stay in sync with `get_consecutive_complete_range_proofs` so the MAX
+    /// is taken over exactly the set of range proofs the aggregation will consume.
+    pub async fn get_max_l1_head_block_number_for_range(
+        &self,
+        start_block: i64,
+        end_block: i64,
+        commitment: &CommitmentConfig,
+        l1_chain_id: i64,
+        l2_chain_id: i64,
+    ) -> Result<Option<i64>, Error> {
+        let result = sqlx::query!(
+            "SELECT MAX(l1_head_block_number) AS max_l1_head FROM requests WHERE range_vkey_commitment = $1 AND rollup_config_hash = $2 AND status = $3 AND req_type = $4 AND start_block >= $5 AND end_block <= $6 AND l1_chain_id = $7 AND l2_chain_id = $8",
+            &commitment.range_vkey_commitment[..],
+            &commitment.rollup_config_hash[..],
+            RequestStatus::Complete as i16,
+            RequestType::Range as i16,
+            start_block,
+            end_block,
+            l1_chain_id,
+            l2_chain_id,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(result.max_l1_head)
+    }
+
     /// Fetch the checkpointed block hash and number for an aggregation request with the same start
     /// block, end block, and commitment config.
     pub async fn fetch_failed_agg_request_with_checkpointed_block_hash(
@@ -772,14 +806,14 @@ mod tests {
     use chrono::Local;
     use postgresql_embedded::{PostgreSQL, Settings};
     use sqlx::types::BigDecimal;
-    use std::str::FromStr;
-    use tokio::sync::Mutex;
+    use std::{str::FromStr, sync::LazyLock};
 
     // ==================== Test Harness ====================
 
-    /// Serializes PostgreSQL setup calls to avoid a race condition in the
+    /// Serializes PostgreSQL setup to avoid a race condition in the
     /// `postgresql_embedded` crate's binary extraction (shared installation dir).
-    static PG_SETUP_MUTEX: Mutex<()> = Mutex::const_new(());
+    static POSTGRESQL_SETUP_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+        LazyLock::new(|| tokio::sync::Mutex::new(()));
 
     /// A test database instance that manages an embedded PostgreSQL server.
     /// Automatically cleans up when dropped.
@@ -792,12 +826,11 @@ mod tests {
     impl TestDb {
         /// Creates a new test database with migrations applied.
         async fn new() -> Self {
-            let settings = Settings::default();
+            let _setup_guard = POSTGRESQL_SETUP_LOCK.lock().await;
+            let settings =
+                Settings { timeout: Some(Duration::from_secs(30)), ..Default::default() };
             let mut postgresql = PostgreSQL::new(settings);
-            {
-                let _guard = PG_SETUP_MUTEX.lock().await;
-                postgresql.setup().await.expect("Failed to setup PostgreSQL");
-            }
+            postgresql.setup().await.expect("Failed to setup PostgreSQL");
             postgresql.start().await.expect("Failed to start PostgreSQL");
 
             let database_url = postgresql.settings().url("postgres");

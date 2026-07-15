@@ -272,6 +272,16 @@ impl ProposerState {
                 .cloned()
         });
 
+        // Log when the head comes from a catch-up chain so operators can tell the proposer is
+        // recovering along a chain outside the anchor subtree.
+        if let Some(head) = override_head.as_ref() {
+            tracing::debug!(
+                head_index = %head.index,
+                head_l2_block = %head.l2_block,
+                "Canonical head selected from a catch-up chain outside the anchor subtree"
+            );
+        }
+
         override_head.or(anchor_head)
     }
 }
@@ -1994,7 +2004,7 @@ where
             let mut task_counts: HashMap<&str, usize> = HashMap::new();
             let mut proving_games: Vec<String> = Vec::new();
 
-            for (_, (_, info)) in tasks.iter() {
+            for (_, info) in tasks.values() {
                 let task_type = match info {
                     TaskInfo::GameCreation { .. } => "GameCreation",
                     TaskInfo::GameProving { game_address, .. } => {
@@ -2801,6 +2811,26 @@ mod tests {
                 Some(anchor),
             );
             assert_eq!(s.select_canonical_head().unwrap().index, U256::from(7));
+        }
+
+        #[test]
+        fn multiple_catchup_chains_select_highest_tip() {
+            // Repeated stall/recovery cycles can leave several genesis-rooted catch-up chains in
+            // the cache at once. The head must be the highest-block tip across all qualifying
+            // chains pooled together (chain B's tip 9), even though chain B's root (block 250)
+            // sits below chain A's tip (block 300).
+            let anchor = game_with(5, 4, 100);
+            let s = state(
+                vec![
+                    anchor.clone(),
+                    game_with(6, u32::MAX, 200),
+                    game_with(7, 6, 300),
+                    game_with(8, u32::MAX, 250),
+                    game_with(9, 8, 400),
+                ],
+                Some(anchor),
+            );
+            assert_eq!(s.select_canonical_head().unwrap().index, U256::from(9));
         }
     }
 
