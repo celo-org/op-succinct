@@ -46,6 +46,18 @@ where
     /// then drop the witness blob. A cached witness skips host.run; a cached stdin is a no-op.
     pub async fn build_range_witness(&self, range: &SpanBatchRange) -> Result<(), EstimatorError> {
         if self.cache.has_stdin(range.start, range.end) {
+            // Already built. Best-effort reclaim of a witness blob a prior run may have leaked if
+            // its post-stdin `drop_witness` (step 3) failed — that retry path lands here and can
+            // never reach the drop below. Normally the blob is already gone, so this is one cheap
+            // `exists()` check.
+            if let Err(e) = self.cache.drop_witness(range.start, range.end) {
+                tracing::warn!(
+                    start = range.start,
+                    end = range.end,
+                    error = %e,
+                    "drop_witness (retry sweep) failed; leaving witness blob for the size-cap GC"
+                );
+            }
             return Ok(()); // already built
         }
 
@@ -88,8 +100,19 @@ where
         };
         self.cache.save_stdin(range.start, range.end, &stdin).map_err(EstimatorError::Transient)?;
 
-        // 3. Drop the (large) witness blob — only needed for a re-crunch.
-        self.cache.drop_witness(range.start, range.end).map_err(EstimatorError::Transient)?;
+        // 3. Best-effort drop of the (large) witness blob — it is only needed to re-crunch stdin,
+        // which is now durably cached, so a failure here is a cleanup problem, not a build failure.
+        // Returning an error would both falsely report the build as failed AND leak the blob: the
+        // retry would short-circuit at `has_stdin` above (which now re-attempts this drop). Leave a
+        // failed drop for that sweep or the size-cap GC.
+        if let Err(e) = self.cache.drop_witness(range.start, range.end) {
+            tracing::warn!(
+                start = range.start,
+                end = range.end,
+                error = %e,
+                "drop_witness failed; stdin is cached, leaving witness blob for the size-cap GC"
+            );
+        }
         Ok(())
     }
 
