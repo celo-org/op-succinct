@@ -56,9 +56,11 @@
 //!
 //! # Restart
 //!
-//! Progress is persisted to `progress.json` (the contiguous-completed frontier plus the
-//! background queue) and restored on startup via [`state::resume_index`]; an explicit
-//! `--start-index` overrides it, otherwise it falls back to the latest on-chain game.
+//! Progress is persisted to `progress.json` (the contiguous-completed frontier, the
+//! out-of-order completions above it, and the background queue) and restored on startup via
+//! [`state::resume_index`]; an explicit `--start-index` overrides it, otherwise it falls back
+//! to the latest on-chain game. Restoring the above-frontier completions means a restart skips
+//! games already done rather than re-running them.
 //!
 //! # Submodules
 //!
@@ -594,7 +596,14 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
     let mut next_game_index = resume_index(args.start_index, persisted.as_ref(), on_chain_count);
     tracing::info!(next_game_index, on_chain_count, "resume point determined");
 
-    let mut tracker = SequenceTracker::new(next_game_index.saturating_sub(1));
+    // Restore the completion set from persisted progress: the contiguous watermark plus the
+    // out-of-order completions above it, so a restart neither loses the watermark nor re-runs an
+    // already-completed game. An explicit --start-index means the operator is taking manual
+    // control, so start from a clean tracker at the requested point.
+    let mut tracker = match (args.start_index, persisted.as_ref()) {
+        (None, Some(p)) => SequenceTracker::restore(p.last_contiguous, p.pending.iter().copied()),
+        _ => SequenceTracker::new(next_game_index.saturating_sub(1)),
+    };
     let mut background_retries: VecDeque<BackgroundRetry> =
         persisted.map(|p| p.background_retries.into_iter().collect()).unwrap_or_default();
     let mut pending_games: VecDeque<PendingGame> = VecDeque::new();
@@ -685,6 +694,12 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
         while next_game_index < count {
             let game_index = next_game_index;
             next_game_index += 1;
+            // Skip games already completed in a prior run (restored above-watermark set) — a
+            // rerun is wasteful and, since stdin is pruned on completion, a full recompute.
+            // During normal running this never fires; indices are discovered exactly once.
+            if tracker.contains(game_index) {
+                continue;
+            }
             tracing::info!(game_index, "discovered new game");
             // Immediately eligible; the readiness gate (L2/L1 finalization) and Defer handle
             // "not ready yet" without a fixed delay.

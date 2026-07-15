@@ -40,6 +40,12 @@ pub struct ProgressState {
     pub last_contiguous: u64,
     #[serde(default)]
     pub background_retries: Vec<BackgroundRetry>,
+    /// Out-of-order completions above `last_contiguous`. Together with `last_contiguous` this
+    /// is the full set of completed games, so a restart skips re-running them (stdin is pruned
+    /// on completion, so a rerun would be a full recompute). Defaulted empty for progress files
+    /// written before this field existed.
+    #[serde(default)]
+    pub pending: Vec<u64>,
 }
 
 /// Decision returned by the pure retry policy, so it can be unit-tested without
@@ -123,6 +129,7 @@ pub fn save_progress(
     let state = ProgressState {
         last_contiguous: tracker.end(),
         background_retries: background.iter().cloned().collect(),
+        pending: tracker.pending_indices(),
     };
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_string_pretty(&state)?)?;
@@ -186,7 +193,7 @@ mod tests {
 
     #[test]
     fn resume_prefers_explicit_then_persisted_then_chain() {
-        let p = ProgressState { last_contiguous: 41, background_retries: vec![] };
+        let p = ProgressState { last_contiguous: 41, background_retries: vec![], pending: vec![] };
         assert_eq!(resume_index(Some(5), Some(&p), 100), 5);
         assert_eq!(resume_index(None, Some(&p), 100), 42);
         assert_eq!(resume_index(None, None, 100), 99);
@@ -200,9 +207,11 @@ mod tests {
         let mut tracker = SequenceTracker::new(0);
         tracker.add(1);
         tracker.add(2);
+        tracker.add(4); // out-of-order completion above the watermark
         let bg = VecDeque::new();
         save_progress(&path, &tracker, &bg).unwrap();
         let loaded = load_progress(&path).unwrap();
         assert_eq!(loaded.last_contiguous, 2);
+        assert_eq!(loaded.pending, vec![4]);
     }
 }
