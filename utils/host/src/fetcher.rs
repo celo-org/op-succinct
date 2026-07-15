@@ -192,71 +192,71 @@ impl OPSuccinctDataFetcher {
     /// message naming the offending env var). Proposer entry points should call
     /// [`L1BlockSelectionConfig::from_env`] beforehand to surface a clean startup error.
     pub fn new() -> Self {
-    Self::new_with_l1_selection(L1BlockSelectionConfig::from_env_or_default())
-}
+        Self::new_with_l1_selection(L1BlockSelectionConfig::from_env_or_default())
+    }
 
     /// Construct a fetcher with an explicit L1 selection config, bypassing the env parse.
     /// Intended for tests and override scenarios.
     pub fn new_with_l1_selection(l1_selection: L1BlockSelectionConfig) -> Self {
-    let rpc_config = get_rpcs_from_env();
+        let rpc_config = get_rpcs_from_env();
 
-    let l1_provider =
-        Arc::new(ProviderBuilder::default().connect_http(rpc_config.l1_rpc.clone()));
-    let l2_provider =
-        Arc::new(ProviderBuilder::default().connect_http(rpc_config.l2_rpc.clone()));
+        let l1_provider =
+            Arc::new(ProviderBuilder::default().connect_http(rpc_config.l1_rpc.clone()));
+        let l2_provider =
+            Arc::new(ProviderBuilder::default().connect_http(rpc_config.l2_rpc.clone()));
 
-    OPSuccinctDataFetcher {
-        rpc_config,
-        l1_provider,
-        l2_provider,
-        rollup_config: None,
-        rollup_config_path: None,
-        l1_config_path: None,
-        l1_selection,
+        OPSuccinctDataFetcher {
+            rpc_config,
+            l1_provider,
+            l2_provider,
+            rollup_config: None,
+            rollup_config_path: None,
+            l1_config_path: None,
+            l1_selection,
+        }
     }
-}
 
     /// Initialize the fetcher with a rollup config.
     ///
     /// See [`OPSuccinctDataFetcher::new`] for env-parsing behavior.
     pub async fn new_with_rollup_config() -> Result<Self> {
-    Self::new_with_rollup_config_and_l1_selection(L1BlockSelectionConfig::from_env_or_default())
-        .await
-}
+        Self::new_with_rollup_config_and_l1_selection(L1BlockSelectionConfig::from_env_or_default())
+            .await
+    }
 
     /// Initialize the fetcher with a rollup config and explicit L1 selection.
     pub async fn new_with_rollup_config_and_l1_selection(
-    l1_selection: L1BlockSelectionConfig,
-) -> Result<Self> {
-    let rpc_config = get_rpcs_from_env();
+        l1_selection: L1BlockSelectionConfig,
+    ) -> Result<Self> {
+        let rpc_config = get_rpcs_from_env();
 
-    let l1_provider =
-        Arc::new(ProviderBuilder::default().connect_http(rpc_config.l1_rpc.clone()));
-    let l2_provider =
-        Arc::new(ProviderBuilder::default().connect_http(rpc_config.l2_rpc.clone()));
+        let l1_provider =
+            Arc::new(ProviderBuilder::default().connect_http(rpc_config.l1_rpc.clone()));
+        let l2_provider =
+            Arc::new(ProviderBuilder::default().connect_http(rpc_config.l2_rpc.clone()));
 
-    let (rollup_config, rollup_config_path) =
-        Self::fetch_and_save_rollup_config(&rpc_config).await?;
+        let (rollup_config, rollup_config_path) =
+            Self::fetch_and_save_rollup_config(&rpc_config).await?;
 
-    // Add warning if the chain is pre-Holocene, as derivation is significantly slower.
-    let unix_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    if !rollup_config.is_holocene_active(unix_timestamp) {
-        tracing::warn!("Chain is not using Holocene hard fork. This will cause significant performance degradation compared to chains that have activated Holocene.");
+        // Add warning if the chain is pre-Holocene, as derivation is significantly slower.
+        let unix_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        if !rollup_config.is_holocene_active(unix_timestamp) {
+            tracing::warn!("Chain is not using Holocene hard fork. This will cause significant performance degradation compared to chains that have activated Holocene.");
+        }
+
+        // Fetch and save L1 config based on the rollup config's L1 chain ID
+        let l1_config_path = Self::fetch_and_save_l1_config(&rollup_config).await?;
+
+        Ok(OPSuccinctDataFetcher {
+            rpc_config,
+            l1_provider,
+            l2_provider,
+            rollup_config: Some(rollup_config),
+            rollup_config_path: Some(rollup_config_path),
+            l1_config_path: Some(l1_config_path),
+            l1_selection,
+        })
     }
-
-    // Fetch and save L1 config based on the rollup config's L1 chain ID
-    let l1_config_path = Self::fetch_and_save_l1_config(&rollup_config).await?;
-
-    Ok(OPSuccinctDataFetcher {
-        rpc_config,
-        l1_provider,
-        l2_provider,
-        rollup_config: Some(rollup_config),
-        rollup_config_path: Some(rollup_config_path),
-        l1_config_path: Some(l1_config_path),
-        l1_selection,
-    })
-}
 
     /// Resolve the L1 [`Header`] selected by the configured tag and confirmations.
     ///
@@ -264,20 +264,20 @@ impl OPSuccinctDataFetcher {
     /// For non-default selections it fetches the tag's header, then walks back by
     /// `confirmations` blocks (saturating at 0).
     pub async fn resolve_selected_l1_header(&self) -> Result<Header> {
-    let base = self.get_l1_header(self.l1_selection.tag.to_block_id()).await?;
-    if self.l1_selection.confirmations == 0 {
-        return Ok(base);
+        let base = self.get_l1_header(self.l1_selection.tag.to_block_id()).await?;
+        if self.l1_selection.confirmations == 0 {
+            return Ok(base);
+        }
+        let target_number = base.number.saturating_sub(self.l1_selection.confirmations);
+        if target_number == base.number {
+            // Only reachable when `base.number == 0` (genesis): `confirmations > 0` here, so
+            // `saturating_sub` only fixes back to `base.number` when the base is already 0.
+            // For larger over-confirmations (e.g. base=100, confirmations=1_000_000) this branch
+            // does not fire and the call below fetches block 0.
+            return Ok(base);
+        }
+        self.get_l1_header(target_number.into()).await
     }
-    let target_number = base.number.saturating_sub(self.l1_selection.confirmations);
-    if target_number == base.number {
-        // Only reachable when `base.number == 0` (genesis): `confirmations > 0` here, so
-        // `saturating_sub` only fixes back to `base.number` when the base is already 0.
-        // For larger over-confirmations (e.g. base=100, confirmations=1_000_000) this branch
-        // does not fire and the call below fetches block 0.
-        return Ok(base);
-    }
-    self.get_l1_header(target_number.into()).await
-}
 
     pub async fn get_l2_chain_id(&self) -> Result<u64> {
         Ok(self.l2_provider.get_chain_id().await?)
@@ -299,59 +299,59 @@ impl OPSuccinctDataFetcher {
     /// resources to "prove" the start block. This is why the start block is not included in the
     /// range for which we fetch block data.
     pub async fn get_l2_block_data_range(&self, start: u64, end: u64) -> Result<Vec<BlockInfo>> {
-    use futures::stream::{self, StreamExt};
+        use futures::stream::{self, StreamExt};
 
-    let block_data = stream::iter(start + 1..=end)
-        .map(|block_number| async move {
-            let block =
-                self.l2_provider.get_block_by_number(block_number.into()).await?.unwrap();
-            let (total_l1_fees, total_tx_fees) =
-                match self.l2_provider.get_block_receipts(block_number.into()).await {
-                    Ok(Some(receipts)) => {
-                        let l1_fees: u128 = receipts
-                            .iter()
-                            .map(|tx| tx.l1_block_info.l1_fee.unwrap_or(0))
-                            .sum();
-                        let tx_fees: u128 = receipts
-                            .iter()
-                            .map(|tx| {
-                                tx.inner.effective_gas_price * tx.inner.gas_used as u128 +
-                                    tx.l1_block_info.l1_fee.unwrap_or(0)
-                            })
-                            .sum();
-                        (l1_fees, tx_fees)
-                    }
-                    Ok(None) => {
-                        tracing::warn!(
-                            block_number,
-                            "eth_getBlockReceipts returned None; fee data will be zero"
-                        );
-                        (0u128, 0u128)
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            block_number,
-                            error = %e,
-                            "eth_getBlockReceipts failed; fee data will be zero"
-                        );
-                        (0u128, 0u128)
-                    }
-                };
+        let block_data = stream::iter(start + 1..=end)
+            .map(|block_number| async move {
+                let block =
+                    self.l2_provider.get_block_by_number(block_number.into()).await?.unwrap();
+                let (total_l1_fees, total_tx_fees) =
+                    match self.l2_provider.get_block_receipts(block_number.into()).await {
+                        Ok(Some(receipts)) => {
+                            let l1_fees: u128 = receipts
+                                .iter()
+                                .map(|tx| tx.l1_block_info.l1_fee.unwrap_or(0))
+                                .sum();
+                            let tx_fees: u128 = receipts
+                                .iter()
+                                .map(|tx| {
+                                    tx.inner.effective_gas_price * tx.inner.gas_used as u128 +
+                                        tx.l1_block_info.l1_fee.unwrap_or(0)
+                                })
+                                .sum();
+                            (l1_fees, tx_fees)
+                        }
+                        Ok(None) => {
+                            tracing::warn!(
+                                block_number,
+                                "eth_getBlockReceipts returned None; fee data will be zero"
+                            );
+                            (0u128, 0u128)
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                block_number,
+                                error = %e,
+                                "eth_getBlockReceipts failed; fee data will be zero"
+                            );
+                            (0u128, 0u128)
+                        }
+                    };
 
-            Ok(BlockInfo {
-                block_number,
-                transaction_count: block.transactions.len() as u64,
-                gas_used: block.header.gas_used,
-                total_l1_fees,
-                total_tx_fees,
+                Ok(BlockInfo {
+                    block_number,
+                    transaction_count: block.transactions.len() as u64,
+                    gas_used: block.header.gas_used,
+                    total_l1_fees,
+                    total_tx_fees,
+                })
             })
-        })
-        .buffered(10)
-        .collect::<Vec<Result<BlockInfo>>>()
-        .await;
+            .buffered(10)
+            .collect::<Vec<Result<BlockInfo>>>()
+            .await;
 
-    block_data.into_iter().collect()
-}
+        block_data.into_iter().collect()
+    }
 
     pub async fn get_l1_header(&self, block_number: BlockId) -> Result<Header> {
         let block = self.l1_provider.get_block(block_number).await?;
@@ -379,155 +379,155 @@ impl OPSuccinctDataFetcher {
     /// Used by the timestamp-based fallback for `get_l1_head`: once the proposer has decided
     /// which L1 block to anchor to, the fallback search must not return a block past it.
     pub async fn find_l1_block_by_timestamp(&self, target_timestamp: u64) -> Result<(B256, u64)> {
-    let upper_bound_block = self.resolve_selected_l1_header().await?.number;
-    self.find_block_by_timestamp(&self.l1_provider, target_timestamp, upper_bound_block).await
-}
+        let upper_bound_block = self.resolve_selected_l1_header().await?.number;
+        self.find_block_by_timestamp(&self.l1_provider, target_timestamp, upper_bound_block).await
+    }
 
     /// Finds the L2 block at the provided timestamp.
     ///
     /// Bounded by L2 finalized; this path intentionally does not follow the L1 selection
     /// config because L2 finality is a separate concern.
     pub async fn find_l2_block_by_timestamp(&self, target_timestamp: u64) -> Result<(B256, u64)> {
-    let upper_bound_block = self
-        .l2_provider
-        .get_block(BlockId::finalized())
-        .await?
-        .ok_or_else(|| anyhow!("Failed to get finalized L2 block for timestamp search bound"))?
-        .header()
-        .number();
-    self.find_block_by_timestamp(&self.l2_provider, target_timestamp, upper_bound_block).await
-}
+        let upper_bound_block = self
+            .l2_provider
+            .get_block(BlockId::finalized())
+            .await?
+            .ok_or_else(|| anyhow!("Failed to get finalized L2 block for timestamp search bound"))?
+            .header()
+            .number();
+        self.find_block_by_timestamp(&self.l2_provider, target_timestamp, upper_bound_block).await
+    }
 
     /// Finds the block at the provided timestamp, using the provided provider, bounded above
     /// by `upper_bound_block` (inclusive).
     async fn find_block_by_timestamp<N>(
-    &self,
-    provider: &RootProvider<N>,
-    target_timestamp: u64,
-    upper_bound_block: u64,
-) -> Result<(B256, u64)>
-where
-    N: Network,
-{
-    let mut low = 0;
-    let mut high = upper_bound_block;
+        &self,
+        provider: &RootProvider<N>,
+        target_timestamp: u64,
+        upper_bound_block: u64,
+    ) -> Result<(B256, u64)>
+    where
+        N: Network,
+    {
+        let mut low = 0;
+        let mut high = upper_bound_block;
 
-    while low <= high {
-        let mid = (low + high) / 2;
-        let block = provider.get_block(mid.into()).await?;
-        if let Some(block) = block {
-            let block_timestamp = block.header().timestamp();
+        while low <= high {
+            let mid = (low + high) / 2;
+            let block = provider.get_block(mid.into()).await?;
+            if let Some(block) = block {
+                let block_timestamp = block.header().timestamp();
 
-            match block_timestamp.cmp(&target_timestamp) {
-                Ordering::Equal => {
-                    return Ok((block.header().hash().0.into(), block.header().number()));
+                match block_timestamp.cmp(&target_timestamp) {
+                    Ordering::Equal => {
+                        return Ok((block.header().hash().0.into(), block.header().number()));
+                    }
+                    Ordering::Less => low = mid + 1,
+                    Ordering::Greater => high = mid - 1,
                 }
-                Ordering::Less => low = mid + 1,
-                Ordering::Greater => high = mid - 1,
+            } else {
+                bail!("Failed to get block for block {mid}");
             }
+        }
+
+        // Return the block hash of the closest block after the target timestamp
+        let block = provider.get_block(low.into()).await?;
+        if let Some(block) = block {
+            Ok((block.header().hash().0.into(), block.header().number()))
         } else {
-            bail!("Failed to get block for block {mid}");
+            bail!("Failed to get block for block {low}");
         }
     }
 
-    // Return the block hash of the closest block after the target timestamp
-    let block = provider.get_block(low.into()).await?;
-    if let Some(block) = block {
-        Ok((block.header().hash().0.into(), block.header().number()))
-    } else {
-        bail!("Failed to get block for block {low}");
-    }
-}
-
     /// Get the RPC URL for the given RPC mode.
     pub fn get_rpc_url(&self, rpc_mode: RPCMode) -> Result<&Url> {
-    match rpc_mode {
-        RPCMode::L1 => Ok(&self.rpc_config.l1_rpc),
-        RPCMode::L2 => Ok(&self.rpc_config.l2_rpc),
-        RPCMode::L1Beacon => self
-            .rpc_config
-            .l1_beacon_rpc
-            .as_ref()
-            .ok_or_else(|| anyhow!("L1 beacon RPC URL is not set")),
-        RPCMode::L2Node => Ok(&self.rpc_config.l2_node_rpc),
+        match rpc_mode {
+            RPCMode::L1 => Ok(&self.rpc_config.l1_rpc),
+            RPCMode::L2 => Ok(&self.rpc_config.l2_rpc),
+            RPCMode::L1Beacon => self
+                .rpc_config
+                .l1_beacon_rpc
+                .as_ref()
+                .ok_or_else(|| anyhow!("L1 beacon RPC URL is not set")),
+            RPCMode::L2Node => Ok(&self.rpc_config.l2_node_rpc),
+        }
     }
-}
 
     /// Fetch rollup config from celo-registry if available, otherwise fetch from node RPC and save
     /// it to a file. Compares registry vs node RPC to detect hardfork transitions.
     async fn fetch_and_save_rollup_config(
-    rpc_config: &RPCConfig,
-) -> Result<(CeloRollupConfig, PathBuf)> {
-    // Fetch chain ID to look up registry config
-    let chain_id: String =
-        Self::fetch_rpc_data(&rpc_config.l2_rpc, "eth_chainId", vec![]).await?;
-    let chain_id: u64 = chain_id.parse::<U64>().unwrap().to();
+        rpc_config: &RPCConfig,
+    ) -> Result<(CeloRollupConfig, PathBuf)> {
+        // Fetch chain ID to look up registry config
+        let chain_id: String =
+            Self::fetch_rpc_data(&rpc_config.l2_rpc, "eth_chainId", vec![]).await?;
+        let chain_id: u64 = chain_id.parse::<U64>().unwrap().to();
 
-    // Fetch rollup config from node RPC (best-effort for hash comparison)
-    let node_rpc_config: Option<CeloRollupConfig> =
-        Self::fetch_rpc_data(&rpc_config.l2_node_rpc, "optimism_rollupConfig", vec![])
-            .await
-            .inspect(|_| {
-                tracing::info!("Loaded L2 config for chain ID {} from node RPC", chain_id);
-            })
-            .map_err(|e| {
-                tracing::warn!(
-                    "Failed to fetch rollup config from node RPC for chain ID {}: {:?}",
-                    chain_id,
-                    e
-                );
-            })
-            .ok();
+        // Fetch rollup config from node RPC (best-effort for hash comparison)
+        let node_rpc_config: Option<CeloRollupConfig> =
+            Self::fetch_rpc_data(&rpc_config.l2_node_rpc, "optimism_rollupConfig", vec![])
+                .await
+                .inspect(|_| {
+                    tracing::info!("Loaded L2 config for chain ID {} from node RPC", chain_id);
+                })
+                .map_err(|e| {
+                    tracing::warn!(
+                        "Failed to fetch rollup config from node RPC for chain ID {}: {:?}",
+                        chain_id,
+                        e
+                    );
+                })
+                .ok();
 
-    // Try to fetch rollup config from celo-registry; if found, compare hashes and use it
-    let rollup_config = if let Some(registry_config) = ROLLUP_CONFIGS.get(&chain_id) {
-        tracing::info!("Loaded L2 config for chain ID {} from registry", chain_id);
-        if let Some(ref node_config) = node_rpc_config {
-            let registry_hash = hash_rollup_config(registry_config);
-            let node_rpc_hash = hash_rollup_config(node_config);
-            if registry_hash != node_rpc_hash {
-                tracing::warn!(
+        // Try to fetch rollup config from celo-registry; if found, compare hashes and use it
+        let rollup_config = if let Some(registry_config) = ROLLUP_CONFIGS.get(&chain_id) {
+            tracing::info!("Loaded L2 config for chain ID {} from registry", chain_id);
+            if let Some(ref node_config) = node_rpc_config {
+                let registry_hash = hash_rollup_config(registry_config);
+                let node_rpc_hash = hash_rollup_config(node_config);
+                if registry_hash != node_rpc_hash {
+                    tracing::warn!(
                     "Rollup config hash mismatch for chain ID {}: registry hash = {:?}, node RPC hash = {:?}",
                     chain_id,
                     registry_hash,
                     node_rpc_hash
                 );
+                }
             }
-        }
-        registry_config.clone()
-    } else {
-        tracing::warn!(
+            registry_config.clone()
+        } else {
+            tracing::warn!(
             "No rollup config found in registry for chain ID {}. Falling back to node RPC config",
             chain_id
         );
-        node_rpc_config.ok_or_else(|| {
+            node_rpc_config.ok_or_else(|| {
             anyhow::anyhow!(
                 "No rollup config available for chain ID {}: not in registry and node RPC fetch failed",
                 chain_id
             )
         })?
-    };
+        };
 
-    // Create configs directory if it doesn't exist
-    let default_dir = PathBuf::from("configs/L2");
-    let l2_config_dir = env::var("L2_CONFIG_DIR").map(PathBuf::from).unwrap_or(default_dir);
-    fs::create_dir_all(&l2_config_dir)?;
+        // Create configs directory if it doesn't exist
+        let default_dir = PathBuf::from("configs/L2");
+        let l2_config_dir = env::var("L2_CONFIG_DIR").map(PathBuf::from).unwrap_or(default_dir);
+        fs::create_dir_all(&l2_config_dir)?;
 
-    // Save rollup config to a file named by chain ID
-    let rollup_config_path = l2_config_dir.join(format!("{}.json", rollup_config.l2_chain_id));
+        // Save rollup config to a file named by chain ID
+        let rollup_config_path = l2_config_dir.join(format!("{}.json", rollup_config.l2_chain_id));
 
-    // Write the rollup config to the file
-    let rollup_config_str = serde_json::to_string_pretty(&rollup_config)?;
-    fs::write(&rollup_config_path, rollup_config_str)?;
+        // Write the rollup config to the file
+        let rollup_config_str = serde_json::to_string_pretty(&rollup_config)?;
+        fs::write(&rollup_config_path, rollup_config_str)?;
 
-    tracing::info!(
-        "Saved L2 config for chain ID {} to {}",
-        rollup_config.l2_chain_id,
-        rollup_config_path.display()
-    );
+        tracing::info!(
+            "Saved L2 config for chain ID {} to {}",
+            rollup_config.l2_chain_id,
+            rollup_config_path.display()
+        );
 
-    Ok((rollup_config, rollup_config_path))
-}
+        Ok((rollup_config, rollup_config_path))
+    }
 
     /// Celo is using celo-registry for rollup config instead of relying on cached config.
     #[allow(unused)]
@@ -535,95 +535,95 @@ where
     /// Intentionally warn-only — mismatches are expected during hardfork transitions and the
     /// on-chain vkey check is the authoritative gate for game creation.
     async fn compare_config_with_rpc(cached: &CeloRollupConfig, rpc_config: &RPCConfig) {
-    let rpc_fetch = Self::fetch_rpc_data::<CeloRollupConfig>(
-        &rpc_config.l2_node_rpc,
-        "optimism_rollupConfig",
-        vec![],
-    );
+        let rpc_fetch = Self::fetch_rpc_data::<CeloRollupConfig>(
+            &rpc_config.l2_node_rpc,
+            "optimism_rollupConfig",
+            vec![],
+        );
 
-    match tokio::time::timeout(Duration::from_secs(5), rpc_fetch).await {
-        Ok(Ok(rpc_rollup_config)) => {
-            let cached_hash = hash_rollup_config(cached);
-            let rpc_hash = hash_rollup_config(&rpc_rollup_config);
-            if cached_hash == rpc_hash {
-                tracing::info!("Cached rollup config matches node RPC");
-            } else {
-                tracing::warn!(
-                    cached_hash = %cached_hash,
-                    rpc_hash = %rpc_hash,
-                    "Cached rollup config differs from node RPC — \
-                     expected during hardfork transitions"
-                );
+        match tokio::time::timeout(Duration::from_secs(5), rpc_fetch).await {
+            Ok(Ok(rpc_rollup_config)) => {
+                let cached_hash = hash_rollup_config(cached);
+                let rpc_hash = hash_rollup_config(&rpc_rollup_config);
+                if cached_hash == rpc_hash {
+                    tracing::info!("Cached rollup config matches node RPC");
+                } else {
+                    tracing::warn!(
+                        cached_hash = %cached_hash,
+                        rpc_hash = %rpc_hash,
+                        "Cached rollup config differs from node RPC — \
+                         expected during hardfork transitions"
+                    );
+                }
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "Could not fetch RPC config for comparison");
+            }
+            Err(_) => {
+                tracing::warn!("RPC config comparison timed out (5s)");
             }
         }
-        Ok(Err(e)) => {
-            tracing::warn!(error = %e, "Could not fetch RPC config for comparison");
-        }
-        Err(_) => {
-            tracing::warn!("RPC config comparison timed out (5s)");
-        }
     }
-}
 
     /// Fetch and save the L1 config based on the rollup config's L1 chain ID.
     async fn fetch_and_save_l1_config(rollup_config: &CeloRollupConfig) -> Result<PathBuf> {
-    let default_dir = PathBuf::from("configs/L1");
-    let l1_config_dir = env::var("L1_CONFIG_DIR").map(PathBuf::from).unwrap_or(default_dir);
+        let default_dir = PathBuf::from("configs/L1");
+        let l1_config_dir = env::var("L1_CONFIG_DIR").map(PathBuf::from).unwrap_or(default_dir);
 
-    // Check if the L1 config file exists. If it does, return the path to the file.
-    let l1_config_path = l1_config_dir.join(format!("{}.json", rollup_config.l1_chain_id));
-    if l1_config_path.exists() {
-        tracing::info!(
-            "L1 config for chain ID {} already exists at {}",
-            rollup_config.l1_chain_id,
-            l1_config_path.display()
-        );
+        // Check if the L1 config file exists. If it does, return the path to the file.
+        let l1_config_path = l1_config_dir.join(format!("{}.json", rollup_config.l1_chain_id));
+        if l1_config_path.exists() {
+            tracing::info!(
+                "L1 config for chain ID {} already exists at {}",
+                rollup_config.l1_chain_id,
+                l1_config_path.display()
+            );
 
-        let file = fs::File::open(&l1_config_path)?;
-        let l1_config: Value = serde_json::from_reader(file)?;
+            let file = fs::File::open(&l1_config_path)?;
+            let l1_config: Value = serde_json::from_reader(file)?;
+            tracing::debug!(
+                "Loaded L1 config for chain ID {} from file: {:?}",
+                rollup_config.l1_chain_id,
+                l1_config
+            );
+
+            return Ok(l1_config_path);
+        }
+
+        // Lookup the L1 config from the registry.
+        let l1_config = L1_CONFIGS.get(&rollup_config.l1_chain_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "No built-in L1 config exists for chain ID {}.\n\
+         To proceed, either:\n\
+         • Create a config file at: {}\n\
+         • Or set L1_CONFIG_DIR to the directory containing <chain_id>.json",
+                rollup_config.l1_chain_id,
+                l1_config_path.display()
+            )
+        })?;
+
         tracing::debug!(
-            "Loaded L1 config for chain ID {} from file: {:?}",
+            "Fetched L1 config for chain ID {} from registry: {:?}",
             rollup_config.l1_chain_id,
             l1_config
         );
 
-        return Ok(l1_config_path);
-    }
+        // Create the L1 config directory if it doesn't exist.
+        fs::create_dir_all(&l1_config_dir)
+            .with_context(|| format!("creating {}", l1_config_dir.display()))?;
 
-    // Lookup the L1 config from the registry.
-    let l1_config = L1_CONFIGS.get(&rollup_config.l1_chain_id).ok_or_else(|| {
-        anyhow::anyhow!(
-            "No built-in L1 config exists for chain ID {}.\n\
-         To proceed, either:\n\
-         • Create a config file at: {}\n\
-         • Or set L1_CONFIG_DIR to the directory containing <chain_id>.json",
+        // Write the L1 config to the file
+        let l1_config_str = serde_json::to_string_pretty(l1_config)?;
+        fs::write(&l1_config_path, l1_config_str)?;
+
+        tracing::info!(
+            "Saved L1 config for chain ID {} to {}",
             rollup_config.l1_chain_id,
             l1_config_path.display()
-        )
-    })?;
+        );
 
-    tracing::debug!(
-        "Fetched L1 config for chain ID {} from registry: {:?}",
-        rollup_config.l1_chain_id,
-        l1_config
-    );
-
-    // Create the L1 config directory if it doesn't exist.
-    fs::create_dir_all(&l1_config_dir)
-        .with_context(|| format!("creating {}", l1_config_dir.display()))?;
-
-    // Write the L1 config to the file
-    let l1_config_str = serde_json::to_string_pretty(l1_config)?;
-    fs::write(&l1_config_path, l1_config_str)?;
-
-    tracing::info!(
-        "Saved L1 config for chain ID {} to {}",
-        rollup_config.l1_chain_id,
-        l1_config_path.display()
-    );
-
-    Ok(l1_config_path)
-}
+        Ok(l1_config_path)
+    }
 
     async fn fetch_rpc_data<T>(url: &Url, method: &str, params: Vec<Value>) -> Result<T>
     where
@@ -657,119 +657,119 @@ where
     /// surfaced explicitly via [`reqwest::Response::error_for_status`] so callers can
     /// distinguish transport / auth / upstream health failures from protocol errors.
     async fn fetch_rpc_data_raw(
-    url: &Url,
-    method: &str,
-    params: Vec<Value>,
-) -> Result<serde_json::Value> {
-    let client = reqwest::Client::new();
-    let response = client
-        .post(url.clone())
-        .json(&json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-            "id": 1
-        }))
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<serde_json::Value>()
-        .await?;
-    Ok(response)
-}
+        url: &Url,
+        method: &str,
+        params: Vec<Value>,
+    ) -> Result<serde_json::Value> {
+        let client = reqwest::Client::new();
+        let response = client
+            .post(url.clone())
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": params,
+                "id": 1
+            }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<serde_json::Value>()
+            .await?;
+        Ok(response)
+    }
 
     /// Fetch arbitrary data from the RPC.
     pub async fn fetch_rpc_data_with_mode<T>(
-    &self,
-    rpc_mode: RPCMode,
-    method: &str,
-    params: Vec<Value>,
-) -> Result<T>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let url = self.get_rpc_url(rpc_mode)?;
-    Self::fetch_rpc_data(url, method, params).await
-}
+        &self,
+        rpc_mode: RPCMode,
+        method: &str,
+        params: Vec<Value>,
+    ) -> Result<T>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let url = self.get_rpc_url(rpc_mode)?;
+        Self::fetch_rpc_data(url, method, params).await
+    }
 
     /// Get the earliest L1 header in a batch of boot infos.
     pub async fn get_earliest_l1_head_in_batch(
-    &self,
-    boot_infos: &Vec<BootInfoStruct>,
-) -> Result<Header> {
-    let mut earliest_block_num: u64 = u64::MAX;
-    let mut earliest_l1_header: Option<Header> = None;
+        &self,
+        boot_infos: &Vec<BootInfoStruct>,
+    ) -> Result<Header> {
+        let mut earliest_block_num: u64 = u64::MAX;
+        let mut earliest_l1_header: Option<Header> = None;
 
-    for boot_info in boot_infos {
-        let l1_block_header = self.get_l1_header(boot_info.l1Head.into()).await?;
-        if l1_block_header.number < earliest_block_num {
-            earliest_block_num = l1_block_header.number;
-            earliest_l1_header = Some(l1_block_header);
+        for boot_info in boot_infos {
+            let l1_block_header = self.get_l1_header(boot_info.l1Head.into()).await?;
+            if l1_block_header.number < earliest_block_num {
+                earliest_block_num = l1_block_header.number;
+                earliest_l1_header = Some(l1_block_header);
+            }
         }
+        Ok(earliest_l1_header.unwrap())
     }
-    Ok(earliest_l1_header.unwrap())
-}
 
     /// Get the latest L1 header in a batch of boot infos.
     pub async fn get_latest_l1_head_in_batch(
-    &self,
-    boot_infos: &Vec<BootInfoStruct>,
-) -> Result<Header> {
-    let mut latest_block_num: u64 = u64::MIN;
-    let mut latest_l1_header: Option<Header> = None;
+        &self,
+        boot_infos: &Vec<BootInfoStruct>,
+    ) -> Result<Header> {
+        let mut latest_block_num: u64 = u64::MIN;
+        let mut latest_l1_header: Option<Header> = None;
 
-    for boot_info in boot_infos {
-        let l1_block_header = self.get_l1_header(boot_info.l1Head.into()).await?;
-        if l1_block_header.number > latest_block_num {
-            latest_block_num = l1_block_header.number;
-            latest_l1_header = Some(l1_block_header);
+        for boot_info in boot_infos {
+            let l1_block_header = self.get_l1_header(boot_info.l1Head.into()).await?;
+            if l1_block_header.number > latest_block_num {
+                latest_block_num = l1_block_header.number;
+                latest_l1_header = Some(l1_block_header);
+            }
+        }
+        if let Some(header) = latest_l1_header {
+            Ok(header)
+        } else {
+            bail!("Failed to get latest L1 header");
         }
     }
-    if let Some(header) = latest_l1_header {
-        Ok(header)
-    } else {
-        bail!("Failed to get latest L1 header");
-    }
-}
 
     /// Fetch headers for a range of blocks inclusive.
     pub async fn fetch_headers_in_range(&self, start: u64, end: u64) -> Result<Vec<Header>> {
-    let block_numbers: Vec<u64> = (start..=end).collect();
-    let mut headers = Vec::new();
+        let block_numbers: Vec<u64> = (start..=end).collect();
+        let mut headers = Vec::new();
 
-    // Process blocks in batches of 10, but maintain original order
-    let results = stream::iter(block_numbers)
-        .map(|block_number| self.get_l1_header(block_number.into()))
-        .buffered(10)
-        .collect::<Vec<_>>()
-        .await;
+        // Process blocks in batches of 10, but maintain original order
+        let results = stream::iter(block_numbers)
+            .map(|block_number| self.get_l1_header(block_number.into()))
+            .buffered(10)
+            .collect::<Vec<_>>()
+            .await;
 
-    for result in results {
-        headers.push(result?);
+        for result in results {
+            headers.push(result?);
+        }
+
+        Ok(headers)
     }
-
-    Ok(headers)
-}
 
     /// Get the preimages for the headers corresponding to the boot infos. Specifically, fetch the
     /// headers corresponding to the boot infos and the latest L1 head.
     pub async fn get_header_preimages(
-    &self,
-    boot_infos: &Vec<BootInfoStruct>,
-    checkpoint_block_hash: B256,
-) -> Result<Vec<Header>> {
-    // Get the earliest L1 Head from the boot_infos.
-    let start_header = self.get_earliest_l1_head_in_batch(boot_infos).await?;
+        &self,
+        boot_infos: &Vec<BootInfoStruct>,
+        checkpoint_block_hash: B256,
+    ) -> Result<Vec<Header>> {
+        // Get the earliest L1 Head from the boot_infos.
+        let start_header = self.get_earliest_l1_head_in_batch(boot_infos).await?;
 
-    // Fetch the full header for the latest L1 Head (which is validated on chain).
-    let latest_header = self.get_l1_header(checkpoint_block_hash.into()).await?;
+        // Fetch the full header for the latest L1 Head (which is validated on chain).
+        let latest_header = self.get_l1_header(checkpoint_block_hash.into()).await?;
 
-    // Create a vector of futures for fetching all headers
-    let headers =
-        self.fetch_headers_in_range(start_header.number, latest_header.number).await?;
+        // Create a vector of futures for fetching all headers
+        let headers =
+            self.fetch_headers_in_range(start_header.number, latest_header.number).await?;
 
-    Ok(headers)
-}
+        Ok(headers)
+    }
 
     pub async fn get_l2_output_at_block(&self, block_number: u64) -> Result<OutputResponse> {
         let block_number_hex = format!("0x{block_number:x}");
@@ -788,53 +788,53 @@ where
     /// Use binary search to find the first L1 block with an L2 safe head >= l2_end_block.
     /// Bounded above by the configured L1 selection.
     pub async fn get_safe_l1_block_for_l2_block(&self, l2_end_block: u64) -> Result<(B256, u64)> {
-    let latest_l1_header = self.resolve_selected_l1_header().await?;
+        let latest_l1_header = self.resolve_selected_l1_header().await?;
 
-    // Get the l1 origin of the l2 end block.
-    let l2_end_block_hex = format!("0x{l2_end_block:x}");
-    let optimism_output_data: OutputResponse = self
-        .fetch_rpc_data_with_mode(
-            RPCMode::L2Node,
-            "optimism_outputAtBlock",
-            vec![l2_end_block_hex.into()],
-        )
-        .await?;
-
-    let l1_origin = optimism_output_data.block_ref.l1_origin;
-
-    // Binary search for the first L1 block with L2 safe head >= l2_end_block.
-    let mut low = l1_origin.number;
-    let mut high = latest_l1_header.number;
-    let mut first_valid = None;
-
-    while low <= high {
-        let mid = low + (high - low) / 2;
-        let l1_block_number_hex = format!("0x{mid:x}");
-        let result: SafeHeadResponse = self
+        // Get the l1 origin of the l2 end block.
+        let l2_end_block_hex = format!("0x{l2_end_block:x}");
+        let optimism_output_data: OutputResponse = self
             .fetch_rpc_data_with_mode(
                 RPCMode::L2Node,
-                "optimism_safeHeadAtL1Block",
-                vec![l1_block_number_hex.into()],
+                "optimism_outputAtBlock",
+                vec![l2_end_block_hex.into()],
             )
             .await?;
-        let l2_safe_head = result.safe_head.number;
 
-        if l2_safe_head >= l2_end_block {
-            // Found a valid block, save it and keep searching lower.
-            first_valid = Some((result.l1_block.hash, result.l1_block.number));
-            high = mid - 1;
-        } else {
-            // Need to search higher
-            low = mid + 1;
+        let l1_origin = optimism_output_data.block_ref.l1_origin;
+
+        // Binary search for the first L1 block with L2 safe head >= l2_end_block.
+        let mut low = l1_origin.number;
+        let mut high = latest_l1_header.number;
+        let mut first_valid = None;
+
+        while low <= high {
+            let mid = low + (high - low) / 2;
+            let l1_block_number_hex = format!("0x{mid:x}");
+            let result: SafeHeadResponse = self
+                .fetch_rpc_data_with_mode(
+                    RPCMode::L2Node,
+                    "optimism_safeHeadAtL1Block",
+                    vec![l1_block_number_hex.into()],
+                )
+                .await?;
+            let l2_safe_head = result.safe_head.number;
+
+            if l2_safe_head >= l2_end_block {
+                // Found a valid block, save it and keep searching lower.
+                first_valid = Some((result.l1_block.hash, result.l1_block.number));
+                high = mid - 1;
+            } else {
+                // Need to search higher
+                low = mid + 1;
+            }
         }
-    }
 
-    first_valid.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Could not find an L1 block with an L2 safe head greater than the L2 end block."
-        )
-    })
-}
+        first_valid.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Could not find an L1 block with an L2 safe head greater than the L2 end block."
+            )
+        })
+    }
 
     /// If the safeDB is activated, use it to fetch the L1 block where the batch including the data
     /// for the end L2 block was posted. If the safeDB is not activated:
@@ -845,39 +845,39 @@ where
     /// `finalized` directly. For the default selection (`finalized`, 0) this is identical to
     /// the historical behavior; for non-default selections it follows the operator's choice.
     pub async fn get_l1_head(
-    &self,
-    l2_end_block: u64,
-    safe_db_fallback: bool,
-) -> Result<(B256, u64)> {
-    if self.rollup_config.is_none() {
-        return Err(anyhow::anyhow!("Rollup config not loaded."));
-    }
+        &self,
+        l2_end_block: u64,
+        safe_db_fallback: bool,
+    ) -> Result<(B256, u64)> {
+        if self.rollup_config.is_none() {
+            return Err(anyhow::anyhow!("Rollup config not loaded."));
+        }
 
-    match self.get_safe_l1_block_for_l2_block(l2_end_block).await {
-        Ok(safe_head) => Ok(safe_head),
-        Err(e) => {
-            if safe_db_fallback {
-                tracing::warn!("SafeDB not activated - falling back to timestamp-based L1 head estimation. WARNING: This fallback method is more expensive and less reliable. Derivation may fail if the L2 block batch is posted after our estimated L1 head. Enable SafeDB on op-node to fix this.");
-                // Fallback: estimate L1 block based on timestamp
-                let max_batch_post_delay_minutes = 40;
-                let l2_block_timestamp =
-                    self.get_l2_header(l2_end_block.into()).await?.timestamp;
-                let upper_bound_timestamp = self.resolve_selected_l1_header().await?.timestamp;
+        match self.get_safe_l1_block_for_l2_block(l2_end_block).await {
+            Ok(safe_head) => Ok(safe_head),
+            Err(e) => {
+                if safe_db_fallback {
+                    tracing::warn!("SafeDB not activated - falling back to timestamp-based L1 head estimation. WARNING: This fallback method is more expensive and less reliable. Derivation may fail if the L2 block batch is posted after our estimated L1 head. Enable SafeDB on op-node to fix this.");
+                    // Fallback: estimate L1 block based on timestamp
+                    let max_batch_post_delay_minutes = 40;
+                    let l2_block_timestamp =
+                        self.get_l2_header(l2_end_block.into()).await?.timestamp;
+                    let upper_bound_timestamp = self.resolve_selected_l1_header().await?.timestamp;
 
-                let target_timestamp = min(
-                    l2_block_timestamp + (max_batch_post_delay_minutes * 60),
-                    upper_bound_timestamp,
-                );
-                self.find_l1_block_by_timestamp(target_timestamp).await
-            } else {
-                Err(anyhow::anyhow!(
+                    let target_timestamp = min(
+                        l2_block_timestamp + (max_batch_post_delay_minutes * 60),
+                        upper_bound_timestamp,
+                    );
+                    self.find_l1_block_by_timestamp(target_timestamp).await
+                } else {
+                    Err(anyhow::anyhow!(
                     "SafeDB is not activated on your op-node and the `SAFE_DB_FALLBACK` flag is set to false. Please enable the safeDB on your op-node to fix this, or set `SAFE_DB_FALLBACK` flag to true, which will be more expensive: {}",
                     e
                 ))
+                }
             }
         }
     }
-}
 
     // Source from: https://github.com/anton-rs/kona/blob/85b1c88b44e5f54edfc92c781a313717bad5dfc7/crates/derive-alloy/src/alloy_providers.rs#L225.
     pub async fn get_l2_block_by_number(&self, block_number: u64) -> Result<CeloBlock> {
@@ -901,16 +901,16 @@ where
 
     /// Get the L2 safe head corresponding to the L1 block number using optimism_safeHeadAtL1Block.
     pub async fn get_l2_safe_head_from_l1_block_number(&self, l1_block_number: u64) -> Result<u64> {
-    let l1_block_number_hex = format!("0x{l1_block_number:x}");
-    let result: SafeHeadResponse = self
-        .fetch_rpc_data_with_mode(
-            RPCMode::L2Node,
-            "optimism_safeHeadAtL1Block",
-            vec![l1_block_number_hex.into()],
-        )
-        .await?;
-    Ok(result.safe_head.number)
-}
+        let l1_block_number_hex = format!("0x{l1_block_number:x}");
+        let result: SafeHeadResponse = self
+            .fetch_rpc_data_with_mode(
+                RPCMode::L2Node,
+                "optimism_safeHeadAtL1Block",
+                vec![l1_block_number_hex.into()],
+            )
+            .await?;
+        Ok(result.safe_head.number)
+    }
 
     /// Check if the safeDB is activated on the L2 node.
     ///
@@ -923,112 +923,112 @@ where
     ///   callers that reclassified those as "SafeDB inactive" (e.g. startup validation) now surface
     ///   the real failure instead.
     pub async fn is_safe_db_activated(&self) -> Result<bool> {
-    let finalized_l1_header = self.get_l1_header(BlockId::finalized()).await?;
-    let l1_block_number_hex = format!("0x{:x}", finalized_l1_header.number);
-    let url = self.get_rpc_url(RPCMode::L2Node)?;
-    let response = Self::fetch_rpc_data_raw(
-        url,
-        "optimism_safeHeadAtL1Block",
-        vec![l1_block_number_hex.into()],
-    )
-    .await?;
-    classify_safe_db_probe_outcome(&response)
-}
+        let finalized_l1_header = self.get_l1_header(BlockId::finalized()).await?;
+        let l1_block_number_hex = format!("0x{:x}", finalized_l1_header.number);
+        let url = self.get_rpc_url(RPCMode::L2Node)?;
+        let response = Self::fetch_rpc_data_raw(
+            url,
+            "optimism_safeHeadAtL1Block",
+            vec![l1_block_number_hex.into()],
+        )
+        .await?;
+        classify_safe_db_probe_outcome(&response)
+    }
 
     /// Get the L2 output data for a given block number and save the boot info to a file in the data
     /// directory with block_number. Return the arguments to be passed to the native host for
     /// datagen.
     pub async fn get_host_args(
-    &self,
-    l2_start_block: u64,
-    l2_end_block: u64,
-    l1_head_hash: B256,
-) -> Result<SingleChainHost> {
-    let Some(rollup_config) = &self.rollup_config else {
-        return Err(anyhow::anyhow!("Rollup config not loaded."));
-    };
+        &self,
+        l2_start_block: u64,
+        l2_end_block: u64,
+        l1_head_hash: B256,
+    ) -> Result<SingleChainHost> {
+        let Some(rollup_config) = &self.rollup_config else {
+            return Err(anyhow::anyhow!("Rollup config not loaded."));
+        };
 
-    if l2_start_block >= l2_end_block {
-        return Err(anyhow::anyhow!(
-            "L2 start block is greater than or equal to L2 end block. Start: {}, End: {}",
+        if l2_start_block >= l2_end_block {
+            return Err(anyhow::anyhow!(
+                "L2 start block is greater than or equal to L2 end block. Start: {}, End: {}",
+                l2_start_block,
+                l2_end_block
+            ));
+        }
+
+        let l2_provider = self.l2_provider.clone();
+
+        // Get L2 output data.
+        let l2_output_block =
+            l2_provider.get_block_by_number(l2_start_block.into()).await?.ok_or_else(|| {
+                anyhow::anyhow!("Block not found for block number {}", l2_start_block)
+            })?;
+        let l2_output_state_root = l2_output_block.header.state_root;
+        let agreed_l2_head_hash = l2_output_block.header.hash;
+        let l2_output_storage_hash = l2_to_l1_message_passer_storage_root(
+            l2_provider.as_ref(),
+            &l2_output_block.header.inner,
             l2_start_block,
-            l2_end_block
-        ));
+        )
+        .await?;
+
+        let l2_output_encoded = L2Output {
+            zero: 0,
+            l2_state_root: l2_output_state_root.0.into(),
+            l2_storage_hash: l2_output_storage_hash.0.into(),
+            l2_claim_hash: agreed_l2_head_hash.0.into(),
+        };
+        let agreed_l2_output_root = keccak256(l2_output_encoded.abi_encode());
+
+        // Get L2 claim data.
+        let l2_claim_block = l2_provider.get_block_by_number(l2_end_block.into()).await?.unwrap();
+        let l2_claim_state_root = l2_claim_block.header.state_root;
+        let l2_claim_hash = l2_claim_block.header.hash;
+        let l2_claim_storage_hash = l2_to_l1_message_passer_storage_root(
+            l2_provider.as_ref(),
+            &l2_claim_block.header.inner,
+            l2_end_block,
+        )
+        .await?;
+
+        let l2_claim_encoded = L2Output {
+            zero: 0,
+            l2_state_root: l2_claim_state_root.0.into(),
+            l2_storage_hash: l2_claim_storage_hash.0.into(),
+            l2_claim_hash: l2_claim_hash.0.into(),
+        };
+        let claimed_l2_output_root = keccak256(l2_claim_encoded.abi_encode());
+
+        let l1_beacon_address = self
+            .rpc_config
+            .l1_beacon_rpc
+            .as_ref()
+            .map(|addr| addr.as_str().trim_end_matches('/').to_string());
+
+        Ok(SingleChainHost {
+            l1_head: l1_head_hash,
+            agreed_l2_output_root,
+            agreed_l2_head_hash,
+            claimed_l2_output_root,
+            claimed_l2_block_number: l2_end_block,
+            l2_chain_id: Some(rollup_config.l2_chain_id.id()),
+            // Trim the trailing slash to avoid double slashes in the URL.
+            l2_node_address: Some(
+                self.rpc_config.l2_rpc.as_str().trim_end_matches('/').to_string(),
+            ),
+            l1_node_address: Some(
+                self.rpc_config.l1_rpc.as_str().trim_end_matches('/').to_string(),
+            ),
+            l1_beacon_address,
+            data_dir: None, // Use in-memory key-value store.
+            // Irrelevant with an in-memory KV store (no on-disk preimage data).
+            data_format: kona_host::DataFormat::default(),
+            native: false,
+            server: true,
+            rollup_config_path: self.rollup_config_path.clone(),
+            l1_config_path: self.l1_config_path.clone(),
+        })
     }
-
-    let l2_provider = self.l2_provider.clone();
-
-    // Get L2 output data.
-    let l2_output_block =
-        l2_provider.get_block_by_number(l2_start_block.into()).await?.ok_or_else(|| {
-            anyhow::anyhow!("Block not found for block number {}", l2_start_block)
-        })?;
-    let l2_output_state_root = l2_output_block.header.state_root;
-    let agreed_l2_head_hash = l2_output_block.header.hash;
-    let l2_output_storage_hash = l2_to_l1_message_passer_storage_root(
-        l2_provider.as_ref(),
-        &l2_output_block.header.inner,
-        l2_start_block,
-    )
-    .await?;
-
-    let l2_output_encoded = L2Output {
-        zero: 0,
-        l2_state_root: l2_output_state_root.0.into(),
-        l2_storage_hash: l2_output_storage_hash.0.into(),
-        l2_claim_hash: agreed_l2_head_hash.0.into(),
-    };
-    let agreed_l2_output_root = keccak256(l2_output_encoded.abi_encode());
-
-    // Get L2 claim data.
-    let l2_claim_block = l2_provider.get_block_by_number(l2_end_block.into()).await?.unwrap();
-    let l2_claim_state_root = l2_claim_block.header.state_root;
-    let l2_claim_hash = l2_claim_block.header.hash;
-    let l2_claim_storage_hash = l2_to_l1_message_passer_storage_root(
-        l2_provider.as_ref(),
-        &l2_claim_block.header.inner,
-        l2_end_block,
-    )
-    .await?;
-
-    let l2_claim_encoded = L2Output {
-        zero: 0,
-        l2_state_root: l2_claim_state_root.0.into(),
-        l2_storage_hash: l2_claim_storage_hash.0.into(),
-        l2_claim_hash: l2_claim_hash.0.into(),
-    };
-    let claimed_l2_output_root = keccak256(l2_claim_encoded.abi_encode());
-
-    let l1_beacon_address = self
-        .rpc_config
-        .l1_beacon_rpc
-        .as_ref()
-        .map(|addr| addr.as_str().trim_end_matches('/').to_string());
-
-    Ok(SingleChainHost {
-        l1_head: l1_head_hash,
-        agreed_l2_output_root,
-        agreed_l2_head_hash,
-        claimed_l2_output_root,
-        claimed_l2_block_number: l2_end_block,
-        l2_chain_id: Some(rollup_config.l2_chain_id.id()),
-        // Trim the trailing slash to avoid double slashes in the URL.
-        l2_node_address: Some(
-            self.rpc_config.l2_rpc.as_str().trim_end_matches('/').to_string(),
-        ),
-        l1_node_address: Some(
-            self.rpc_config.l1_rpc.as_str().trim_end_matches('/').to_string(),
-        ),
-        l1_beacon_address,
-        data_dir: None, // Use in-memory key-value store.
-        // Irrelevant with an in-memory KV store (no on-disk preimage data).
-        data_format: kona_host::DataFormat::default(),
-        native: false,
-        server: true,
-        rollup_config_path: self.rollup_config_path.clone(),
-        l1_config_path: self.l1_config_path.clone(),
-    })
-}
 }
 
 #[cfg(test)]

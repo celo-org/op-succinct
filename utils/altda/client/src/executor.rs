@@ -9,10 +9,10 @@ use std::{fmt::Debug, sync::Arc};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use kona_derive::{BlobProvider, EthereumDataSource};
-use kona_driver::PipelineCursor;
 use celo_genesis::CeloRollupConfig;
 use celo_proof::CeloOracleL2ChainProvider;
+use kona_derive::{BlobProvider, EthereumDataSource};
+use kona_driver::PipelineCursor;
 use kona_genesis::L1ChainConfig;
 use kona_preimage::CommsClient;
 use kona_proof::{
