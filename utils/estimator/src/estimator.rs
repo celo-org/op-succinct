@@ -9,7 +9,6 @@ use op_succinct_host_utils::{
 };
 use op_succinct_proof_utils::get_range_elf_embedded;
 use rkyv::rancor::Error as RkyvError;
-use sp1_core_executor::ExecutionError;
 use sp1_sdk::{
     blocking::{CpuProver, Prover},
     Elf,
@@ -132,13 +131,9 @@ where
         .await
         .map_err(|e| EstimatorError::Fatal(anyhow::anyhow!("execute task join error: {e}")))?;
 
-        // Match the concrete `ExecutionError` variant rather than string-scraping its
-        // Display. SP1 execute is deterministic over fixed stdin, so every variant reproduces
-        // on retry: the zkVM memory limit is `TooMuchMemory`, the rest are fatal.
-        let (_public_values, report) = exec.map_err(|e| match e {
-            ExecutionError::TooMuchMemory() => EstimatorError::TooMuchMemory,
-            other => EstimatorError::Fatal(anyhow::anyhow!("SP1 execute failed: {other:?}")),
-        })?;
+        // SP1 execute is deterministic over fixed stdin, so every `ExecutionError` reproduces
+        // on retry and is non-retryable. Carry the concrete error through unchanged.
+        let (_public_values, report) = exec.map_err(EstimatorError::Sp1Execute)?;
 
         Ok(ExecutionStats::new(0, block_data, &report, 0, 0))
     }
