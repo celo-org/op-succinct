@@ -38,6 +38,7 @@ branch; line numbers are current as of that branch. Module path:
 | Error classification typed: `Oom`→`TooMuchMemory`→`Sp1Execute(ExecutionError)` (deterministic ⇒ non-retryable); `MissingTrieNode` reclassified transient | `43084e7b`, `c19d7a24`, `b28799a4` |
 | Stdin pruned immediately on success (grace window + `--stdin-grace-secs` removed); `Fatal` stdin retained for debugging (item #9) | `2c7b2125`, `2fa136ce` |
 | Above-watermark completions persisted (`pending`); restart skips completed games (item #27) | `d18f55f8` |
+| Readiness buffer and host offset unified into one shared `L1_HEAD_BUFFER` constant (item #10) | `7cd3a581`, `d28c38f7` |
 
 ---
 
@@ -169,10 +170,13 @@ The stdin lifecycle was reworked around the terminal outcomes:
 - **Caveat:** reclaiming retained `Fatal` stdin needs `--max-cache-size > 0` (the chaos overlay
   sets `40GB`); with the default `0` it accumulates until the PVC fills.
 
-#### 10. `L1_HEAD_FINALITY_BUFFER` hard-coded
-- **Site:** `readiness.rs:21` — `pub const L1_HEAD_FINALITY_BUFFER: u64 = 20;`. Linked
-  to the host's `calculate_safe_l1_head` buffer by comment only; no flag, no compile-time tie.
-- **Fix:** derive from / assert against the host constant, or expose a flag.
+#### 10. Readiness buffer duplicated the host's offset — FIXED (`7cd3a581`, `d28c38f7`)
+The readiness gate's buffer and the host's `calculate_safe_l1_head` `+20` were separate literals
+linked by comment only. They are now a single shared constant `L1_HEAD_BUFFER = 20`
+(`utils/host/src/host.rs:17`), imported by both the readiness gate (`readiness.rs`) and the DA
+hosts (`utils/{eigenda,ethereum}/host/src/host.rs`), so the gate cannot drift from the offset the
+witness bakes in — the compile-time tie this asked for. The old `L1_HEAD_FINALITY_BUFFER` alias
+was dropped. A flag was deemed unnecessary (the value must match the host, not be tuned freely).
 
 #### 11. `Mutex::lock().unwrap()` panic sites in admission
 A poisoned mutex would crash the calling task.
