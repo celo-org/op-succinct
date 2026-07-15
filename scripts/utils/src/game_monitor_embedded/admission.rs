@@ -53,6 +53,14 @@ fn gib(bytes: u64) -> f64 {
 /// the in-progress episode peaks are transient (`serde(skip)`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 struct CostModel {
+    /// EWMA of idle resident memory in bytes — the fixed floor present with nothing in flight
+    /// (allocator high-water, resident buffers). Learned from idle samples rather than measured
+    /// once at startup (which caught only the ~50 MB cold process, not the real multi-GiB
+    /// steady-state floor), and subtracted from every sample so the per-kind costs below are the
+    /// true marginal bytes/gas. `serde(default)` so a model written before this field still loads
+    /// (its baseline is then re-seeded from the current idle RSS).
+    #[serde(default)]
+    baseline_bytes: f64,
     /// EWMA of per-episode peak bytes/gas, learned while only builds were in flight.
     cost_per_gas_build: f64,
     /// EWMA of per-episode peak bytes/gas, learned while only executes were in flight.
@@ -128,9 +136,7 @@ pub struct Admission {
     budget_bytes: Option<u64>,
     margin_bytes: u64,
     max_concurrent: u64,
-    /// Idle resident memory measured at startup; subtracted from every sample.
-    baseline_bytes: u64,
-    /// Per-kind learned costs; shared with the sampler.
+    /// Per-kind learned costs plus the learned idle baseline; shared with the sampler.
     cost: Mutex<CostModel>,
     registry: Arc<WorkloadRegistry>,
     rss_source: Box<dyn RssSource>,
@@ -146,16 +152,21 @@ impl Admission {
     /// Load the persisted per-kind model (if any), measure the idle baseline from
     /// `rss_source`, and build the admission gate.
     pub fn load(config: AdmissionConfig, rss_source: Box<dyn RssSource>) -> Arc<Self> {
-        let model: CostModel = std::fs::read_to_string(&config.persist_path)
+        let mut model: CostModel = std::fs::read_to_string(&config.persist_path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
 
-        // Baseline = resident memory now, before any work is admitted.
-        let baseline_bytes = rss_source.read().unwrap_or(0);
+        // Seed the learned baseline from the current idle RSS only if the persisted model has
+        // none (a fresh model, or one written before the baseline was learned). A persisted
+        // baseline is kept and keeps evolving from idle samples in `observe`. The startup read is
+        // only a seed — the true steady-state floor accrues after warm-up and is learned there.
+        if model.baseline_bytes <= 0.0 {
+            model.baseline_bytes = rss_source.read().unwrap_or(0) as f64;
+        }
 
         tracing::info!(
-            baseline_gib = %format!("{:.1}", gib(baseline_bytes)),
+            baseline_gib = %format!("{:.1}", gib(model.baseline_bytes as u64)),
             cost_per_gas_build = %format!("{:.0}", model.cost_per_gas_build),
             cost_per_gas_execute = %format!("{:.0}", model.cost_per_gas_execute),
             samples_build = model.samples_build,
@@ -167,7 +178,6 @@ impl Admission {
             budget_bytes: config.budget_bytes,
             margin_bytes: config.margin_bytes,
             max_concurrent: (config.max_concurrent.max(1)) as u64,
-            baseline_bytes,
             cost: Mutex::new(model),
             registry: Arc::new(WorkloadRegistry::default()),
             rss_source,
@@ -267,7 +277,7 @@ impl Admission {
     /// Project total resident memory for the in-flight set `(build_gas, execute_gas)` (which
     /// already includes the unit under consideration), charging each kind its own cost.
     fn project(&self, model: &CostModel, build_gas: u64, execute_gas: u64) -> u64 {
-        (self.baseline_bytes as f64 +
+        (model.baseline_bytes +
             model.cost_per_gas_build * build_gas as f64 +
             model.cost_per_gas_execute * execute_gas as f64) as u64
     }
@@ -290,8 +300,12 @@ impl Admission {
     /// the typical per-episode peak and a lone outlier decays out over subsequent episodes.
     pub fn observe(&self, rss: u64) {
         let (sb, se) = self.registry.snapshot();
-        let net = rss.saturating_sub(self.baseline_bytes) as f64;
         let mut model = self.cost.lock().unwrap();
+        let net = (rss as f64 - model.baseline_bytes).max(0.0);
+        // Captured before the close logic below resets the peaks: true iff an episode is folding
+        // this tick, i.e. the registry is emptying now and RSS still carries the just-finished
+        // work — so this transitional tick must not be folded into the idle baseline.
+        let episode_closing = model.episode_peak_build > 0.0 || model.episode_peak_execute > 0.0;
 
         // Build episode: accumulate its peak while only builds are in flight; fold on end.
         if se == 0 && sb as f64 >= MIN_SAMPLE_GAS {
@@ -311,6 +325,14 @@ impl Admission {
                 fold_ewma(model.cost_per_gas_execute, model.episode_peak_execute);
             model.samples_execute += 1;
             model.episode_peak_execute = 0.0;
+        }
+
+        // Idle baseline: with nothing in flight and no episode folding this tick, resident memory
+        // IS the floor — fold it into the learned baseline (EWMA, so a reading that hasn't fully
+        // decayed can neither crater nor spike it). This replaces the single mis-calibrated
+        // startup read; idle ticks never attribute a cost, so it slots beside the episode logic.
+        if sb == 0 && se == 0 && !episode_closing {
+            model.baseline_bytes = fold_ewma(model.baseline_bytes, rss as f64);
         }
     }
 
@@ -337,9 +359,10 @@ impl Admission {
                         since_sample_log = 0;
                         let (build_gas, execute_gas) = self.registry.snapshot();
                         if build_gas + execute_gas > 0 {
+                            let baseline = self.cost.lock().unwrap().baseline_bytes;
                             tracing::info!(
                                 rss_gib = %format!("{:.2}", gib(rss)),
-                                net_gib = %format!("{:.2}", gib(rss.saturating_sub(self.baseline_bytes))),
+                                net_gib = %format!("{:.2}", gib((rss as f64 - baseline).max(0.0) as u64)),
                                 build_gas,
                                 execute_gas,
                                 total_gas = build_gas + execute_gas,
@@ -452,12 +475,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let adm = test_admission(None, 64, dir.path().join("model.json"));
 
-        // Empty registry → skipped, no change.
+        // Empty registry → no cost is attributed (an idle reading only informs the baseline,
+        // covered by `observe_learns_idle_baseline`). Then pin the baseline back to 0 so the
+        // episode arithmetic below is `net == rss`.
         adm.observe(10_000);
-        assert_eq!(*adm.cost.lock().unwrap(), CostModel::default());
+        {
+            let m = adm.cost.lock().unwrap();
+            assert_eq!(m.cost_per_gas_build, 0.0);
+            assert_eq!(m.cost_per_gas_execute, 0.0);
+        }
+        adm.cost.lock().unwrap().baseline_bytes = 0.0;
 
         // Build episode: the peak is accumulated (max) while in flight, but NOT folded until
-        // the episode ends. Baseline is 0 (Unsupported source).
+        // the episode ends. Baseline is 0.
         {
             let _b = AdmitGuard::new(adm.registry.clone(), WorkKind::Build, 1_000);
             adm.observe(10_000); // peak = 10_000 / 1_000 = 10
@@ -490,6 +520,36 @@ mod tests {
         adm.observe(0);
         assert_eq!(adm.cost.lock().unwrap().cost_per_gas_build, before.cost_per_gas_build);
         assert_eq!(adm.cost.lock().unwrap().cost_per_gas_execute, before.cost_per_gas_execute);
+    }
+
+    #[test]
+    fn observe_learns_idle_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let adm = test_admission(None, 64, dir.path().join("model.json"));
+        // Unsupported RSS source → seeded baseline is 0.
+        assert_eq!(adm.cost.lock().unwrap().baseline_bytes, 0.0);
+
+        // First idle reading (empty registry, no episode closing) seeds the baseline directly.
+        adm.observe(4_000_000_000);
+        assert_eq!(adm.cost.lock().unwrap().baseline_bytes, 4_000_000_000.0);
+
+        // Subsequent idle readings move it by EWMA (α=0.1), not a jump: 0.9*4e9 + 0.1*5e9.
+        adm.observe(5_000_000_000);
+        let b = adm.cost.lock().unwrap().baseline_bytes;
+        assert!((b - 4_100_000_000.0).abs() < 1.0, "got {b}");
+
+        // A tick that closes an episode must NOT fold the still-elevated RSS into the baseline.
+        {
+            let _g = AdmitGuard::new(adm.registry.clone(), WorkKind::Build, 1_000);
+            adm.observe(9_000_000_000); // accumulates a build peak; registry non-empty
+        }
+        let before = adm.cost.lock().unwrap().baseline_bytes;
+        adm.observe(9_000_000_000); // registry just emptied → close tick → baseline untouched
+        assert_eq!(adm.cost.lock().unwrap().baseline_bytes, before);
+
+        // The next settled-idle tick resumes learning (pulls the baseline back down).
+        adm.observe(4_000_000_000);
+        assert!(adm.cost.lock().unwrap().baseline_bytes < before);
     }
 
     #[test]
@@ -558,12 +618,14 @@ mod tests {
             adm.observe(3_000); // execute episode peak = 3
         }
         adm.observe(0); // close episode → fold (seeds execute cost = 3)
+        adm.observe(2_000_000_000); // idle tick → seeds the learned baseline
         adm.persist();
 
         let reloaded = test_admission(None, 64, path);
         let model = *reloaded.cost.lock().unwrap();
         assert_eq!(model.cost_per_gas_build, 7.0);
         assert_eq!(model.cost_per_gas_execute, 3.0);
+        assert_eq!(model.baseline_bytes, 2_000_000_000.0); // baseline round-trips too
     }
 
     #[test]

@@ -40,6 +40,7 @@ branch; line numbers are current as of that branch. Module path:
 | Above-watermark completions persisted (`pending`); restart skips completed games (item #27) | `d18f55f8` |
 | Readiness buffer and host offset unified into one shared `L1_HEAD_BUFFER` constant (item #10) | `7cd3a581`, `d28c38f7` |
 | Post-stdin `drop_witness` made best-effort (no false build failure); short-circuit re-drops leaked blobs (item #12) | this change |
+| Admission baseline learned as an EWMA of idle RSS (was a single mis-calibrated startup read), persisted in `CostModel` (item #28) | this change |
 
 ---
 
@@ -223,31 +224,26 @@ would be full recomputes — so persisting the set became load-bearing, not just
   too, so they are persisted and never re-run either.
 - **Relates to:** #9 (this is what makes immediate pruning safe), #26 (scheduling).
 
-#### 28. Admission `baseline_bytes` is measured once at startup (too early) → mis-calibrated projection
-`baseline_bytes` is read once in `load()` before any work runs (`admission.rs:155`) and then
-frozen (`:132`, `:170`). At that instant the process hasn't warmed up (heap/allocator high-water,
-resident buffers), so it captures ~50 MB — while the RSS debug data shows a real steady-state idle
-floor of ~2.5–5 GiB that accumulates afterwards and is never re-measured. With `baseline ≈ 0`,
-`observe()` learns each kind's `cost_per_gas` from `(rss − ~0)/gas` (`:293`), folding the fixed floor
-into the per-gas slope — a through-origin fit to affine data (`rss ≈ F + s·gas`). Net effect:
-`project()` (`:269-273`) under-projects at low concurrency (misses the floor → over-admits) and
-over-projects at high (error ∝ `F·(gas/g_ep − 1)`).
-- **Fix (learn it, don't hardcode):** treat the floor like the costs — an EWMA of *idle* RSS. In
-  `observe()`, when nothing is in flight (`sb == 0 && se == 0`), fold the current `rss` into the
-  baseline via `fold_ewma`/`EWMA_ALPHA`. Idle ticks never fold a cost, so it slots in cleanly beside
-  the per-kind episode logic. Move `baseline_bytes` into `CostModel` (already behind the `self.cost`
-  mutex `observe` holds, and `project` already takes `&CostModel`) so it is mutable, persisted and
-  re-seeded across restarts; keep the startup read as the initial seed. Then `net = rss − baseline`
-  yields the true marginal `cost_per_gas` and `project` becomes a correct `floor + slope·gas` at all
-  concurrency levels.
-- **Edge cases:** never-idle → hold last estimate (the RSS data shows ~12–16% of ticks fully idle, so
-  there is plenty to learn from; avoid a min-over-window fallback that conflates idle with low-work);
-  when the baseline rises, the previously-inflated `cost_per_gas` must re-converge (the EWMA handles
-  it — reset/ignore the persisted model once on first deploy); use EWMA (not min/max) so a transient
-  dip cannot crater the floor.
-- **Evidence:** 20k `admission rss sample` points (09:00–15:30 BST, `sha-dc929b7`) — fixed floor
-  ~2.5–5 GiB vs model baseline ~50 MB (`net_gib ≈ rss_gib − 0.05`).
-- **Relates to:** #6 (per-kind cost model), #26 (scheduling). Contained to `admission.rs`.
+#### 28. Admission `baseline_bytes` was measured once at startup → mis-calibrated projection — FIXED
+`baseline_bytes` used to be read once in `load()` before warm-up (~50 MB) and frozen, while the real
+steady-state idle floor is ~2.5–5 GiB. With `baseline ≈ 0` the per-kind `cost_per_gas` folded the
+fixed floor into the per-gas slope (a through-origin fit to affine `rss ≈ F + s·gas`), so `project`
+under-projected at low concurrency (missed the floor → over-admit) and over-projected at high.
+- **Fix:** the baseline is now **learned** like the costs — an EWMA of idle RSS. It moved into
+  `CostModel` (`baseline_bytes: f64`, `serde(default)`, persisted and re-seeded across restarts);
+  `observe()` folds the current `rss` into it whenever nothing is in flight and no episode is closing
+  that tick (the transitional close tick, whose RSS still carries the just-finished work, is skipped).
+  `net = rss − baseline` now yields the true marginal `cost_per_gas`, and `project = baseline +
+  slope·gas` is correct at all concurrency levels. The startup read remains the initial seed until the
+  first idle sample. EWMA (not min/max) means a not-yet-decayed reading can neither crater nor spike
+  the floor.
+- **Deploy note:** an old persisted model loads (baseline `serde`-defaults to 0 → re-seeded) with its
+  `cost_per_gas` still folded-in; those decay to the true marginal as the baseline rises — the
+  transition **over**-projects (conservative, safe), and the `--rss-margin-mb` (20 GiB) covers the
+  ~3–5 GiB floor during warm-up regardless. Tests: `observe_learns_idle_baseline`, baseline round-trip
+  in `persist_round_trips_per_kind_costs`.
+- **Relates to:** #6 (per-kind cost model), #29 (sharpens the *secondary* memory bound; the count caps
+  stay primary), #26 (scheduling).
 
 ### Testing
 
