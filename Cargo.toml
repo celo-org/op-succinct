@@ -8,6 +8,8 @@ members = [
     "utils/celestia/host",
     "utils/eigenda/client",
     "utils/eigenda/host",
+    "utils/altda/client",
+    "utils/altda/host",
     "utils/eigenda/registry",
     "utils/proof",
     "utils/signer",
@@ -28,7 +30,7 @@ edition = "2021"
 authors = ["ratankaliani", "zachobront", "fakedev9999", "yuwen01"]
 homepage = "https://succinctlabs.github.io/op-succinct/"
 repository = "https://github.com/succinctlabs/op-succinct"
-version = "4.3.1"
+version = "4.4.0"
 
 [workspace.dependencies]
 # general
@@ -112,22 +114,22 @@ celo-genesis = { git = "https://github.com/celo-org/celo-kona", tag = "celo/v1.1
 celo-registry = { git = "https://github.com/celo-org/celo-kona", tag = "celo/v1.1.1", default-features = false }
 
 # hana
-hana-blobstream = { git = "https://github.com/celestiaorg/hana", tag = "v1.6.0-mocha" }
-hana-celestia = { git = "https://github.com/celestiaorg/hana", tag = "v1.6.0-mocha" }
-hana-host = { git = "https://github.com/celestiaorg/hana", tag = "v1.6.0-mocha" }
-hana-oracle = { git = "https://github.com/celestiaorg/hana", tag = "v1.6.0-mocha" }
+hana-blobstream = { git = "https://github.com/celestiaorg/hana", tag = "v1.7.0-mocha" }
+hana-celestia = { git = "https://github.com/celestiaorg/hana", tag = "v1.7.0-mocha" }
+hana-host = { git = "https://github.com/celestiaorg/hana", tag = "v1.7.0-mocha" }
+hana-oracle = { git = "https://github.com/celestiaorg/hana", tag = "v1.7.0-mocha" }
 
 # hokulea
-hokulea-compute-proof = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7" }
-hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7" }
-hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7" }
-hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7" }
-hokulea-witgen = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7" }
-hokulea-zkvm-verification = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7" }
-canoe-sp1-cc-host = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7" }
-canoe-sp1-cc-verifier = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7" }
-canoe-verifier-address-fetcher = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7" }
-eigenda-cert = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7" }
+hokulea-compute-proof = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.9" }
+hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.9" }
+hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.9" }
+hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.9" }
+hokulea-witgen = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.9" }
+hokulea-zkvm-verification = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.9" }
+canoe-sp1-cc-host = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.9" }
+canoe-sp1-cc-verifier = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.9" }
+canoe-verifier-address-fetcher = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.9" }
+eigenda-cert = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.9" }
 
 
 # op-succinct
@@ -144,6 +146,8 @@ op-succinct-celestia-client-utils = { path = "utils/celestia/client" }
 op-succinct-celestia-host-utils = { path = "utils/celestia/host" }
 op-succinct-eigenda-client-utils = { path = "utils/eigenda/client" }
 op-succinct-eigenda-host-utils = { path = "utils/eigenda/host" }
+op-succinct-altda-client-utils = { path = "utils/altda/client" }
+op-succinct-altda-host-utils = { path = "utils/altda/host" }
 celo-eigenda-registry = { path = "utils/eigenda/registry" }
 op-succinct-proof-utils = { path = "utils/proof" }
 op-succinct-signer-utils = { path = "utils/signer" }
