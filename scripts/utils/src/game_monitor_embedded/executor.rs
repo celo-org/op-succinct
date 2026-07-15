@@ -19,16 +19,16 @@ type WitnessOf<H> = <<H as OPSuccinctHost>::WitnessGenerator as WitnessGenerator
 /// A cache hit (pipeline prebuilt the stdin) skips host.run; a miss builds on demand.
 /// Each execute passes through admission, which gates on both the projected memory budget
 /// and the hard concurrency cap, so the number of sub-ranges actually running at once is
-/// bounded regardless of how many ranges (or games) are in flight. Returns the aggregate
-/// AND the sub-ranges (so the caller can schedule stdin pruning per range after the game
-/// succeeds).
+/// bounded regardless of how many ranges (or games) are in flight. Returns the sub-ranges
+/// FIRST and always — on success or failure — alongside the aggregate-stats result, so the
+/// caller can schedule stdin pruning for whatever was built after a success OR a fatal failure.
 pub async fn execute_game<H: OPSuccinctHost>(
     estimator: &Estimator<H>,
     fetcher: &OPSuccinctDataFetcher,
     admission: &Admission,
     game: &GameData,
     batch_size: u64,
-) -> Result<(ExecutionStats, Vec<SpanBatchRange>), EstimatorError>
+) -> (Vec<SpanBatchRange>, Result<ExecutionStats, EstimatorError>)
 where
     // Mirror Estimator<H>'s impl rkyv bounds so this can call execute_range/build_range_witness.
     WitnessOf<H>: for<'a> rkyv::Serialize<
@@ -73,8 +73,12 @@ where
 
     let results = futures::future::join_all(range_futures).await;
 
-    // Propagate the first error (a successful sub-range's stdin is already cached, so a
-    // later retry skips its build). Otherwise aggregate.
-    let per_range = results.into_iter().collect::<Result<Vec<_>, _>>()?;
-    Ok((aggregate_execution_stats(&per_range, 0, 0), sub_ranges))
+    // Surface the first error, else aggregate. Either way hand back `sub_ranges` so the
+    // caller can schedule pruning — a successful sub-range's stdin is cached (a later retry
+    // skips its build), and a partial-then-failed game leaves cached stdin to reclaim.
+    let result = results
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map(|per_range| aggregate_execution_stats(&per_range, 0, 0));
+    (sub_ranges, result)
 }
