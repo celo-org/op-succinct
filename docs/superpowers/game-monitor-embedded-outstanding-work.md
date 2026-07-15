@@ -35,6 +35,9 @@ branch; line numbers are current as of that branch. Module path:
 | Per-kind admission concurrency cap so builds don't starve executes (item #29) | `c1baa130` |
 | Concurrent predictive prebuild pipeline, gated by the shared memory admission gate (item #5) | `3e4fd211` |
 | Game-task panics caught and requeued as Transient — no more slot leak / wedge (item #23) | `763a641e` |
+| Error classification typed: `Oom`→`TooMuchMemory`→`Sp1Execute(ExecutionError)` (deterministic ⇒ non-retryable); `MissingTrieNode` reclassified transient | `43084e7b`, `c19d7a24`, `b28799a4` |
+| Stdin pruned immediately on success (grace window + `--stdin-grace-secs` removed); `Fatal` stdin retained for debugging (item #9) | `2c7b2125`, `2fa136ce` |
+| Above-watermark completions persisted (`pending`); restart skips completed games (item #27) | `d18f55f8` |
 
 ---
 
@@ -150,13 +153,21 @@ the executor already does to compute the admission gas key. `execute_range` now 
 `block_data: &[BlockInfo]` and the executor (`executor.rs:68`) threads in the slice it
 already fetched, halving L2 RPC round-trips per executed sub-range.
 
-#### 9. Orphan stdin not pruned on `WrongType` / `Fatal`
-`prunables.push` runs only on `Success`; a `Fatal`-after-partial-execution leaves cached
-stdin on disk indefinitely. No age-based sweep reclaims orphans.
-- **Sites:** push at `mod.rs:313` (Success only); `mod.rs:316` (WrongType) and `mod.rs:340`
-  (Fatal) call `complete_game` without scheduling a prune.
-- **Caveat:** a `WrongType` (non-type-42) game usually never built stdin, so its leak is
-  typically vacuous.
+#### 9. Stdin lifecycle on terminal outcomes — RESOLVED (by design)
+The stdin lifecycle was reworked around the terminal outcomes:
+- **`Success`** prunes its stdin **immediately** (`2c7b2125`); the grace window and
+  `--stdin-grace-secs` were removed. A completed game is never re-run (completions are now
+  persisted, #27) and games are contiguous (no overlapping-neighbour reuse), so a grace window
+  bought nothing.
+- **`Fatal`** deliberately **retains** its stdin (`2fa136ce`) so it can be fetched to iterate on
+  the execution code locally; the size-cap GC reclaims it under space pressure (oldest-first,
+  unprotected). This reversed the short-lived Fatal-prune of `0c9170fc`.
+- **`WrongType`** never builds stdin — the type check precedes any build (`discovery.rs:49`) — so
+  there is nothing to prune.
+- The old "restart drops the in-memory prune list" leak is gone: pruning is immediate and
+  completions are persisted, so there is no deferred list to lose.
+- **Caveat:** reclaiming retained `Fatal` stdin needs `--max-cache-size > 0` (the chaos overlay
+  sets `40GB`); with the default `0` it accumulates until the PVC fills.
 
 #### 10. `L1_HEAD_FINALITY_BUFFER` hard-coded
 - **Site:** `readiness.rs:21` — `pub const L1_HEAD_FINALITY_BUFFER: u64 = 20;`. Linked
@@ -193,21 +204,17 @@ longer exists, so this item is moot.
   `cost_estimator.rs`, `gen_sp1_test_artifacts.rs`, and prove tests, never by
   `game_monitor_embedded`. Low priority; listed for completeness.
 
-#### 27. Above-watermark completions are not persisted (re-run after restart)
-Successful executions ahead of the contiguous watermark live only in `SequenceTracker`'s in-memory
-`pending: HashSet<u64>` (`sequence_tracker.rs:9`, advanced in `add()` at `:24-34`). `ProgressState`
-persists only `last_contiguous` + `background_retries` (`state.rs:38-43`); `save_progress` writes
-`tracker.end()` (`state.rs:124`), never the `pending` set. On restart `resume_index` returns
-`last_contiguous + 1` (`state.rs:106`) with an empty tracker, so every out-of-order success from the
-watermark up is re-discovered and re-executed. Idempotent and usually cache-cheap (witness/stdin
-cache survives on the PVC), but wasteful — and a genuine re-compute if that range's stdin was
-pruned/evicted or the PVC was wiped. Amplified by newest-first scheduling, which keeps the watermark
-trailing and the above-watermark set large.
-- **Fix:** serialize the above-watermark set — add a `pending: Vec<u64>` to `ProgressState` and an
-  accessor on `SequenceTracker`, rehydrate it on resume so already-executed games are skipped (still
-  re-scan from `last_contiguous + 1`, but short-circuit any index already in the restored set).
-- **Relates to:** #26 (scheduling) and the watermark trade-off. Low risk, contained to
-  `sequence_tracker.rs` + `state.rs`.
+#### 27. Above-watermark completions are not persisted (re-run after restart) — FIXED (`d18f55f8`)
+Out-of-order completions above the watermark lived only in `SequenceTracker`'s in-memory `pending`
+set; `progress.json` stored only `last_contiguous`, so a restart re-discovered and re-executed
+every above-watermark success. With stdin now pruned immediately on success (#9), those reruns
+would be full recomputes — so persisting the set became load-bearing, not just an optimisation.
+- **Fix:** `ProgressState` gained a serde-default `pending: Vec<u64>`; `SequenceTracker` gained
+  `restore` / `contains` / `pending_indices`; `save_progress` writes the pending set; on resume
+  (absent an explicit `--start-index`) the tracker is rehydrated from `last_contiguous + pending`
+  and discovery skips any already-completed index. `Fatal`/`WrongType` complete via the tracker
+  too, so they are persisted and never re-run either.
+- **Relates to:** #9 (this is what makes immediate pruning safe), #26 (scheduling).
 
 #### 28. Admission `baseline_bytes` is measured once at startup (too early) → mis-calibrated projection
 `baseline_bytes` is read once in `load()` before any work runs (`admission.rs:155`) and then
