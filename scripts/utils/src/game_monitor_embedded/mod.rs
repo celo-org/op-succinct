@@ -257,9 +257,10 @@ enum GameTaskResult {
         end_block: u64,
         error: String,
     },
-    /// Fatal execution failure: advance the frontier (never stall), drop background entry,
-    /// and schedule stdin pruning for whatever the failed game built (`ranges`).
-    Fatal { pg: PendingGame, ranges: Vec<SpanBatchRange>, error: String },
+    /// Fatal execution failure: advance the frontier (never stall), drop background entry.
+    /// The failed game's stdin is deliberately NOT pruned — it is kept for debugging and only
+    /// reclaimed by the size-cap GC — so no ranges are carried.
+    Fatal { pg: PendingGame, error: String },
     /// Pre-execution transient condition (L2 behind, control-plane blip): re-queue the
     /// same attempt without spending retry budget.
     Defer { pg: PendingGame },
@@ -330,18 +331,15 @@ fn apply_game_result(
                 tracing::warn!(error = %e, "failed to apply requeue");
             }
         }
-        GameTaskResult::Fatal { pg, ranges, error } => {
+        GameTaskResult::Fatal { pg, error } => {
             tracing::error!(
                 game_index = pg.game_index,
                 error,
-                "game execution failed (fatal); skipping"
+                "game execution failed (fatal); skipping, retaining stdin for debugging"
             );
-            // Prune any stdin the failed game built, same as Success. The split is
-            // deterministic and `prune_stdin` no-ops sub-ranges that were never built, so
-            // pushing the whole range set reclaims exactly the subset that got cached.
-            for range in &ranges {
-                prunables.push(PrunableStdin { start: range.start, end: range.end });
-            }
+            // Deliberately do NOT prune: a fatal game's cached stdin is kept on disk so it can
+            // be fetched to iterate on the execution code locally. The size-cap GC reclaims it
+            // under space pressure (a fatal range is unprotected, so evicted oldest-first).
             complete_game(pg.game_index, tracker, background_retries, pending_games, progress_path);
         }
         GameTaskResult::Defer { pg } => {
@@ -834,36 +832,27 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
                                         );
                                         GameTaskResult::Defer { pg }
                                     }
-                                    Ok(true) => {
-                                        // `execute_game` returns the sub-ranges regardless of
-                                        // outcome so a Success or a Fatal both carry them for
-                                        // stdin pruning (a Transient keeps its cache for retry).
-                                        let (ranges, result) = execute_game(
-                                            &estimator, &fetcher, &admission, &game, batch_size,
-                                        )
-                                        .await;
-                                        match result {
-                                            Ok(stats) => GameTaskResult::Success {
-                                                pg,
-                                                stats: Box::new(stats),
-                                                ranges,
-                                            },
-                                            Err(e) if e.is_transient() => {
-                                                GameTaskResult::Transient {
-                                                    pg,
-                                                    created_at: game.created_at,
-                                                    start_block: game.start_block,
-                                                    end_block: game.end_block,
-                                                    error: format!("{e}"),
-                                                }
-                                            }
-                                            Err(e) => GameTaskResult::Fatal {
-                                                pg,
-                                                ranges,
-                                                error: format!("{e}"),
-                                            },
+                                    Ok(true) => match execute_game(
+                                        &estimator, &fetcher, &admission, &game, batch_size,
+                                    )
+                                    .await
+                                    {
+                                        Ok((stats, ranges)) => GameTaskResult::Success {
+                                            pg,
+                                            stats: Box::new(stats),
+                                            ranges,
+                                        },
+                                        Err(e) if e.is_transient() => GameTaskResult::Transient {
+                                            pg,
+                                            created_at: game.created_at,
+                                            start_block: game.start_block,
+                                            end_block: game.end_block,
+                                            error: format!("{e}"),
+                                        },
+                                        Err(e) => {
+                                            GameTaskResult::Fatal { pg, error: format!("{e}") }
                                         }
-                                    }
+                                    },
                                 }
                             }
                             Ok(Err(FetchGameError::WrongGameType { game_type, .. })) => {
