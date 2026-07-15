@@ -168,9 +168,6 @@ pub struct EmbeddedArgs {
     /// Proposer's PROPOSAL_INTERVAL (L2 blocks) — drives window prediction.
     #[arg(long)]
     pub proposal_interval: u64,
-    /// Grace period (seconds) to keep an stdin blob after its game succeeds.
-    #[arg(long, default_value = "3600")]
-    pub stdin_grace_secs: u64,
     /// RSS admission safety margin (MiB).
     #[arg(long, default_value = "20480")]
     pub rss_margin_mb: u64,
@@ -234,16 +231,11 @@ fn da_type() -> DaType {
     }
 }
 
+/// A range whose stdin blob should be pruned. A finished game (Success or Fatal) is done
+/// with its ranges, so they are reclaimed on the next main-loop sweep.
 struct PrunableStdin {
     start: u64,
     end: u64,
-    eligible_at: std::time::SystemTime,
-}
-
-/// An stdin blob may be pruned once its game has succeeded AND the grace window has
-/// elapsed (so a near-term rerun can still hit the cache).
-fn is_prune_eligible(now: std::time::SystemTime, eligible_at: std::time::SystemTime) -> bool {
-    now >= eligible_at
 }
 
 /// Outcome of one spawned game-execution task, sent back to the main loop which owns the
@@ -294,7 +286,6 @@ fn apply_game_result(
     prunables: &mut Vec<PrunableStdin>,
     args: &EmbeddedArgs,
     progress_path: &Path,
-    now_sys: SystemTime,
     now_instant: Instant,
     poll: Duration,
 ) {
@@ -309,9 +300,8 @@ fn apply_game_result(
             );
             // Completes the game and purges any stale duplicate queue entry.
             complete_game(pg.game_index, tracker, background_retries, pending_games, progress_path);
-            let eligible_at = now_sys + Duration::from_secs(args.stdin_grace_secs);
             for range in &ranges {
-                prunables.push(PrunableStdin { start: range.start, end: range.end, eligible_at });
+                prunables.push(PrunableStdin { start: range.start, end: range.end });
             }
         }
         GameTaskResult::WrongType { pg, game_type } => {
@@ -344,12 +334,11 @@ fn apply_game_result(
                 error,
                 "game execution failed (fatal); skipping"
             );
-            // Schedule pruning of any stdin the failed game built, same as Success. The split
-            // is deterministic and `prune_stdin` no-ops sub-ranges that were never built, so
+            // Prune any stdin the failed game built, same as Success. The split is
+            // deterministic and `prune_stdin` no-ops sub-ranges that were never built, so
             // pushing the whole range set reclaims exactly the subset that got cached.
-            let eligible_at = now_sys + Duration::from_secs(args.stdin_grace_secs);
             for range in &ranges {
-                prunables.push(PrunableStdin { start: range.start, end: range.end, eligible_at });
+                prunables.push(PrunableStdin { start: range.start, end: range.end });
             }
             complete_game(pg.game_index, tracker, background_retries, pending_games, progress_path);
         }
@@ -624,7 +613,6 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
     // ── Main loop ──────────────────────────────────────────────────────────
     loop {
         // (0) Apply outcomes from finished game tasks. State mutation happens only here.
-        let now_sys = SystemTime::now();
         let now_instant = Instant::now();
         while let Ok(result) = results_rx.try_recv() {
             running_games.remove(&result.game_index());
@@ -636,24 +624,18 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
                 &mut prunables,
                 &args,
                 &progress_path,
-                now_sys,
                 now_instant,
                 poll,
             );
         }
 
-        // Sweep eligible stdin blobs before sleeping so a long-running iteration
-        // doesn't delay pruning by an extra poll period.
-        prunables.retain(|p| {
-            if is_prune_eligible(now_sys, p.eligible_at) {
-                if let Err(e) = estimator.cache.prune_stdin(p.start, p.end) {
-                    tracing::warn!(start = p.start, end = p.end, error = %e, "stdin prune failed");
-                }
-                false
-            } else {
-                true
+        // A finished game is done with its ranges, so prune their stdin blobs now. Drains the
+        // whole list each iteration (populated by the Success/Fatal handlers above).
+        for p in prunables.drain(..) {
+            if let Err(e) = estimator.cache.prune_stdin(p.start, p.end) {
+                tracing::warn!(start = p.start, end = p.end, error = %e, "stdin prune failed");
             }
-        });
+        }
 
         // Backstop GC: bound the cache to `--max-cache-bytes`, evicting oldest blobs first
         // but never a range still owed to a background retry (whose stdin we keep cached for
@@ -920,7 +902,6 @@ mod tests {
         assert_eq!(args.proposal_interval, 1800);
         assert_eq!(args.retry_backoff_delay, Duration::from_secs(600)); // default 10m
         assert_eq!(args.batch_size, 200);
-        assert_eq!(args.stdin_grace_secs, 3600);
         assert_eq!(args.max_concurrent_games, 5);
         assert_eq!(args.max_concurrent_units, 8);
         assert_eq!(args.max_cache_size, 0); // cap disabled by default
@@ -964,14 +945,6 @@ mod tests {
             "2m",
         ]);
         assert_eq!(h.retry_backoff_delay, Duration::from_secs(120));
-    }
-
-    #[test]
-    fn prune_eligible_only_after_grace() {
-        use std::time::{Duration, SystemTime};
-        let eligible_at = SystemTime::now() + Duration::from_secs(3600);
-        assert!(!super::is_prune_eligible(SystemTime::now(), eligible_at));
-        assert!(super::is_prune_eligible(eligible_at + Duration::from_secs(1), eligible_at));
     }
 
     #[tokio::test]
