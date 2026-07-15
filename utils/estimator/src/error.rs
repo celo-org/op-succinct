@@ -12,8 +12,12 @@ pub enum EstimatorError {
     MissingTrieNode,
     #[error("dns lookup failure")]
     DnsLookupFailure,
-    #[error("out of memory during execution")]
-    Oom,
+    /// SP1's in-VM memory-limit error, `ExecutionError::TooMuchMemory`, which renders as
+    /// "SP1 program consumes too much memory". A deterministic rejection of a range that
+    /// exceeds the zkVM memory bound; the host process stays alive, so it is never retried.
+    /// A real host/cgroup OOM SIGKILLs the process and never reaches this variant.
+    #[error("SP1 program consumes too much memory")]
+    TooMuchMemory,
     #[error("transient failure: {0}")]
     Transient(#[source] anyhow::Error),
     #[error("fatal failure: {0}")]
@@ -21,16 +25,16 @@ pub enum EstimatorError {
 }
 
 impl EstimatorError {
-    /// True if the failure is worth retrying. `Oom` is never retried.
+    /// True if the failure is worth retrying. `TooMuchMemory` is never retried.
     pub fn is_transient(&self) -> bool {
         match self {
             EstimatorError::NoHealthyBackend |
             EstimatorError::NoStateAvailable |
+            EstimatorError::MissingTrieNode |
             EstimatorError::DnsLookupFailure |
             EstimatorError::Transient(_) => true,
             EstimatorError::ExceedsProofWindow |
-            EstimatorError::MissingTrieNode |
-            EstimatorError::Oom |
+            EstimatorError::TooMuchMemory |
             EstimatorError::Fatal(_) => false,
         }
     }
@@ -49,13 +53,12 @@ impl EstimatorError {
             EstimatorError::MissingTrieNode
         } else if msg.contains("dns error") || msg.contains("failed to fetch safe head") {
             EstimatorError::DnsLookupFailure
-        } else if msg.contains("memory allocation")
-            || msg.contains("out of memory")
+        } else if msg.contains("too much memory") {
             // SP1's in-VM memory-limit error: `ExecutionError::TooMuchMemory` renders as
-            // "SP1 program consumes too much memory". Catch it so an OOM is never retried.
-            || msg.contains("too much memory")
-        {
-            EstimatorError::Oom
+            // "SP1 program consumes too much memory". The process stays alive and the range
+            // deterministically exceeds the zkVM memory bound, so it is never retried. A real
+            // host/cgroup OOM SIGKILLs the process and never reaches this classifier.
+            EstimatorError::TooMuchMemory
         } else {
             EstimatorError::Transient(err)
         }
@@ -85,18 +88,27 @@ mod tests {
     }
 
     #[test]
-    fn oom_is_never_transient() {
-        assert!(!EstimatorError::Oom.is_transient());
+    fn too_much_memory_is_never_transient() {
+        assert!(!EstimatorError::TooMuchMemory.is_transient());
     }
 
     #[test]
-    fn sp1_too_much_memory_classifies_as_oom() {
+    fn sp1_too_much_memory_classifies_as_too_much_memory() {
         // SP1's `ExecutionError::TooMuchMemory` renders as this message.
         let e = EstimatorError::classify(anyhow::anyhow!(
             "SP1 execute failed: SP1 program consumes too much memory"
         ));
-        assert!(matches!(e, EstimatorError::Oom));
+        assert!(matches!(e, EstimatorError::TooMuchMemory));
         assert!(!e.is_transient());
+    }
+
+    #[test]
+    fn missing_trie_node_is_transient() {
+        let e = EstimatorError::classify(anyhow::anyhow!(
+            "server returned an error response: error code -32000: missing trie node"
+        ));
+        assert!(matches!(e, EstimatorError::MissingTrieNode));
+        assert!(e.is_transient());
     }
 
     #[test]
