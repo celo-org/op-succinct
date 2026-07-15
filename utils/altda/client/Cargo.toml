@@ -8,6 +8,10 @@ edition.workspace = true
 # local
 op-succinct-client-utils.workspace = true
 
+# celo-kona
+celo-genesis.workspace = true
+celo-proof.workspace = true
+
 # kona
 kona-derive.workspace = true
 kona-driver.workspace = true

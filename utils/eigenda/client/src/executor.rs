@@ -4,7 +4,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use celo_genesis::CeloRollupConfig;
 use celo_proof::CeloOracleL2ChainProvider;
-use celo_protocol::CeloToOpProviderAdapter;
 use hokulea_eigenda::{EigenDADataSource, EigenDAPreimageProvider, EigenDAPreimageSource};
 use kona_derive::{BlobProvider, EthereumDataSource};
 use kona_driver::PipelineCursor;
@@ -48,8 +47,8 @@ where
     type O = O;
     type B = B;
     type L1 = OracleL1ChainProvider<Self::O>;
-    type L2 = CeloToOpProviderAdapter<CeloOracleL2ChainProvider<Self::O>>;
-    type DA = EigenDADataSource<Self::L1, Self::B, E>;
+    type L2 = CeloOracleL2ChainProvider<Self::O>;
+    type DA = EigenDADataSource<EthereumDataSource<Self::L1, Self::B>, E>;
 
     async fn create_pipeline(
         &self,
@@ -68,7 +67,7 @@ where
         let da_provider = EigenDADataSource::new(ethereum_data_source, eigenda_preimage_source);
 
         Ok(OraclePipeline::new(
-            Arc::new(rollup_config.0.clone()),
+            Arc::new(rollup_config.op_rollup_config.clone()),
             l1_config,
             cursor,
             oracle,

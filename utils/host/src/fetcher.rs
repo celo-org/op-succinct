@@ -517,7 +517,7 @@ where
     let rollup_config_path = l2_config_dir.join(format!("{}.json", rollup_config.l2_chain_id));
 
     // Write the rollup config to the file
-    let rollup_config_str = serde_json::to_string_pretty(&rollup_config.0)?;
+    let rollup_config_str = serde_json::to_string_pretty(&rollup_config)?;
     fs::write(&rollup_config_path, rollup_config_str)?;
 
     tracing::info!(
@@ -1038,7 +1038,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn test_rollup_config(chain_id: u64) -> CeloRollupConfig {
-        CeloRollupConfig(RollupConfig { l2_chain_id: chain_id.into(), ..Default::default() })
+        CeloRollupConfig::new(RollupConfig { l2_chain_id: chain_id.into(), ..Default::default() })
     }
 
     #[test]

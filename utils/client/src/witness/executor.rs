@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use celo_driver::CeloDriver;
 use celo_genesis::CeloRollupConfig;
 use celo_proof::{executor::CeloExecutor, CeloBootInfo, CeloOracleL2ChainProvider};
-use celo_protocol::CeloToOpProviderAdapter;
 use kona_derive::{
     BlobProvider, ChainProvider, DataAvailabilityProvider, L2ChainProvider, Pipeline,
     SignalReceiver,
@@ -86,7 +85,7 @@ where
         safe_head,
         boot.agreed_l2_output_root,
         &mut l1_provider,
-        &mut CeloToOpProviderAdapter(l2_provider.clone()),
+        &mut l2_provider.clone(),
     )
     .await?;
     l2_provider.set_cursor(cursor.clone());
@@ -135,7 +134,7 @@ pub trait WitnessExecutor {
         let boot_clone = boot.clone();
 
         // Wrap RollupConfig with CeloRollupConfig
-        let celo_rollup_config = CeloRollupConfig(boot.rollup_config.clone());
+        let celo_rollup_config = CeloRollupConfig::new(boot.rollup_config.clone());
         let celo_rollup_config = Arc::new(celo_rollup_config);
 
         let executor = CeloExecutor::new(

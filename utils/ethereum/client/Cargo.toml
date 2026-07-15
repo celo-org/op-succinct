@@ -19,7 +19,6 @@ kona-proof.workspace = true
 # celo-kona
 celo-genesis.workspace = true
 celo-proof.workspace = true
-celo-protocol.workspace = true
 
 # general
 anyhow.workspace = true

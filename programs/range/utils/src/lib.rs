@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use celo_genesis::CeloRollupConfig;
 use celo_proof::CeloOracleL2ChainProvider;
-use celo_protocol::CeloToOpProviderAdapter;
 use kona_proof::l1::OracleL1ChainProvider;
 use op_succinct_client_utils::{
     boot::BootInfoStruct,
@@ -29,7 +28,7 @@ where
             O = PreimageStore,
             B = BlobStore,
             L1 = OracleL1ChainProvider<PreimageStore>,
-            L2 = CeloToOpProviderAdapter<CeloOracleL2ChainProvider<PreimageStore>>,
+            L2 = CeloOracleL2ChainProvider<PreimageStore>,
         > + Send
         + Sync,
 {
@@ -40,7 +39,7 @@ where
     let boot_info = match input {
         Some((cursor, l1_provider, l2_provider)) => {
             // Wrap RollupConfig with CeloRollupConfig
-            let celo_rollup_config = CeloRollupConfig(boot_info.rollup_config.clone());
+            let celo_rollup_config = CeloRollupConfig::new(boot_info.rollup_config.clone());
             let l1_config = Arc::new(boot_info.l1_config.clone());
 
             let pipeline = executor
@@ -51,7 +50,7 @@ where
                     oracle,
                     beacon,
                     l1_provider,
-                    CeloToOpProviderAdapter(l2_provider.clone()),
+                    l2_provider.clone(),
                 )
                 .await
                 .unwrap();

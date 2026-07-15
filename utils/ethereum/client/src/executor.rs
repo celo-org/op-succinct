@@ -4,7 +4,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use celo_genesis::CeloRollupConfig;
 use celo_proof::CeloOracleL2ChainProvider;
-use celo_protocol::CeloToOpProviderAdapter;
 use kona_derive::{BlobProvider, EthereumDataSource};
 use kona_driver::PipelineCursor;
 use kona_genesis::L1ChainConfig;
@@ -44,7 +43,7 @@ where
     type O = O;
     type B = B;
     type L1 = OracleL1ChainProvider<Self::O>;
-    type L2 = CeloToOpProviderAdapter<CeloOracleL2ChainProvider<Self::O>>;
+    type L2 = CeloOracleL2ChainProvider<Self::O>;
     type DA = EthereumDataSource<Self::L1, Self::B>;
 
     async fn create_pipeline(
@@ -60,7 +59,7 @@ where
         let da_provider =
             EthereumDataSource::new_from_parts(l1_provider.clone(), beacon, &rollup_config);
         Ok(OraclePipeline::new(
-            Arc::new(rollup_config.0.clone()),
+            Arc::new(rollup_config.op_rollup_config.clone()),
             l1_config,
             cursor,
             oracle,
