@@ -1,3 +1,4 @@
+use sp1_core_executor::ExecutionError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -12,12 +13,13 @@ pub enum EstimatorError {
     MissingTrieNode,
     #[error("dns lookup failure")]
     DnsLookupFailure,
-    /// SP1's in-VM memory-limit error, `ExecutionError::TooMuchMemory`, which renders as
-    /// "SP1 program consumes too much memory". A deterministic rejection of a range that
-    /// exceeds the zkVM memory bound; the host process stays alive, so it is never retried.
-    /// A real host/cgroup OOM SIGKILLs the process and never reaches this variant.
-    #[error("SP1 program consumes too much memory")]
-    TooMuchMemory,
+    /// SP1 zkVM execute failure (`sp1_core_executor::ExecutionError`). Execute is
+    /// deterministic over fixed stdin, so every variant — the memory limit (`TooMuchMemory`),
+    /// cycle-limit overruns, program faults — reproduces on retry and is therefore never
+    /// retried. The concrete error is carried through for logging. A real host/cgroup OOM
+    /// SIGKILLs the process instead and never surfaces here.
+    #[error("SP1 execute failed: {0}")]
+    Sp1Execute(#[from] ExecutionError),
     #[error("transient failure: {0}")]
     Transient(#[source] anyhow::Error),
     #[error("fatal failure: {0}")]
@@ -25,7 +27,8 @@ pub enum EstimatorError {
 }
 
 impl EstimatorError {
-    /// True if the failure is worth retrying. `TooMuchMemory` is never retried.
+    /// True if the failure is worth retrying. SP1 execute failures (`Sp1Execute`) are never
+    /// retried — execute is deterministic, so a retry reproduces the same error.
     pub fn is_transient(&self) -> bool {
         match self {
             EstimatorError::NoHealthyBackend |
@@ -34,7 +37,7 @@ impl EstimatorError {
             EstimatorError::DnsLookupFailure |
             EstimatorError::Transient(_) => true,
             EstimatorError::ExceedsProofWindow |
-            EstimatorError::TooMuchMemory |
+            EstimatorError::Sp1Execute(_) |
             EstimatorError::Fatal(_) => false,
         }
     }
@@ -53,12 +56,6 @@ impl EstimatorError {
             EstimatorError::MissingTrieNode
         } else if msg.contains("dns error") || msg.contains("failed to fetch safe head") {
             EstimatorError::DnsLookupFailure
-        } else if msg.contains("too much memory") {
-            // SP1's in-VM memory-limit error: `ExecutionError::TooMuchMemory` renders as
-            // "SP1 program consumes too much memory". The process stays alive and the range
-            // deterministically exceeds the zkVM memory bound, so it is never retried. A real
-            // host/cgroup OOM SIGKILLs the process and never reaches this classifier.
-            EstimatorError::TooMuchMemory
         } else {
             EstimatorError::Transient(err)
         }
@@ -88,18 +85,12 @@ mod tests {
     }
 
     #[test]
-    fn too_much_memory_is_never_transient() {
-        assert!(!EstimatorError::TooMuchMemory.is_transient());
-    }
-
-    #[test]
-    fn sp1_too_much_memory_classifies_as_too_much_memory() {
-        // SP1's `ExecutionError::TooMuchMemory` renders as this message.
-        let e = EstimatorError::classify(anyhow::anyhow!(
-            "SP1 execute failed: SP1 program consumes too much memory"
-        ));
-        assert!(matches!(e, EstimatorError::TooMuchMemory));
-        assert!(!e.is_transient());
+    fn sp1_execute_errors_are_never_transient() {
+        // Execute is deterministic over fixed stdin, so every variant is fatal — the memory
+        // limit and a cycle-limit overrun alike.
+        assert!(!EstimatorError::Sp1Execute(ExecutionError::TooMuchMemory()).is_transient());
+        assert!(!EstimatorError::Sp1Execute(ExecutionError::ExceededCycleLimit(1_000_000))
+            .is_transient());
     }
 
     #[test]
