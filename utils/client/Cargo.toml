@@ -54,3 +54,6 @@ celo-proof.workspace = true
 celo-driver.workspace = true
 celo-protocol.workspace = true
 celo-genesis.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
