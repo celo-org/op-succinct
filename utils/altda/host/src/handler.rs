@@ -1,14 +1,14 @@
 //! [`HintHandler`] for the [`AltDAChainHost`].
 //!
-//! Routes standard kona hints to [`SingleChainHintHandler`] and handles `altda-commitment`
-//! hints by fetching batch data from the DA server and storing it in the preimage oracle.
+//! Routes standard kona hints to celo-kona's [`CeloSingleChainHintHandler`] (Celo block /
+//! transaction / payload-witness decoding) and handles `altda-commitment` hints by fetching
+//! batch data from the DA server and storing it in the preimage oracle.
 
 use alloy_primitives::hex;
 use anyhow::{bail, ensure, Result};
 use async_trait::async_trait;
-use kona_host::{
-    single::SingleChainHintHandler, HintHandler, OnlineHostBackendCfg, SharedKeyValueStore,
-};
+use celo_host::single::CeloSingleChainHintHandler;
+use kona_host::{HintHandler, OnlineHostBackendCfg, SharedKeyValueStore};
 use kona_preimage::PreimageKey;
 use kona_proof::Hint;
 use op_succinct_altda_client_utils::data_source::{
@@ -22,7 +22,7 @@ use crate::cfg::{AltDAChainHost, AltDAChainProviders, AltDAExtendedHintType};
 ///
 /// Routes hints based on their type:
 /// - Standard kona hints (`L1BlockHeader`, `L1Transactions`, etc.) are delegated to
-///   [`SingleChainHintHandler`].
+///   [`CeloSingleChainHintHandler`].
 /// - `AltDACommitment` hints are handled by fetching batch data from the DA server.
 #[derive(Debug, Clone, Copy)]
 pub struct AltDAHintHandler;
@@ -40,9 +40,9 @@ impl HintHandler for AltDAHintHandler {
         match hint.ty {
             AltDAExtendedHintType::Standard(ty) => {
                 let inner_hint = Hint { ty, data: hint.data };
-                SingleChainHintHandler::fetch_hint(
+                CeloSingleChainHintHandler::fetch_hint(
                     inner_hint,
-                    &cfg.single_host,
+                    &cfg.celo_host,
                     &providers.inner_providers,
                     kv,
                 )

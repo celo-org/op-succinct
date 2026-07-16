@@ -10,6 +10,7 @@ use alloy_eips::BlockId;
 use alloy_primitives::B256;
 use anyhow::Result;
 use async_trait::async_trait;
+use celo_host::single::CeloSingleChainHost;
 use op_succinct_altda_client_utils::executor::AltDAWitnessExecutor;
 use op_succinct_host_utils::{fetcher::OPSuccinctDataFetcher, host::OPSuccinctHost};
 
@@ -44,19 +45,22 @@ impl OPSuccinctHost for AltDAOPSuccinctHost {
             }
         };
 
-        // Get the standard kona SingleChainHost args.
-        let single_host =
+        // Get the standard kona SingleChainHost args, then wrap them as a Celo host so standard
+        // hints are served with Celo semantics (matching the celo-fied AltDA client). AltDA does
+        // not use EigenDA, so no proxy address is set.
+        let kona_cfg =
             self.fetcher.get_host_args(l2_start_block, l2_end_block, l1_head_hash).await?;
+        let celo_host = CeloSingleChainHost { kona_cfg, eigenda_proxy_address: None, verbose: 1 };
 
         // Read the DA server URL from the environment. This is set by the operator when
         // running the host binary with the `--altda-server-url` flag or `ALTDA_SERVER_URL` env.
         let altda_server_url = std::env::var("ALTDA_SERVER_URL").ok();
 
-        Ok(AltDAChainHost { single_host, altda_server_url })
+        Ok(AltDAChainHost { celo_host, altda_server_url })
     }
 
     fn get_l1_head_hash(&self, args: &Self::Args) -> Option<B256> {
-        Some(args.single_host.l1_head)
+        Some(args.celo_host.kona_cfg.l1_head)
     }
 
     async fn get_max_provable_l2_block_number(
