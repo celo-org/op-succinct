@@ -108,7 +108,7 @@ fn stdin_prunes_after_grace_and_witness_dropped() {
 /// code and is not retrofitted to `utils/estimator` (spec §12), and it splits differently
 /// (safe-head vs `split_range_basic`), so it is not apples-to-apples. Its aggregation logic is
 /// the very one this reuses (`stats.rs`), so the reference below is the faithful in-scope check.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn execute_game_matches_serial_reference() {
     if !it_enabled() {
         eprintln!("skipping: OPS_IT_L2_RPC unset");
@@ -161,7 +161,7 @@ async fn execute_game_matches_serial_reference() {
 
 /// Test 3 — prebuild-skip / cache-soundness (ENV-GATED). A pipeline-built stdin is
 /// usable by the executor, and building the stdin drops the (large) witness blob.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn prebuilt_stdin_is_consumed_by_executor() {
     if !it_enabled() {
         eprintln!("skipping: OPS_IT_L2_RPC unset");
@@ -196,7 +196,7 @@ async fn prebuilt_stdin_is_consumed_by_executor() {
 /// and fails — but returns `Ok` once its stdin is pre-seeded. The only way the second call can
 /// succeed is by returning at the `has_stdin` short-circuit, before the (failing) host path. That
 /// is exactly the skip the executor and pipeline rely on for a cache hit.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn second_build_short_circuits_host_run() {
     if !it_enabled() {
         eprintln!("skipping: OPS_IT_L2_RPC unset");
@@ -241,7 +241,7 @@ async fn second_build_short_circuits_host_run() {
 /// This is the alignment-POSITIVE assertion. A divergent-boundary test (a misaligned
 /// frontier missing the cache) needs a live multi-game chain to derive two genuinely
 /// different proposal boundaries, so it is out of scope here.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn pipeline_window_aligned_to_game_boundary_hits_cache() {
     if !it_enabled() {
         eprintln!("skipping: OPS_IT_L2_RPC unset");
