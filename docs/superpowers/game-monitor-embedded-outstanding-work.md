@@ -212,12 +212,11 @@ Background-retry spacing is governed by each entry's `next_attempt_at`. The orig
 applies delay, background bypasses it" asymmetry no longer exists. The last residual — a stale
 `--delay` mention in the module doc comment — is now corrected (this change).
 
-#### 14. Residual `.expect()` panics in `block_range.rs`
-- **Sites:** `block_range.rs:40` (`get_validated_block_range`), `:83`
-  (`get_rolling_block_range`).
-- **Caveat:** **not on the embedded daemon's hot path** — these functions are only called by
-  `cost_estimator.rs`, `gen_sp1_test_artifacts.rs`, and prove tests, never by
-  `game_monitor_embedded`. Low priority; listed for completeness.
+#### 14. Residual `.expect()` panics in `block_range.rs` — WON'T DO (out of scope)
+`.expect()` on `get_finalized_l2_block_number` at `block_range.rs:40` (`get_validated_block_range`)
+and `:83` (`get_rolling_block_range`) panics on a legitimate `None`. But these functions are **not
+called by `game_monitor_embedded`** — only by `cost_estimator.rs`, `gen_sp1_test_artifacts.rs`, and
+prove tests. Per the scope rule (fix only what the embedded monitor uses), this is out of scope.
 
 #### 27. Above-watermark completions are not persisted (re-run after restart) — FIXED (`d18f55f8`)
 Out-of-order completions above the watermark lived only in `SequenceTracker`'s in-memory `pending`
@@ -271,10 +270,11 @@ No `#[cfg(test)] mod tests` in `utils/estimator/src/estimator.rs`. `build_range_
 `execute_range` are covered only by the env-gated integration test. (Plan intended
 integration-only coverage — borderline, listed for completeness.)
 
-#### 18. Safe-head splitter has no unit test
-`utils/host/src/block_range.rs` has one test
-(`basic_split_respects_max_range_and_covers_window`, line 228) covering only
-`split_range_basic`; the safe-head splitter's boundary/`max_range_size` logic is untested.
+#### 18. Safe-head splitter has no unit test — WON'T DO (out of scope)
+`utils/host/src/block_range.rs` has one test (`basic_split_respects_max_range_and_covers_window`)
+covering only `split_range_basic`; the safe-head splitter is untested. But the daemon uses
+`split_range_basic`, not the safe-head splitter (removed from the daemon in #3; only `cost_estimator`
+still calls it). Per the scope rule (test only what the embedded monitor uses), this is out of scope.
 
 ### Deployment
 
