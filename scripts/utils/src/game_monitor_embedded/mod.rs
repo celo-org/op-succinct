@@ -19,7 +19,8 @@
 //!   actually run at once.
 //!
 //! * **Reactive executor** (the main loop). Polls the dispute-game factory for newly finalized
-//!   games, applies the discover→execute `--delay`, then spawns each due game as a task.
+//!   games and enqueues them immediately — readiness (L2/L1 finalization) gates when each becomes
+//!   due, not a fixed delay — then spawns each due game as a task.
 //!   [`executor::execute_game`] splits the real game into the same safe-head sub-ranges, loads each
 //!   prebuilt stdin from the cache (building on a miss), runs the SP1 execute over the sub-ranges
 //!   concurrently, and aggregates the stats.
@@ -290,7 +291,6 @@ fn apply_game_result(
     args: &EmbeddedArgs,
     progress_path: &Path,
     now_instant: Instant,
-    poll: Duration,
 ) {
     match result {
         GameTaskResult::Success { pg, stats, ranges } => {
@@ -343,9 +343,11 @@ fn apply_game_result(
             complete_game(pg.game_index, tracker, background_retries, pending_games, progress_path);
         }
         GameTaskResult::Defer { pg } => {
-            // Re-queue the same attempt shortly (no retry budget spent).
+            // Re-queue the same attempt, immediately eligible (no retry budget spent). The loop's
+            // own `sleep(poll)` sits between here and the spawn step, so it already paces the
+            // re-check by one poll — adding a delay here would just be absorbed by that sleep.
             pending_games.push_back(PendingGame {
-                executable_at: now_instant + poll,
+                executable_at: now_instant,
                 game_index: pg.game_index,
                 kind: pg.kind,
             });
@@ -632,7 +634,6 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
                 &args,
                 &progress_path,
                 now_instant,
-                poll,
             );
         }
 
@@ -674,9 +675,10 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
 
         tokio::time::sleep(poll).await;
 
-        // (a) Discovery: queue newly-created games with the discover→execute delay.
-        // Bound the control-plane read so a wedged RPC can't stall the loop; a timeout
-        // yields an Err handled like any other fetch failure (warn + retry next tick).
+        // (a) Discovery: queue newly-created games, immediately eligible — readiness (L2/L1
+        // finalization) gates when each actually runs, not a fixed delay. Bound the control-plane
+        // read so a wedged RPC can't stall the loop; a timeout yields an Err handled like any
+        // other fetch failure (warn + retry next tick).
         let count =
             match network_call_with_timeout(args.network_call_timeout_secs, "gameCount", async {
                 Ok(factory.gameCount().call().block(BlockId::finalized()).await?.to::<u64>())
