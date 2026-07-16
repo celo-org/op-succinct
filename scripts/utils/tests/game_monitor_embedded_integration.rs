@@ -4,10 +4,14 @@
 use std::sync::Arc;
 
 use op_succinct_estimator::{
+    aggregate_execution_stats,
     cache::{DaType, WitnessCache},
     Estimator,
 };
-use op_succinct_host_utils::{block_range::SpanBatchRange, fetcher::OPSuccinctDataFetcher};
+use op_succinct_host_utils::{
+    block_range::{split_range_basic, SpanBatchRange},
+    fetcher::OPSuccinctDataFetcher,
+};
 use op_succinct_proof_utils::initialize_host;
 use op_succinct_scripts::game_monitor_embedded::{
     admission::{Admission, AdmissionConfig},
@@ -94,9 +98,18 @@ fn stdin_prunes_after_grace_and_witness_dropped() {
     assert!(!cache.has_witness(10, 20)); // witness was never built / already dropped
 }
 
-/// Test 2 — parity/aggregation over a small real range (ENV-GATED).
+/// Test 2 — parity over a small real range (ENV-GATED). `execute_game`'s concurrent
+/// split-and-aggregate must equal a straightforward serial reference: split the window with
+/// `split_range_basic`, `execute_range` each sub-range, then aggregate. Execution is
+/// deterministic and aggregation is an order-independent sum, so the two must match
+/// field-for-field.
+///
+/// A true cross-tool `cost_estimator` baseline is out of scope: `cost_estimator` is not daemon
+/// code and is not retrofitted to `utils/estimator` (spec §12), and it splits differently
+/// (safe-head vs `split_range_basic`), so it is not apples-to-apples. Its aggregation logic is
+/// the very one this reuses (`stats.rs`), so the reference below is the faithful in-scope check.
 #[tokio::test]
-async fn execute_game_aggregates_over_real_range() {
+async fn execute_game_matches_serial_reference() {
     if !it_enabled() {
         eprintln!("skipping: OPS_IT_L2_RPC unset");
         return;
@@ -119,16 +132,31 @@ async fn execute_game_aggregates_over_real_range() {
     };
 
     let admission = test_admission(_dir.path().join("memory_model.json"));
-    let (stats, ranges) =
+    let (game_stats, ranges) =
         execute_game(&estimator, &fetcher, &admission, &game, batch_size).await.unwrap();
 
-    assert_eq!(stats.batch_end, end);
-    // The safe-head split is contiguous and get_l2_block_data_range covers start+1..=end
-    // with no gaps or double-counting, so the aggregated executed-block count equals the
-    // game width (end - start).
-    assert_eq!(stats.nb_blocks, end - start);
-    assert!(stats.total_instruction_count > 0);
-    assert!(!ranges.is_empty());
+    // The daemon's split must be exactly `split_range_basic` over the window, covering every
+    // block once (no gaps or overlap).
+    let expected_ranges = split_range_basic(start, end, batch_size);
+    assert_eq!(ranges.len(), expected_ranges.len(), "sub-range count");
+    for (got, want) in ranges.iter().zip(&expected_ranges) {
+        assert_eq!((got.start, got.end), (want.start, want.end), "sub-range boundary");
+    }
+    assert_eq!(game_stats.batch_start, start);
+    assert_eq!(game_stats.batch_end, end);
+    assert_eq!(game_stats.nb_blocks, end - start);
+    assert!(game_stats.total_instruction_count > 0);
+
+    // Parity: execute the same sub-ranges serially and aggregate. `execute_range` is
+    // deterministic (cached stdin → same SP1 report), so this must equal `execute_game`'s
+    // concurrent aggregate exactly — proving the split, concurrency, and aggregation are sound.
+    let mut per_range = Vec::with_capacity(expected_ranges.len());
+    for r in &expected_ranges {
+        let block_data = fetcher.get_l2_block_data_range(r.start, r.end).await.unwrap();
+        per_range.push(estimator.execute_range(r, &block_data).await.unwrap());
+    }
+    let reference = aggregate_execution_stats(&per_range, 0, 0);
+    assert_eq!(game_stats, reference, "execute_game aggregate must match the serial reference");
 }
 
 /// Test 3 — prebuild-skip / cache-soundness (ENV-GATED). A pipeline-built stdin is
