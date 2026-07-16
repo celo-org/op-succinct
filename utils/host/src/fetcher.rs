@@ -483,8 +483,18 @@ impl OPSuccinctDataFetcher {
         let rollup_config = if let Some(registry_config) = ROLLUP_CONFIGS.get(&chain_id) {
             tracing::info!("Loaded L2 config for chain ID {} from registry", chain_id);
             if let Some(ref node_config) = node_rpc_config {
+                // op-node keeps the Fjord max sequencer drift as a Go constant and never emits it
+                // in its rollup-config JSON, so the fetched config deserialises to the serde
+                // default (1800) while our custom celo registry stamps 2892 onto any celo registry
+                // config. Normalise that one field on a copy before hashing, so the check only
+                // fires on a genuine registry-vs-node divergence rather than this representation
+                // gap.
+                let mut node_config = node_config.clone();
+                node_config.op_rollup_config.fjord_max_sequencer_drift =
+                    registry_config.op_rollup_config.fjord_max_sequencer_drift;
+
                 let registry_hash = hash_rollup_config(registry_config);
-                let node_rpc_hash = hash_rollup_config(node_config);
+                let node_rpc_hash = hash_rollup_config(&node_config);
                 if registry_hash != node_rpc_hash {
                     tracing::warn!(
                     "Rollup config hash mismatch for chain ID {}: registry hash = {:?}, node RPC hash = {:?}",
