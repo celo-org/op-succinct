@@ -1,6 +1,6 @@
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     time::Duration,
 };
 
@@ -208,7 +208,7 @@ impl Admission {
                     WorkKind::Execute => execute_units < self.max_concurrent,
                 };
 
-                let model = *self.cost.lock().unwrap();
+                let model = *self.cost_guard();
                 // Gas of each kind in flight AFTER admitting this unit.
                 let (build_gas, execute_gas) = match kind {
                     WorkKind::Build => (sb + gas, se),
@@ -274,6 +274,15 @@ impl Admission {
         }
     }
 
+    /// Lock the cost model, recovering the guard if the mutex was poisoned. `CostModel` is a
+    /// learned heuristic with no fragile invariant, so proceeding on a possibly half-written
+    /// value is acceptable — and far better than turning one panic into a `PoisonError` panic
+    /// on every subsequent `admit` / `observe` / `persist` (which would silently kill the
+    /// sampler and the prebuild pipeline).
+    fn cost_guard(&self) -> MutexGuard<'_, CostModel> {
+        self.cost.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Project total resident memory for the in-flight set `(build_gas, execute_gas)` (which
     /// already includes the unit under consideration), charging each kind its own cost.
     fn project(&self, model: &CostModel, build_gas: u64, execute_gas: u64) -> u64 {
@@ -300,7 +309,7 @@ impl Admission {
     /// the typical per-episode peak and a lone outlier decays out over subsequent episodes.
     pub fn observe(&self, rss: u64) {
         let (sb, se) = self.registry.snapshot();
-        let mut model = self.cost.lock().unwrap();
+        let mut model = self.cost_guard();
         let net = (rss as f64 - model.baseline_bytes).max(0.0);
         // Captured before the close logic below resets the peaks: true iff an episode is folding
         // this tick, i.e. the registry is emptying now and RSS still carries the just-finished
@@ -359,7 +368,7 @@ impl Admission {
                         since_sample_log = 0;
                         let (build_gas, execute_gas) = self.registry.snapshot();
                         if build_gas + execute_gas > 0 {
-                            let baseline = self.cost.lock().unwrap().baseline_bytes;
+                            let baseline = self.cost_guard().baseline_bytes;
                             tracing::info!(
                                 rss_gib = %format!("{:.2}", gib(rss)),
                                 net_gib = %format!("{:.2}", gib((rss as f64 - baseline).max(0.0) as u64)),
@@ -392,7 +401,7 @@ impl Admission {
     /// otherwise created lazily on the first witness save, so without this the very first
     /// persist (before any game completes) would fail.
     pub fn persist(&self) {
-        let model = *self.cost.lock().unwrap();
+        let model = *self.cost_guard();
         let json = match serde_json::to_string(&model) {
             Ok(json) => json,
             Err(error) => {

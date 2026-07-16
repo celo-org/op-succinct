@@ -42,6 +42,7 @@ branch; line numbers are current as of that branch. Module path:
 | Post-stdin `drop_witness` made best-effort (no false build failure); short-circuit re-drops leaked blobs (item #12) | this change |
 | Admission baseline learned as an EWMA of idle RSS (was a single mis-calibrated startup read), persisted in `CostModel` (item #28) | this change |
 | Stale `--delay` module-doc mention corrected — the flag is `--retry-backoff-delay`, discovery is immediate (item #13) | this change |
+| Admission `cost` mutex hardened — `cost_guard()` recovers the guard on poison instead of `unwrap()` panicking (item #11) | this change |
 
 ---
 
@@ -181,10 +182,17 @@ hosts (`utils/{eigenda,ethereum}/host/src/host.rs`), so the gate cannot drift fr
 witness bakes in — the compile-time tie this asked for. The old `L1_HEAD_FINALITY_BUFFER` alias
 was dropped. A flag was deemed unnecessary (the value must match the host, not be tuned freely).
 
-#### 11. `Mutex::lock().unwrap()` panic sites in admission
-A poisoned mutex would crash the calling task.
-- **Sites:** `admission.rs:201` (`admit`), `:294` (`observe`), `:372` (`persist`).
-- **Fix:** handle the `PoisonError` (recover the guard) instead of `unwrap()`.
+#### 11. `Mutex::lock().unwrap()` panic sites in admission — FIXED
+A poisoned `cost` mutex would crash the calling task, and one such panic cascades: every later
+`admit` / `observe` / `persist` `unwrap()`s the `PoisonError` and panics too (silently killing the
+sampler and the prebuild pipeline).
+- **Fix:** all four production lock sites (`admit`, `observe`, the sampler `rss sample` log, and
+  `persist`) now go through a `cost_guard()` helper that recovers the guard on poison
+  (`lock().unwrap_or_else(|e| e.into_inner())`). `CostModel` is a learned heuristic with no fragile
+  invariant, so proceeding on a possibly half-written value is fine — and the count cap plus margin
+  still bound admission. Tests keep `unwrap()` (a poisoned test should fail loudly).
+- **Relates to:** #30 (a `tracing` panic hook would surface the *root* panic that poisons it — this
+  only stops the cascade).
 
 #### 12. `drop_witness` failure leaked the witness blob and faked a build failure — FIXED
 A post-stdin `drop_witness` error made `build_range_witness` return `Transient` even though stdin
@@ -385,6 +393,19 @@ lean on — but they become per-kind and separately sized.
   sharing `max_concurrent`.
 - **Relates to:** #6 (per-kind cost), #26 (scheduling sits on this gate), #28 (baseline — sharpens
   the *secondary* memory bound, but the caps stay primary).
+
+#### 30. Panic hook that logs the root panic via `tracing`
+The default panic hook writes only to stderr, so a panic **not** inside a `catch_game_panic` body —
+most importantly one in the detached background sampler (`observe`/`persist`) or the prebuild
+pipeline task — never reaches the structured `tracing` stream: it prints a raw stderr line (captured
+in pod logs but easy to miss), the task dies silently, and any downstream `PoisonError` cascade
+(pre-#11) points at the symptom, not the cause.
+- **Fix:** install a custom hook (`std::panic::set_hook`) in `init_tracing` that emits
+  `tracing::error!` with the panic payload + location, then delegates to the previous hook — so
+  every panic (caught or not, any task) lands in the same stream as the rest of the daemon's logs.
+- **Relates to:** #11 (which stops the poison cascade but not the root panic's visibility), #23
+  (game-task panics already log via `catch_game_panic`; this covers the tasks it does not wrap).
+- **Status:** enhancement (observability); not yet planned. Contained to `bin` / `init_tracing`.
 
 ---
 
