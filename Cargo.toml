@@ -113,6 +113,7 @@ celo-proof = { git = "https://github.com/celo-org/celo-kona", rev = "e715051856a
 celo-host = { git = "https://github.com/celo-org/celo-kona", rev = "e715051856a81da8057360627c6c9423744bac13" }
 celo-protocol = { git = "https://github.com/celo-org/celo-kona", rev = "e715051856a81da8057360627c6c9423744bac13", default-features = false }
 celo-genesis = { git = "https://github.com/celo-org/celo-kona", rev = "e715051856a81da8057360627c6c9423744bac13", default-features = false }
+celo-derive = { git = "https://github.com/celo-org/celo-kona", rev = "e715051856a81da8057360627c6c9423744bac13", default-features = false }
 celo-registry = { git = "https://github.com/celo-org/celo-kona", rev = "e715051856a81da8057360627c6c9423744bac13", default-features = false }
 
 # hana

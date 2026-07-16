@@ -5,7 +5,7 @@ use alloy_primitives::Sealed;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use celo_driver::CeloDriver;
-use celo_genesis::CeloRollupConfig;
+use celo_genesis::{CeloEspressoConfig, CeloRollupConfig};
 use celo_proof::{executor::CeloExecutor, CeloBootInfo, CeloOracleL2ChainProvider};
 use kona_derive::{
     BlobProvider, ChainProvider, DataAvailabilityProvider, L2ChainProvider, Pipeline,
@@ -34,6 +34,7 @@ pub async fn get_inputs_for_pipeline<O>(
     oracle: Arc<O>,
 ) -> Result<(
     BootInfo,
+    CeloEspressoConfig,
     Option<(Arc<RwLock<PipelineCursor>>, OracleL1ChainProvider<O>, CeloOracleL2ChainProvider<O>)>,
 )>
 where
@@ -51,6 +52,7 @@ where
     };
 
     let boot = celo_boot.op_boot_info;
+    let espresso = celo_boot.espresso;
     let boot_clone = boot.clone();
 
     let rollup_config = Arc::new(boot.rollup_config);
@@ -90,7 +92,7 @@ where
     .await?;
     l2_provider.set_cursor(cursor.clone());
 
-    Ok((boot_clone, Some((cursor, l1_provider, l2_provider))))
+    Ok((boot_clone, espresso, Some((cursor, l1_provider, l2_provider))))
 }
 
 #[async_trait]

@@ -54,10 +54,12 @@ pub trait WitnessGenerator {
         });
         let beacon = OnlineBlobStore { provider: blob_provider.clone(), store: blob_data.clone() };
 
-        let (boot_info, input) = get_inputs_for_pipeline(oracle.clone()).await?;
+        let (boot_info, espresso, input) = get_inputs_for_pipeline(oracle.clone()).await?;
         if let Some((cursor, l1_provider, l2_provider)) = input {
-            // Wrap RollupConfig with CeloRollupConfig
-            let celo_rollup_config = CeloRollupConfig::new(boot_info.rollup_config.clone());
+            // Wrap RollupConfig with CeloRollupConfig, carrying the Espresso batch-authentication
+            // settings resolved during boot so host witness generation matches the guest.
+            let mut celo_rollup_config = CeloRollupConfig::new(boot_info.rollup_config.clone());
+            celo_rollup_config.espresso = espresso;
             let l1_config = Arc::new(boot_info.l1_config.clone());
             let pipeline = self
                 .get_executor()

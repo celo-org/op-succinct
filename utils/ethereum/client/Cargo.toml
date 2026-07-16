@@ -19,6 +19,7 @@ kona-proof.workspace = true
 # celo-kona
 celo-genesis.workspace = true
 celo-proof.workspace = true
+celo-derive.workspace = true
 
 # general
 anyhow.workspace = true

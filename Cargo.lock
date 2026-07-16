@@ -8198,6 +8198,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "celo-derive",
  "celo-genesis",
  "celo-proof",
  "hokulea-eigenda",
@@ -8260,6 +8261,7 @@ version = "4.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "celo-derive",
  "celo-genesis",
  "celo-proof",
  "kona-derive",
