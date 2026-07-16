@@ -44,6 +44,7 @@ branch; line numbers are current as of that branch. Module path:
 | Stale `--delay` module-doc mention corrected — the flag is `--retry-backoff-delay`, discovery is immediate (item #13) | this change |
 | Admission `cost` mutex hardened — `cost_guard()` recovers the guard on poison instead of `unwrap()` panicking (item #11) | this change |
 | Fast-path test now proves `host.run` is skipped by fault injection (an unbuildable range with pre-seeded stdin) (item #16) | this change |
+| Parity test compares `execute_game` to a serial split→execute→aggregate reference field-for-field (`ExecutionStats: PartialEq`) (item #15) | this change |
 
 ---
 
@@ -254,11 +255,18 @@ under-projected at low concurrency (missed the floor → over-admit) and over-pr
 
 ### Testing
 
-#### 15. Parity test checks shape only
-`execute_game_aggregates_over_real_range`
-(`scripts/utils/tests/game_monitor_embedded_integration.rs:99-132`) asserts `batch_end`,
-`nb_blocks`, `total_instruction_count > 0`, `!ranges.is_empty()` — never compares against a
-real `cost-estimator` baseline (plan Task 22 Step 1 recommended it as optional).
+#### 15. Parity test checks shape only — FIXED
+The parity test only asserted shape (`batch_end`, `nb_blocks`, `total_instruction_count > 0`).
+- **Fix:** `execute_game_matches_serial_reference` now compares against a **serial reference** —
+  it splits the window with `split_range_basic`, `execute_range`s each sub-range independently, and
+  aggregates, then asserts `execute_game`'s concurrent split-and-aggregate equals it **field-for-
+  field** (`ExecutionStats` gained `PartialEq`/`Eq`). It also asserts the split matches
+  `split_range_basic` exactly and `batch_start`/`batch_end`/`nb_blocks` bound the window. Execution
+  is deterministic and aggregation is an order-independent sum, so the equality is exact.
+- **Not a cross-tool baseline (by design/scope):** `cost_estimator` is not daemon code and is not
+  retrofitted to `utils/estimator` (spec §12), and it splits differently (safe-head vs
+  `split_range_basic`) so it is not apples-to-apples. Its aggregation is the same one this reuses
+  (`stats.rs`), so the serial reference is the faithful in-scope check.
 
 #### 16. Forced-failure recovery test is degraded — FIXED
 The test used to only assert a second `build_range_witness` returns `Ok` with cached stdin — it

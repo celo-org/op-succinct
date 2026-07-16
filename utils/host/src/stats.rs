@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sp1_sdk::ExecutionReport;
 
 /// Statistics for the range execution.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ExecutionStats {
     pub l1_head: u64,
     pub batch_start: u64,
