@@ -41,6 +41,7 @@ branch; line numbers are current as of that branch. Module path:
 | Readiness buffer and host offset unified into one shared `L1_HEAD_BUFFER` constant (item #10) | `7cd3a581`, `d28c38f7` |
 | Post-stdin `drop_witness` made best-effort (no false build failure); short-circuit re-drops leaked blobs (item #12) | this change |
 | Admission baseline learned as an EWMA of idle RSS (was a single mis-calibrated startup read), persisted in `CostModel` (item #28) | this change |
+| Stale `--delay` module-doc mention corrected — the flag is `--retry-backoff-delay`, discovery is immediate (item #13) | this change |
 
 ---
 
@@ -195,15 +196,13 @@ was never reclaimed, because the retry short-circuits at `has_stdin` and never r
   range self-heals a previously-leaked blob; the size-cap GC remains the final backstop. Dropping
   is always safe once stdin exists (the witness is only needed to re-crunch stdin).
 
-#### 13. `--delay` repurposed as retry backoff; discovery/background drains are immediate — LARGELY OBSOLETE
-The `--delay` flag was renamed `--retry-backoff-delay` (`d034b638`) and no longer gates
-discovery. Both primary discovery (`mod.rs:701-705`) and background-retry drains
-(`mod.rs:722-725`) now push with `executable_at: Instant::now()`; the backoff applies only to
-same-game requeues on the Primary retry path (`apply_requeue`, `mod.rs:394`, `+ delay`).
-Background-retry spacing is instead governed by each entry's `next_attempt_at` in
-`background_retries`. The original "primary applies delay, background bypasses it" asymmetry no
-longer exists, so this item is moot.
-- **Residual:** a stale `--delay` mention lingers in the module doc comment (`mod.rs:22`).
+#### 13. `--delay` repurposed as retry backoff; discovery/background drains are immediate — FIXED
+The `--delay` flag was renamed `--retry-backoff-delay` (`d034b638`) and no longer gates discovery.
+Both primary discovery and background-retry drains push with `executable_at: Instant::now()`; the
+backoff applies only to same-game requeues on the Primary retry path (`apply_requeue`, `+ delay`).
+Background-retry spacing is governed by each entry's `next_attempt_at`. The original "primary
+applies delay, background bypasses it" asymmetry no longer exists. The last residual — a stale
+`--delay` mention in the module doc comment — is now corrected (this change).
 
 #### 14. Residual `.expect()` panics in `block_range.rs`
 - **Sites:** `block_range.rs:40` (`get_validated_block_range`), `:83`
