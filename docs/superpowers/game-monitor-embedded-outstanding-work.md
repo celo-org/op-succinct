@@ -43,6 +43,7 @@ branch; line numbers are current as of that branch. Module path:
 | Admission baseline learned as an EWMA of idle RSS (was a single mis-calibrated startup read), persisted in `CostModel` (item #28) | this change |
 | Stale `--delay` module-doc mention corrected — the flag is `--retry-backoff-delay`, discovery is immediate (item #13) | this change |
 | Admission `cost` mutex hardened — `cost_guard()` recovers the guard on poison instead of `unwrap()` panicking (item #11) | this change |
+| Fast-path test now proves `host.run` is skipped by fault injection (an unbuildable range with pre-seeded stdin) (item #16) | this change |
 
 ---
 
@@ -259,11 +260,14 @@ under-projected at low concurrency (missed the floor → over-admit) and over-pr
 `nb_blocks`, `total_instruction_count > 0`, `!ranges.is_empty()` — never compares against a
 real `cost-estimator` baseline (plan Task 22 Step 1 recommended it as optional).
 
-#### 16. Forced-failure recovery test is degraded
-`second_build_is_noop_fast_path`
-(`integration.rs:166-187`) only asserts a second `build_range_witness` returns `Ok` with
-cached stdin; it injects no failure and never proves `host.run` was skipped. (The plan had
-already softened this from true fault injection.)
+#### 16. Forced-failure recovery test is degraded — FIXED
+The test used to only assert a second `build_range_witness` returns `Ok` with cached stdin — it
+injected no failure and never proved `host.run` was skipped.
+- **Fix:** `second_build_short_circuits_host_run` now proves the skip by fault injection. It builds
+  the real range (caching stdin), then takes a range the host *cannot* build (block numbers far
+  beyond any chain height): without a cached stdin that build **fails** (host path exercised), but
+  with its stdin pre-seeded it returns `Ok` — reachable only via the `has_stdin` short-circuit
+  returning before `host.fetch`/`host.run`. Still ENV-gated (needs `OPS_IT_*`), skips cleanly in CI.
 
 #### 17. `estimator.rs` has no unit tests
 No `#[cfg(test)] mod tests` in `utils/estimator/src/estimator.rs`. `build_range_witness` /

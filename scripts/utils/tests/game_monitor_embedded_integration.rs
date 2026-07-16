@@ -160,10 +160,16 @@ async fn prebuilt_stdin_is_consumed_by_executor() {
     assert!(stats.total_instruction_count > 0);
 }
 
-/// Test 4 — forced-failure recovery / resilience invariant (ENV-GATED). A cached step is
-/// not redone: a second `build_range_witness` for the same range is a no-op fast-path.
+/// Test 4 — the fast-path invariant (ENV-GATED): once a range's stdin is cached,
+/// `build_range_witness` short-circuits and never touches the host (`host.fetch` / `host.run`).
+///
+/// Proven by fault injection rather than a bare `Ok`: a range the host *cannot* build (blocks
+/// that don't exist) fails when its stdin is not cached — establishing the host path is exercised
+/// and fails — but returns `Ok` once its stdin is pre-seeded. The only way the second call can
+/// succeed is by returning at the `has_stdin` short-circuit, before the (failing) host path. That
+/// is exactly the skip the executor and pipeline rely on for a cache hit.
 #[tokio::test]
-async fn second_build_is_noop_fast_path() {
+async fn second_build_short_circuits_host_run() {
     if !it_enabled() {
         eprintln!("skipping: OPS_IT_L2_RPC unset");
         return;
@@ -175,15 +181,26 @@ async fn second_build_is_noop_fast_path() {
     };
 
     build_estimator!(estimator, _fetcher, cache, _dir);
+
+    // Build the real range once (host.fetch + host.run + get_sp1_stdin), caching its stdin.
     let range = SpanBatchRange { start, end };
-
-    // Build once to success — stdin (and/or witness) is now cached.
     estimator.build_range_witness(&range).await.unwrap();
     assert!(cache.has_stdin(range.start, range.end));
 
-    // A second build returns Ok without re-fetching: the cached stdin is not redone.
-    estimator.build_range_witness(&range).await.unwrap();
-    assert!(cache.has_stdin(range.start, range.end));
+    // A range the host cannot build: block numbers far beyond any real chain height. With no
+    // cached stdin the build MUST reach the host and fail — this exercises (and fails) exactly
+    // the path the short-circuit skips.
+    let unbuildable = SpanBatchRange { start: 9_000_000_000_000_000_000, end: 9_000_000_000_000_000_100 };
+    assert!(
+        estimator.build_range_witness(&unbuildable).await.is_err(),
+        "sanity: an unbuildable range must fail when its stdin is not cached (host path exercised)"
+    );
+
+    // Pre-seed its stdin, then build again: `Ok` is only reachable via the `has_stdin`
+    // short-circuit returning before host.fetch/host.run — proving host.run is skipped.
+    cache.save_stdin(unbuildable.start, unbuildable.end, &sp1_sdk::SP1Stdin::default()).unwrap();
+    estimator.build_range_witness(&unbuildable).await.unwrap();
+    assert!(cache.has_stdin(unbuildable.start, unbuildable.end));
 }
 
 /// Test 5 — frontier/game cache-key alignment (ENV-GATED). The pipeline prebuilds a
