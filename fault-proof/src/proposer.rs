@@ -714,10 +714,10 @@ where
 
         // If L1 hasn't advanced past the last synced block, all on-chain state is identical.
         //
-        // Diverges from upstream: `confirmed_number < prev` indicates backend regression
-        // from a load-balanced RPC, or a deep L1 reorg past `sync_l1_confirmations`. This case
-        // should be logged at WARN so operators can detect unhealthy backends or L1 reorg;
-        // the equal case stays at DEBUG since it's the normal "L1 hasn't ticked" path.
+        // `confirmed_number < prev` indicates backend regression from a load-balanced RPC, or a
+        // deep L1 reorg past `sync_l1_confirmations`. This case should be logged at WARN so
+        // operators can detect unhealthy backends or L1 reorg; the equal case stays at DEBUG
+        // since it's the normal "L1 hasn't ticked" path.
         let prev = self.last_synced_l1_block.load(Ordering::Relaxed);
         if confirmed_number > 0 && confirmed_number <= prev {
             if confirmed_number < prev {
