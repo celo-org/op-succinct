@@ -1011,7 +1011,11 @@ impl OPSuccinctDataFetcher {
             server: true,
             rollup_config_path: self.rollup_config_path.clone(),
             l1_config_path: self.l1_config_path.clone(),
-            enable_experimental_witness_endpoint: false,
+            // Fetch the complete execution witness via `debug_executePayload`. Without it the
+            // client falls back to `L2StateNode` hints for trie nodes missing from the proof
+            // prefetch, which reth's `debug_dbGet` (code-only, 33-byte keys) can never serve —
+            // observed wedging witness gen on Sepolia (outstanding-work item #31).
+            enable_experimental_witness_endpoint: true,
         })
     }
 }

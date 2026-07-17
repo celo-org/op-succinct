@@ -143,6 +143,28 @@ cost. `alpha` / `--build-gas-weight` is removed (per-kind costs make it unnecess
 kind's cost is learned, admission stays serial for it. Projection logs now render GiB and log
 grants at INFO, waits at DEBUG.
 
+#### 31. Witness build wedges forever on a deterministic hint-fetch error
+kona's `OnlineHostBackend::get_preimage` (kona `bin/host/src/backend/online.rs:135-148`, rev
+`b4ba5c3`) retries a failed `fetch_hint` in an unconditional busy loop — no backoff, no attempt
+cap, no transient-vs-deterministic classification. A hint that fails **deterministically** spins
+forever (~500 errors/s), and the witness build never returns, wedging its game slot and the
+admission gas it holds indefinitely. Unlike #23 this is not a panic — the task is alive, so
+`catch_game_panic` and the two-tier retry never see it.
+- **Evidence:** 2026-07-16 Sepolia incident — an `L2StateNode` hint for one missing trie-node
+  preimage hit reth's `debug_dbGet` (code-only, 33-byte keys), a deterministic `-32602: Key must
+  be 33 bytes, got 32`; >17k `Failed to prefetch hint` errors in minutes, game `29347` stuck in
+  witness build for hours (`executing_games=1 active_witness=1`, watermark frozen), pod healthy.
+- **Mitigation (this change):** `enable_experimental_witness_endpoint: true` removes that specific
+  trigger (complete `debug_executePayload` witness ⇒ no `L2StateNode` fallback), but any future
+  deterministic hint failure re-creates the wedge.
+- **Fix:** bound the witness build — the loop is upstream (kona, under `~/.cargo`), so the
+  monitor-side fix is a timeout around `build_range_witness` (`host.run`): on overrun, fail the
+  build with a typed error so the normal requeue/retry policy (and eventually Fatal) applies.
+  Alternatively (upstream, celo-kona): classify non-retryable RPC errors in `fetch_hint` and
+  surface them as terminal instead of `continue`.
+- **Relates to:** #2 (watchdog — same detection need; this is the witness-build case), #23 (slot
+  wedge class), #4 (a liveness probe would restart the pod but lose all in-flight work).
+
 ### Minor
 
 #### 7. No `WindowPredictor` / lead-distance cap — WON'T DO
