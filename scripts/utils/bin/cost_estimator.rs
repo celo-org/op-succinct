@@ -1,3 +1,4 @@
+use alloy_primitives::B256;
 use anyhow::Result;
 use clap::Parser;
 use futures::StreamExt;
@@ -30,8 +31,8 @@ use std::{
 };
 
 // Cost-estimator-specific CLI args. Wraps `HostExecutorArgs` and adds the estimator-only
-// `--no-safe-head-split` flag so unrelated host binaries (e.g. `multi`,
-// `gen-sp1-test-artifacts`) don't advertise a flag they ignore.
+// `--no-safe-head-split` and `--l1-head` flags so unrelated host binaries (e.g. `multi`,
+// `gen-sp1-test-artifacts`) don't advertise flags they ignore.
 #[derive(Debug, Clone, Parser)]
 #[command(about = "Estimate OP Succinct execution costs over an L2 block range")]
 struct CostEstimatorArgs {
@@ -43,6 +44,20 @@ struct CostEstimatorArgs {
     /// `RANGE_SPLIT_COUNT` segment) rather than per span batch.
     #[arg(long)]
     no_safe_head_split: bool,
+    /// L1 head block hash to derive the L2 range from. When set, it is used directly instead of
+    /// looking it up via the op-node safeDB, so a caller that already knows the L1 head can skip
+    /// the safeDB binary search (and the `--safe-db-fallback` timestamp estimation). This matches
+    /// the fault-proof proposer, which anchors each range to the L1 head committed on-chain.
+    #[arg(long)]
+    l1_head: Option<B256>,
+}
+
+fn cost_estimator_l1_selection(has_explicit_l1_head: bool) -> Result<L1BlockSelectionConfig> {
+    if has_explicit_l1_head {
+        Ok(L1BlockSelectionConfig::default())
+    } else {
+        L1BlockSelectionConfig::from_env()
+    }
 }
 
 /// Run the zkVM execution process for each split range in parallel. Writes the execution stats for
@@ -274,12 +289,13 @@ async fn main() -> Result<()> {
 
     let args = CostEstimatorArgs::parse();
     let no_safe_head_split = args.no_safe_head_split;
+    let l1_head = args.l1_head;
     let args = args.host;
 
     dotenv::from_path(&args.env_file).ok();
     utils::setup_logger();
 
-    let l1_selection = L1BlockSelectionConfig::from_env()?;
+    let l1_selection = cost_estimator_l1_selection(l1_head.is_some())?;
     let data_fetcher =
         OPSuccinctDataFetcher::new_with_rollup_config_and_l1_selection(l1_selection).await?;
     let l2_chain_id = data_fetcher.get_l2_chain_id().await?;
@@ -327,7 +343,7 @@ async fn main() -> Result<()> {
 
     let host_args = futures::stream::iter(split_ranges.iter())
         .map(|range| async {
-            host.fetch(range.start, range.end, args.l1_head, args.safe_db_fallback)
+            host.fetch(range.start, range.end, l1_head, args.safe_db_fallback)
                 .await
                 .expect("Failed to get host CLI args")
         })

@@ -1,4 +1,3 @@
-use alloy_primitives::B256;
 use clap::Parser;
 use std::{num::NonZeroU64, path::PathBuf};
 
@@ -37,11 +36,6 @@ pub struct HostExecutorArgs {
     /// activated for op-node.
     #[clap(long)]
     pub safe_db_fallback: bool,
-    /// L1 head block hash to derive the L2 range from. When set, it is used directly instead of
-    /// looking it up via the op-node safeDB, so a caller who knows L1 head already can skip the
-    /// binary search to find the L1 block from which the `l2_end_block` can be derived.
-    #[arg(long)]
-    pub l1_head: Option<B256>,
     /// Skip writing CSV files and only log execution statistics.
     #[arg(long)]
     pub log_only: bool,
@@ -100,7 +94,6 @@ mod tests {
             env_file: PathBuf::from(".env"),
             prove: false,
             safe_db_fallback: false,
-            l1_head: None,
             cluster_timeout: 21600,
             log_only: false,
         }
