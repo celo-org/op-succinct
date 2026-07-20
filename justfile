@@ -464,9 +464,6 @@ build-range-elfs:
     cd ../eigenda
     ~/.sp1/bin/cargo-prove prove build --elf-name eigenda-range-elf-embedded --docker --tag v6.2.4 --output-directory ../../../elf
 
-    cd ../altda
-    ~/.sp1/bin/cargo-prove prove build --elf-name altda-range-elf-embedded --docker --tag v6.2.4 --output-directory ../../../elf
-
 # Build ELF file for aggregation program.
 build-agg-elf:
     #!/usr/bin/env bash
