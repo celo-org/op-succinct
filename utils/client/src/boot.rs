@@ -61,18 +61,19 @@ mod espresso_pin_tests {
     //! and carries into derivation.
     //!
     //! celo-kona is currently pinned to a PR head (rev `e715051`, celo-org/celo-kona#242) that must
-    //! be re-pinned to a release tag before this repo merges. These tests drive `CeloBootInfo::load`
-    //! with a tiny in-memory preimage oracle and assert the Chaos and Mainnet Espresso values. If a
-    //! celo-kona re-pin silently changes the Chaos schedule (or flips Mainnet on), they fail loudly
-    //! rather than letting a proof derive against a different, unreviewed schedule.
+    //! be re-pinned to a release tag before this repo merges. These tests drive
+    //! `CeloBootInfo::load` with a tiny in-memory preimage oracle and assert the Chaos and
+    //! Mainnet Espresso values. If a celo-kona re-pin silently changes the Chaos schedule (or
+    //! flips Mainnet on), they fail loudly rather than letting a proof derive against a
+    //! different, unreviewed schedule.
 
     use super::*;
     use alloy_primitives::address;
     use async_trait::async_trait;
     use celo_proof::CeloBootInfo;
     use kona_preimage::{
-        PreimageKey, PreimageOracleClient,
         errors::{PreimageOracleError, PreimageOracleResult},
+        PreimageKey, PreimageOracleClient,
     };
     use kona_proof::boot::{
         L1_HEAD_KEY, L2_CHAIN_ID_KEY, L2_CLAIM_BLOCK_NUMBER_KEY, L2_CLAIM_KEY, L2_OUTPUT_ROOT_KEY,
@@ -150,10 +151,7 @@ mod espresso_pin_tests {
         let mut cfg = CeloRollupConfig::new(boot.op_boot_info.rollup_config.clone());
         cfg.espresso = boot.espresso;
         assert!(cfg.is_batch_auth_enabled(), "Chaos must run event-based batch authorization");
-        assert_eq!(
-            cfg.batch_auth_params().unwrap(),
-            Some((expected_authenticator, 1782910800)),
-        );
+        assert_eq!(cfg.batch_auth_params().unwrap(), Some((expected_authenticator, 1782910800)),);
     }
 
     #[tokio::test]
