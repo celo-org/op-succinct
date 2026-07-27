@@ -45,6 +45,7 @@ branch; line numbers are current as of that branch. Module path:
 | Admission `cost` mutex hardened — `cost_guard()` recovers the guard on poison instead of `unwrap()` panicking (item #11) | this change |
 | Fast-path test now proves `host.run` is skipped by fault injection (an unbuildable range with pre-seeded stdin) (item #16) | this change |
 | Parity test compares `execute_game` to a serial split→execute→aggregate reference field-for-field (`ExecutionStats: PartialEq`) (item #15) | this change |
+| Cache-fronted scheduling: worker pools, FIFO-priority/LIFO-speculative queues, promoted witness demands, proof cache, lead-capped speculative execute (items #26 + #24) | this change |
 
 ---
 
@@ -343,7 +344,7 @@ runs as image default (root).
 
 ### Enhancements
 
-#### 24. Speculative execute for predicted games
+#### 24. Speculative execute for predicted games — SUBSUMED by #26
 The prebuild pipeline already builds witnesses ahead of a game appearing, but the expensive zk
 `execute` only runs once the game is discovered on-chain (`pending_games` fed from `gameCount`,
 `mod.rs:695-706`) and passes the readiness gate. `execute_range`'s `ExecutionStats` is a pure
@@ -360,7 +361,10 @@ latency the way the pipeline hides build latency.
   cost, not just a build (bounded by prediction accuracy — the same bet the prebuild makes). Sound
   for estimation; reusing a speculative result as a real proof would need the game's committed L1
   anchor to match the witness's baked-in `l1_head`.
-- **Status:** promoted from spec §12 (deferred) to an active todo.
+- **Status:** subsumed by #26 — delivered there as the execute pool's speculative LIFO feeder plus
+  the proof cache. The lead-cap must-have is carried into #26 as an explicit requirement; the
+  soundness caveat is a non-issue for the monitor (estimation only) and matters only if the proof
+  cache ever feeds the live proposer (spec §12).
 
 #### 25. Canoe proof memoization by input-hash
 Witness build produces canoe proofs per range (seen in `host.run`: "canoe witness provider:
@@ -371,7 +375,7 @@ cached proof instead of recomputing.
   input-hash-keyed cache (persisted alongside the witness cache); consult before proving.
 - **Status:** promoted from spec §12 (deferred) to an active todo.
 
-#### 26. Cache-fronted scheduling: LIFO games + per-type FIFO-priority / LIFO-speculative queues
+#### 26. Cache-fronted scheduling: LIFO games + per-type FIFO-priority / LIFO-speculative queues — DONE (this change)
 Reshapes prioritization around two result caches — a **witness cache** and a **proof cache** —
 both fillable ahead of a game landing on-chain (the proposer's ranges and their splits are
 predictable from chain progression). Replaces today's unordered admission poll-race
@@ -396,21 +400,44 @@ LIFO**, so components are served in the order games demanded them — an in-flig
 satisfied before a later-started game's, so newer games / new speculative work cannot starve a game
 already executing. Speculative pre-compute only ever consumes spare capacity.
 
+Requirements on the speculative feeders (carried over from #24):
+- **Lead cap on speculative execute.** Window prediction is operator config, not protocol law — a
+  proposal-interval change re-shifts every boundary, a challenged game re-anchors the next window,
+  and a stalled proposer lets speculation run arbitrarily far ahead of real games. A wasted
+  speculative *build* costs minutes (#7's "won't do" reasoning); a wasted speculative *execute* is
+  the dominant cost (~10 min, ~12 GiB, uncancellable), scaling linearly with lead distance — so
+  the execute pool's speculative feeder is bounded to at most N windows ahead of the newest
+  discovered game. Queue ordering alone does not protect capacity: execute slots are
+  uncancellable, so speculation already occupying a slot delays a just-landed game by up to a full
+  execute regardless of priority — the lead cap (plus the FIFO-first draining) is what bounds that.
+- **Speculative results are estimation-grade.** `ExecutionStats` is a pure function of the range,
+  so cache reuse is sound for the monitor. A speculative result cannot be reused as a *real* proof
+  (the game's `l1Head` is committed at creation and unpredictable) — only relevant if the proof
+  cache ever feeds the live proposer (spec §12); no constraint on this design.
+
 Subsumes/relates to: the prove-priority + depth-first concern (raised against the current gate);
 generalises the prebuild pipeline (#5) and speculative execute (#24) into the two LIFO-speculative
 feeders; the proof cache is where #24's `ExecutionStats` would live.
 
-Open questions for the plan:
-- **Capacity:** queues are per-type, but do witness-build and proof-execute share one
-  memory/concurrency budget (today's single admission gate) or become independent pools? They still
-  contend for RAM either way.
-- **Witness→proof dependency:** proving a range needs its witness first — does a proof demand for an
-  un-built range promote a witness demand that feeds it, or does the proof worker build inline on a
-  miss (as `execute_range` does today)?
-- **Watermark:** newest-first keeps the contiguous completion watermark trailing (oldest games
-  finish last). Accept per-game latency as the goal, or pair with oldest-first selection for
-  watermark progress?
-- **Status:** design captured; not yet planned/implemented.
+Decisions (2026-07-17):
+- **Capacity:** pools share today's single admission gate — one memory budget plus the per-kind
+  count caps (#29). The pools change *ordering* only; the gate stays the capacity guard.
+- **Witness→proof dependency:** promoted demand — an execute demand for an un-built range enqueues
+  a witness demand on the build pool's FIFO priority queue and becomes eligible when the witness
+  lands in the cache; execute workers do not build inline.
+- **Watermark:** games LIFO (newest first) as designed; the contiguous watermark trails, which is
+  acceptable because above-watermark completions are persisted (#27).
+- **Lead cap:** `--max-speculative-lead-windows`, default 1 — the speculative execute feeder runs
+  at most that many predicted windows ahead of the newest discovered game.
+- **Status:** implemented (this change). `scheduler.rs` owns the per-type FIFO-priority /
+  LIFO-speculative queues, promoted witness demands (`park_for_witness`/`build_done`), the
+  lead-capped speculative execute feeder, the per-range error map, and the worker pools;
+  `executor.rs` gained `execute_step` (proof-cache hit or admit+execute+persist) and a
+  demand-and-assemble `execute_game`; the proof cache (`ExecutionStats` per range, JSON) lives
+  in `WitnessCache::{save,load,has}_stats`. Games were already LIFO (`push_front` discovery).
+  Unit-tested (queue order, promotion, park/release, lead cap, error propagation, dedup);
+  the env-gated parity test now drives the real scheduler+workers. Architecture doc updated
+  (§3, §5, §6, §8, §9, §12–§16).
 
 #### 29. Kind-aware admission gate: separate per-kind count caps — first step done (`c1baa130`)
 The shared `max_concurrent` count cap was kind-blind: a build unit (~2 GiB, ~250 B/gas from the RSS
@@ -434,7 +461,10 @@ lean on — but they become per-kind and separately sized.
   Interim: both kinds still reuse `max_concurrent`. Tested (`builds_do_not_consume_execute_slots`).
 - **Follow-up:** add distinct config for the build vs execute caps (e.g. a gate-side build cap,
   separate from the pipeline fan-out, plus an execute cap) so each is sized on purpose rather than
-  sharing `max_concurrent`.
+  sharing `max_concurrent`. Largely satisfied in practice by #26: the worker pools bound
+  concurrency ahead of the gate with distinct knobs (`--max-concurrent-builds` build workers,
+  `--max-concurrent-units` execute workers); the gate's per-kind count caps remain a backstop
+  both still sized by `max_concurrent`.
 - **Relates to:** #6 (per-kind cost), #26 (scheduling sits on this gate), #28 (baseline — sharpens
   the *secondary* memory bound, but the caps stay primary).
 

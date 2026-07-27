@@ -148,6 +148,49 @@ impl WitnessCache {
 }
 
 impl WitnessCache {
+    /// The proof cache: `ExecutionStats` keyed by range. Execute results are pure functions
+    /// of the range, so a cached result is reusable across game retries, restarts, and by a
+    /// game whose ranges were executed speculatively ahead of its discovery. JSON for
+    /// operator inspectability; the blobs are a few hundred bytes.
+    pub fn stats_path(&self, start: u64, end: u64) -> PathBuf {
+        self.cache_dir().join(format!("{start}-{end}-{}-stats.json", self.da_type.as_str()))
+    }
+
+    pub fn has_stats(&self, start: u64, end: u64) -> bool {
+        self.stats_path(start, end).exists()
+    }
+
+    pub fn save_stats(
+        &self,
+        start: u64,
+        end: u64,
+        stats: &op_succinct_host_utils::stats::ExecutionStats,
+    ) -> Result<PathBuf> {
+        let dir = self.cache_dir();
+        if !dir.exists() {
+            fs::create_dir_all(&dir)?;
+        }
+        let path = self.stats_path(start, end);
+        let tmp = Self::unique_tmp(&path);
+        fs::write(&tmp, serde_json::to_vec(stats)?)?;
+        fs::rename(&tmp, &path)?; // atomic publish so a crash mid-write leaves no half blob
+        Ok(path)
+    }
+
+    pub fn load_stats(
+        &self,
+        start: u64,
+        end: u64,
+    ) -> Result<Option<op_succinct_host_utils::stats::ExecutionStats>> {
+        let path = self.stats_path(start, end);
+        if !path.exists() {
+            return Ok(None);
+        }
+        Ok(Some(serde_json::from_slice(&fs::read(&path)?)?))
+    }
+}
+
+impl WitnessCache {
     /// Delete a range's stdin blob (called after the owning game succeeds + grace).
     pub fn prune_stdin(&self, start: u64, end: u64) -> Result<()> {
         let path = self.stdin_path(start, end);
@@ -316,6 +359,24 @@ mod tests {
         assert!(cache.has_stdin(10, 20));
         let loaded = cache.load_stdin(10, 20).unwrap();
         assert!(loaded.is_some());
+    }
+
+    #[test]
+    fn stats_round_trip_through_disk() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache = WitnessCache::new(dir.path(), 42220, DaType::EigenDa);
+        assert!(!cache.has_stats(10, 20));
+        assert!(cache.load_stats(10, 20).unwrap().is_none());
+        let stats = op_succinct_host_utils::stats::ExecutionStats {
+            batch_start: 10,
+            batch_end: 20,
+            total_sp1_gas: 123_456,
+            l1_fees: u128::from(u64::MAX) + 1, // u128 fields must survive JSON
+            ..Default::default()
+        };
+        cache.save_stats(10, 20, &stats).unwrap();
+        assert!(cache.has_stats(10, 20));
+        assert_eq!(cache.load_stats(10, 20).unwrap(), Some(stats));
     }
 
     #[test]
