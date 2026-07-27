@@ -157,11 +157,21 @@ admission gas it holds indefinitely. Unlike #23 this is not a panic — the task
 - **Mitigation (this change):** `enable_experimental_witness_endpoint: true` removes that specific
   trigger (complete `debug_executePayload` witness ⇒ no `L2StateNode` fallback), but any future
   deterministic hint failure re-creates the wedge.
-- **Fix:** bound the witness build — the loop is upstream (kona, under `~/.cargo`), so the
-  monitor-side fix is a timeout around `build_range_witness` (`host.run`): on overrun, fail the
-  build with a typed error so the normal requeue/retry policy (and eventually Fatal) applies.
-  Alternatively (upstream, celo-kona): classify non-retryable RPC errors in `fetch_hint` and
-  surface them as terminal instead of `continue`.
+- **Preferred fix (upstream kona):** in `OnlineHostBackend::get_preimage`, propagate a
+  `fetch_hint` error instead of `continue`. celo-kona's handler already retries transients
+  internally with backoff (`hint_retry_policy` / `is_retryable_transport_err`, from `f1c2289`),
+  so any error escaping `fetch_hint` is non-transient by construction; propagating it turns the
+  spin into a typed `host.run` failure that the monitor's existing requeue/retry policy bounds
+  (Transient → retry budget → background → Fatal). Even a mis-classified transient is safe — it
+  just burns one bounded retry instead of wedging.
+- **Deliberately not done now:** kona lives in the celo-org/optimism fork, and we are moving to a
+  new kona version we don't need to fork (celo-org/op-succinct#150) — carrying a fork patch just
+  for this would be thrown away. Revisit as an upstream (op-labs kona) contribution, or re-judge
+  after #150 lands.
+- **Fallback (op-succinct-side, not implemented):** a timeout around `build_range_witness`
+  (`host.run`) failing the build with a typed error. Blind to *why* the build hung, and covers the
+  silent variant (hint returns `Ok` but the blocked-on key never appears) that error propagation
+  does not; decided against for now.
 - **Relates to:** #2 (watchdog — same detection need; this is the witness-build case), #23 (slot
   wedge class), #4 (a liveness probe would restart the pod but lose all in-flight work).
 
