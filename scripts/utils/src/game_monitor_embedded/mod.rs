@@ -3,38 +3,40 @@
 //! replacing the legacy monitor that shelled out to the `cost-estimator` binary and
 //! scraped its logs.
 //!
-//! # Two cooperating halves, joined by the cache
+//! # Cache-fronted scheduling (outstanding-work #26)
 //!
-//! Everything starts in [`run`], which builds the shared resources once and then drives
-//! two loops that never call each other directly — they meet only at the on-disk witness
-//! cache (keyed `chain_id/start/end/da_type`; the DA discriminator comes from `da_type`):
+//! Everything starts in [`run`], which builds the shared resources once and then drives the
+//! control plane (discovery/retry, the main loop) and the data plane (the
+//! [`scheduler::Scheduler`]'s build and execute worker pools). They meet at two on-disk
+//! caches keyed `chain_id/start/end/da_type`: the **witness (stdin) cache** and the **proof
+//! cache** (`ExecutionStats` per range).
 //!
-//! * **Predictive pipeline** (proactive, a spawned task). A [`ReadyRangeProvider`] predicts the
-//!   next game window from the proposal cadence, splits it into safe-head sub-ranges anchored at
-//!   the window start, and hands out each sub-range once it is soundly finalized (L2 past its end,
-//!   L1 past its `l1_head + buffer`). [`pipeline::pipeline_step`] builds the witness and SP1 stdin
-//!   for each and caches both — running *ahead* of the executor so the stdin is usually already on
-//!   disk when the game arrives. Builds run concurrently (bounded by `--max-concurrent-builds`,
-//!   default the admission unit cap), with the shared memory admission gate governing how many
-//!   actually run at once.
+//! * **Speculative feeders** (proactive). A [`ReadyRangeProvider`] predicts the next game
+//!   window from the proposal cadence, splits it into fixed sub-ranges anchored at the
+//!   window start, and offers each soundly-finalized sub-range to the build pool's
+//!   speculative LIFO queue (newest first). A completed speculative build feeds the execute
+//!   pool's speculative LIFO queue, bounded by the lead cap
+//!   (`--max-speculative-lead-windows` past the newest discovered game) — so both the
+//!   witness *and* the execute are usually already cached when the game arrives.
 //!
-//! * **Reactive executor** (the main loop). Polls the dispute-game factory for newly finalized
-//!   games and enqueues them immediately — readiness (L2/L1 finalization) gates when each becomes
-//!   due, not a fixed delay — then spawns each due game as a task.
-//!   [`executor::execute_game`] splits the real game into the same safe-head sub-ranges, loads each
-//!   prebuilt stdin from the cache (building on a miss), runs the SP1 execute over the sub-ranges
-//!   concurrently, and aggregates the stats.
+//! * **Games** (reactive, the main loop). The factory poll enqueues new games newest-first;
+//!   each due game runs as a light task that splits into the same sub-ranges, demands
+//!   whatever the proof cache is missing (FIFO priority queues, served before all
+//!   speculative work), and assembles the aggregate from the cache. An un-built range
+//!   promotes a witness demand rather than building inline.
 //!
-//! Because the pipeline anchors its splits at the proposal boundary, its sub-range
-//! boundaries match the executor's, the cache keys line up, and the happy path is a hit.
+//! Because the feeder anchors its splits at the proposal boundary, its sub-range boundaries
+//! match the games', the cache keys line up, and the happy path is pure cache assembly.
 //!
 //! # Concurrency and state
 //!
-//! Games run as concurrent tokio tasks, capped by `--max-concurrent-games`. Each task
-//! reports its outcome over an mpsc channel as a `GameTaskResult`; the main loop is the
-//! *only* writer of the scheduling state ([`PendingGame`] queue, [`BackgroundRetry`] queue,
-//! [`SequenceTracker`] frontier, prune list), so none of it needs locking. The outcome is
-//! applied single-threaded by `apply_game_result`.
+//! Games run as concurrent tokio tasks, capped by `--max-concurrent-games`; the heavy units
+//! run on the worker pools (`--max-concurrent-builds` build workers,
+//! `--max-concurrent-units` execute workers). Each game task reports its outcome over an
+//! mpsc channel as a `GameTaskResult`; the main loop is the *only* writer of the scheduling
+//! state ([`PendingGame`] queue, [`BackgroundRetry`] queue, [`SequenceTracker`] frontier,
+//! prune list), so none of it needs locking. The outcome is applied single-threaded by
+//! `apply_game_result`.
 //!
 //! # Memory admission
 //!
@@ -68,9 +70,11 @@
 //! * [`admission`] — the memory-admission gate and its learned model.
 //! * [`registry`] — the in-flight gas/count tally and the RAII [`registry::AdmitGuard`].
 //! * [`rss_source`] — resident-memory sampling sources (proc / cgroup / unsupported).
-//! * [`ready_range_provider`] — window prediction, safe-head splitting, finalization gating.
-//! * [`pipeline`] — builds one witness per ready sub-range.
-//! * [`executor`] — runs a discovered game's sub-ranges and aggregates the stats.
+//! * [`ready_range_provider`] — window prediction, splitting, finalization gating.
+//! * [`scheduler`] — the FIFO-priority/LIFO-speculative queues and the worker pools.
+//! * [`pipeline`] — builds one witness per sub-range (the build workers' unit of work).
+//! * [`executor`] — executes one sub-range ([`executor::execute_step`]) and assembles games
+//!   from the proof cache ([`executor::execute_game`]).
 //! * [`discovery`] — reads game metadata from the factory and filters to type-42.
 //! * [`state`] — the queue/attempt types, the pure retry policy, and progress persistence.
 
@@ -81,6 +85,7 @@ pub mod pipeline;
 pub mod readiness;
 pub mod ready_range_provider;
 pub mod registry;
+pub mod scheduler;
 pub mod rss_source;
 pub mod state;
 
@@ -98,7 +103,7 @@ use alloy_provider::ProviderBuilder;
 use anyhow::Context;
 use clap::Parser;
 use fault_proof::contract::DisputeGameFactory::DisputeGameFactoryInstance;
-use futures::{FutureExt, StreamExt};
+use futures::FutureExt;
 use op_succinct_common::SequenceTracker;
 use op_succinct_estimator::{
     memory::read_cgroup_budget_bytes, network_call_with_timeout, DaType, Estimator, WitnessCache,
@@ -118,6 +123,7 @@ use crate::game_monitor_embedded::{
     executor::execute_game,
     ready_range_provider::ReadyRangeProvider,
     rss_source::{make_source, RssSourceKind},
+    scheduler::Scheduler,
     state::{
         is_background_retry_aged_out, load_progress, requeue_decision, resume_index, save_progress,
         AttemptKind, BackgroundRetry, PendingGame, RequeueDecision,
@@ -179,12 +185,19 @@ pub struct EmbeddedArgs {
     /// the only cap when the budget is unlimited or the model has no signal yet.
     #[arg(long, default_value = "8")]
     pub max_concurrent_units: usize,
-    /// Max concurrent prebuild-pipeline builds. Bounds how far ahead the pipeline reads and
-    /// how many build futures are in flight; the shared memory admission gate remains the
-    /// real governor of how many run at once. Defaults to `--max-concurrent-units`; set lower
-    /// to reserve admission capacity for executes.
+    /// Number of build workers draining the build queues; the shared memory admission gate
+    /// remains the real governor of how many builds run at once. Defaults to
+    /// `--max-concurrent-units`; set lower to reserve admission capacity for executes.
     #[arg(long)]
     pub max_concurrent_builds: Option<usize>,
+    /// Lead cap for SPECULATIVE executes: how many predicted windows past the newest
+    /// discovered game's end block they may run. Window prediction is operator config, not
+    /// protocol law, and a wasted speculative execute is the dominant cost (uncancellable),
+    /// so this bounds the waste when an assumption breaks (interval change, re-anchor,
+    /// stalled proposer). `0` disables speculative execution (witness prebuild is unaffected;
+    /// it stays finalization-bounded).
+    #[arg(long, default_value = "1")]
+    pub max_speculative_lead_windows: u64,
     /// Resident-memory sampling source: `auto` (per-process on Linux), `proc`
     /// (`/proc/self/status`), or `cgroup` (`memory.current`).
     #[arg(long, value_enum, default_value_t = RssSourceKind::Auto)]
@@ -539,51 +552,46 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
         }
     };
 
-    // ── Predictive pipeline task ───────────────────────────────────────────
+    // ── Cache-fronted scheduler + worker pools (outstanding-work #26) ──────
+    // The scheduler owns the FIFO-priority / LIFO-speculative queues; the worker pools
+    // drain them, passing every unit through the shared admission gate. The speculative
+    // execute horizon is seeded from the latest on-chain game (0 keeps speculation off
+    // until discovery observes one).
     let poll = Duration::from_secs(args.poll_interval);
+    let lead_blocks = args.proposal_interval.saturating_mul(args.max_speculative_lead_windows);
+    let sched = Arc::new(Scheduler::new(pipeline_seed.unwrap_or(0), lead_blocks));
+    let build_workers = args.max_concurrent_builds.unwrap_or(args.max_concurrent_units).max(1);
+    scheduler::spawn_workers(
+        sched.clone(),
+        estimator.clone(),
+        fetcher.clone(),
+        admission.clone(),
+        build_workers,
+        args.max_concurrent_units.max(1),
+    );
+
+    // ── Speculative build feeder ───────────────────────────────────────────
+    // Offers each soundly-finalized predicted sub-range to the build pool's speculative
+    // queue. Builds themselves run on the workers; a completed speculative build then feeds
+    // the (lead-capped) speculative execute queue inside the scheduler.
     if let Some(seed) = pipeline_seed {
         let estimator = estimator.clone();
         let fetcher = fetcher.clone();
-        let admission = admission.clone();
+        let sched = sched.clone();
         let proposal_interval = args.proposal_interval;
         let batch_size = args.batch_size;
-        // Default the pipeline's build fan-out to the admission unit cap, so by default the
-        // shared memory admission gate is the effective governor of build concurrency.
-        let max_concurrent_builds =
-            args.max_concurrent_builds.unwrap_or(args.max_concurrent_units).max(1);
         tokio::spawn(async move {
             let mut provider = ReadyRangeProvider::new(seed, proposal_interval, batch_size);
             loop {
-                // Collect every sub-range the provider reports ready right now — cheap
-                // finality checks plus a forward cursor advance, so this stays sequential.
-                let mut ready = Vec::new();
                 while let Some(range) = provider.next_range(&fetcher).await {
-                    ready.push(range);
+                    // Already built (e.g. a restart re-walk): skip the queue — the worker
+                    // would only short-circuit at `has_stdin` after burning an admission
+                    // admit.
+                    if estimator.cache.has_stdin(range.start, range.end) {
+                        continue;
+                    }
+                    sched.push_speculative_build((range.start, range.end));
                 }
-                // Build them concurrently, capped at `max_concurrent_builds`. Each step still
-                // passes through the shared memory admission gate, which is what actually
-                // bounds how many run at once (memory budget + the in-flight unit cap); this
-                // limit just bounds how many build futures we hold in flight.
-                futures::stream::iter(ready)
-                    .for_each_concurrent(max_concurrent_builds, |range| {
-                        let estimator = estimator.clone();
-                        let fetcher = fetcher.clone();
-                        let admission = admission.clone();
-                        async move {
-                            if let Err(e) =
-                                pipeline::pipeline_step(&estimator, &fetcher, &admission, &range)
-                                    .await
-                            {
-                                tracing::warn!(
-                                    start = range.start,
-                                    end = range.end,
-                                    error = %e,
-                                    "pipeline build failed"
-                                );
-                            }
-                        }
-                    })
-                    .await;
                 tokio::time::sleep(poll).await;
             }
         });
@@ -770,7 +778,7 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
             let tx = results_tx.clone();
             let estimator = estimator.clone();
             let fetcher = fetcher.clone();
-            let admission = admission.clone();
+            let sched = sched.clone();
             let factory = factory.clone();
             let l1_provider = l1_provider.clone();
             let timeout_secs = args.network_call_timeout_secs;
@@ -835,7 +843,7 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
                                         GameTaskResult::Defer { pg }
                                     }
                                     Ok(true) => match execute_game(
-                                        &estimator, &fetcher, &admission, &game, batch_size,
+                                        &estimator, &sched, &game, batch_size,
                                     )
                                     .await
                                     {
@@ -881,14 +889,19 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
         pending_games = remaining;
 
         // Orchestrator status snapshot, once per poll — the whole control plane at a glance:
-        // the completion watermark, the depth of each queue, plus the heavy sub-range units
-        // the admission gate has in flight (witness builds and SP1 proves/executes).
+        // the completion watermark, the depth of each queue, the scheduler's queued work
+        // (builds/executes awaiting a worker, executes parked behind a witness demand), plus
+        // the heavy sub-range units the admission gate has in flight.
         let (active_witness, active_prove) = admission.in_flight_units();
+        let depths = sched.depths();
         tracing::info!(
             watermark = tracker.end(),
             pending_games = pending_games.len(),
             executing_games = running_games.len(),
             background_games = background_retries.len(),
+            queued_builds = depths.queued_builds,
+            queued_executes = depths.queued_executes,
+            waiting_witness = depths.waiting_witness,
             active_witness,
             active_prove,
             "monitor status"
@@ -910,6 +923,7 @@ mod tests {
         assert_eq!(args.batch_size, 200);
         assert_eq!(args.max_concurrent_games, 5);
         assert_eq!(args.max_concurrent_units, 8);
+        assert_eq!(args.max_speculative_lead_windows, 1); // one window of speculative execute
         assert_eq!(args.max_cache_size, 0); // cap disabled by default
     }
 

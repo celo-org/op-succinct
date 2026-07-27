@@ -18,6 +18,7 @@ use op_succinct_scripts::game_monitor_embedded::{
     discovery::GameData,
     executor::execute_game,
     rss_source::Unsupported,
+    scheduler::{spawn_workers, Scheduler},
 };
 
 /// Build an unbudgeted admission gate for integration tests (no memory limit; serial cold
@@ -131,9 +132,12 @@ async fn execute_game_matches_serial_reference() {
         created_at: std::time::SystemTime::now(),
     };
 
+    // Games assemble from the proof cache via the scheduler's worker pools (#26): spawn a
+    // small pool (speculation disabled — lead 0) and let `execute_game` demand its ranges.
     let admission = test_admission(_dir.path().join("memory_model.json"));
-    let (game_stats, ranges) =
-        execute_game(&estimator, &fetcher, &admission, &game, batch_size).await.unwrap();
+    let sched = Arc::new(Scheduler::new(0, 0));
+    spawn_workers(sched.clone(), estimator.clone(), fetcher.clone(), admission, 2, 4);
+    let (game_stats, ranges) = execute_game(&estimator, &sched, &game, batch_size).await.unwrap();
 
     // The daemon's split must be exactly `split_range_basic` over the window, covering every
     // block once (no gaps or overlap).
@@ -275,8 +279,9 @@ async fn pipeline_window_aligned_to_game_boundary_hits_cache() {
     };
 
     let admission = test_admission(_dir.path().join("memory_model.json"));
-    let (stats, ranges) =
-        execute_game(&estimator, &fetcher, &admission, &game, batch_size).await.unwrap();
+    let sched = Arc::new(Scheduler::new(0, 0));
+    spawn_workers(sched.clone(), estimator.clone(), fetcher.clone(), admission, 2, 4);
+    let (stats, ranges) = execute_game(&estimator, &sched, &game, batch_size).await.unwrap();
 
     // execute_game succeeds and produces real stats over the aligned range.
     assert_eq!(stats.batch_end, end);
