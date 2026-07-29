@@ -66,8 +66,8 @@ pub struct DemandError {
 /// Queue depths for the `monitor status` line.
 #[derive(Debug, Clone, Copy)]
 pub struct Depths {
-    pub queued_builds: usize,
-    pub queued_executes: usize,
+    pub queued_witness: usize,
+    pub queued_prove: usize,
     pub waiting_witness: usize,
 }
 
@@ -276,8 +276,8 @@ impl Scheduler {
     pub fn depths(&self) -> Depths {
         let q = self.queues();
         Depths {
-            queued_builds: q.build_priority.len() + q.build_spec.len(),
-            queued_executes: q.exec_priority.len() + q.exec_spec.len(),
+            queued_witness: q.build_priority.len() + q.build_spec.len(),
+            queued_prove: q.exec_priority.len() + q.exec_spec.len(),
             waiting_witness: q.exec_waiting.len(),
         }
     }
@@ -559,8 +559,8 @@ mod tests {
         assert_eq!(s.next_execute(), Some(((0, 10), Class::Demand))); // worker pops...
         s.park_for_witness((0, 10)); // ...finds no stdin, parks behind a build demand
         let d = s.depths();
-        assert_eq!(d.queued_builds, 2); // spec + promoted demand
-        assert_eq!(d.queued_executes, 0);
+        assert_eq!(d.queued_witness, 2); // spec + promoted demand
+        assert_eq!(d.queued_prove, 0);
         assert_eq!(d.waiting_witness, 1);
     }
 }
