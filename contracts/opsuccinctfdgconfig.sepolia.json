@@ -10,6 +10,8 @@
   "configureContracts": true,
   "disputeGameFactoryAddress": "0x57c45d82d1a995f1e135b8d7edc0a6bb5211cfaa",
   "disputeGameFinalityDelaySeconds": 302400,
+  "existingAnchorStateRegistry": "0x0000000000000000000000000000000000000000",
+  "existingDisputeGameFactoryProxy": "0x0000000000000000000000000000000000000000",
   "fallbackTimeoutFpSecs": 1209600,
   "gameType": 42,
   "initialBondWei": 1000000000000000,

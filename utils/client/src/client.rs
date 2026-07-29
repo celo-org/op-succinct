@@ -3,7 +3,6 @@ use alloy_primitives::B256;
 use alloy_rlp::Decodable;
 use anyhow::Result;
 use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope, CeloTxType};
-use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_driver::{CeloDriver, CeloExecutorTr};
 use celo_genesis::CeloRollupConfig;
 use celo_protocol::CeloL2BlockInfo;
@@ -106,8 +105,7 @@ where
 
         #[cfg(target_os = "zkvm")]
         println!("cycle-tracker-report-start: block-execution");
-        let celo_attributes = CeloPayloadAttributes { op_payload_attributes: attributes.clone() };
-        let outcome = match driver.executor.execute_payload(celo_attributes).await {
+        let outcome = match driver.executor.execute_payload(attributes.clone()).await {
             Ok(outcome) => outcome,
             Err(e) => {
                 error!(target: "client", "Failed to execute L2 block: {}", e);
@@ -130,10 +128,8 @@ where
                     });
 
                     // Retry the execution.
-                    let celo_attributes =
-                        CeloPayloadAttributes { op_payload_attributes: attributes.clone() };
                     driver.executor.update_safe_head(tip_cursor.l2_safe_head_header.clone());
-                    match driver.executor.execute_payload(celo_attributes).await {
+                    match driver.executor.execute_payload(attributes.clone()).await {
                         Ok(header) => header,
                         Err(e) => {
                             error!(
@@ -152,20 +148,19 @@ where
         #[cfg(target_os = "zkvm")]
         println!("cycle-tracker-report-end: block-execution");
 
+        let mut transactions =
+            Vec::with_capacity(attributes.transactions.as_ref().map_or(0, Vec::len));
+        if let Some(raw_transactions) = &attributes.transactions {
+            for tx in raw_transactions {
+                transactions
+                    .push(CeloTxEnvelope::decode(&mut tx.as_ref()).map_err(DriverError::Rlp)?);
+            }
+        }
+
         // Construct the block.
         let block = CeloBlock {
             header: outcome.header.inner().clone(),
-            body: BlockBody {
-                transactions: attributes
-                    .transactions
-                    .as_ref()
-                    .unwrap_or(&Vec::new())
-                    .iter()
-                    .map(|tx| CeloTxEnvelope::decode(&mut tx.as_ref()).map_err(DriverError::Rlp))
-                    .collect::<DriverResult<Vec<CeloTxEnvelope>, E::Error>>()?,
-                ommers: Vec::new(),
-                withdrawals: None,
-            },
+            body: BlockBody { transactions, ommers: Vec::new(), withdrawals: None },
         };
 
         // Get the pipeline origin and update the tip cursor.

@@ -91,9 +91,19 @@ contract DeployOPSuccinctFDG is Script, Utils {
     }
 
     function deployContracts(FDGConfig memory config) internal returns (DeployedContracts memory) {
-        // Deploy or get DisputeGameFactory
-        Proxy factoryProxy = deployOrGetDisputeGameFactoryProxy(config);
-        DisputeGameFactory factory = DisputeGameFactory(address(factoryProxy));
+        DisputeGameFactory factory;
+
+        // Check if using existing DGF (for e2e tests where OptimismPortal2 must use the same DGF)
+        if (config.existingDisputeGameFactoryProxy != address(0)) {
+            // Use existing DisputeGameFactory - required for e2e tests where
+            // OptimismPortal2 is already configured with a specific DGF
+            factory = DisputeGameFactory(config.existingDisputeGameFactoryProxy);
+            console.log("Using existing DisputeGameFactory:", address(factory));
+        } else {
+            // Deploy or get DisputeGameFactory
+            Proxy factoryProxy = deployOrGetDisputeGameFactoryProxy(config);
+            factory = DisputeGameFactory(address(factoryProxy));
+        }
 
         // Deploy MockOptimismPortal2 or get OptimismPortal2
         GameType gameType = GameType.wrap(config.gameType);
@@ -106,7 +116,7 @@ contract DeployOPSuccinctFDG is Script, Utils {
         AnchorStateRegistry registry = deployOrGetAnchorStateRegistry(config, factory, startingAnchorRoot, gameType);
 
         // Deploy and configure access manager
-        AccessManager accessManager = deployAccessManager(config, address(factoryProxy));
+        AccessManager accessManager = deployAccessManager(config, address(factory));
 
         // Deploy SP1 verifier and get configuration
         SP1Config memory sp1Config = deploySP1Verifier(config);
@@ -116,19 +126,26 @@ contract DeployOPSuccinctFDG is Script, Utils {
             deployGameImplementation(config, factory, sp1Config, registry, accessManager);
 
         // Log deployed addresses.
-        console.log("Factory Proxy:", address(factoryProxy));
+        console.log("Factory Proxy:", address(factory));
         console.log("Game Implementation:", address(gameImpl));
         console.log("SP1 Verifier:", sp1Config.verifierAddress);
 
         // Create deployed contracts struct
         DeployedContracts memory deployedContracts = DeployedContracts({
-            factoryProxy: address(factoryProxy),
+            factoryProxy: address(factory),
             gameImplementation: address(gameImpl),
             sp1Verifier: sp1Config.verifierAddress,
             anchorStateRegistry: address(registry),
             accessManager: address(accessManager),
             optimismPortal2: portalAddress
         });
+
+        // Output addresses in format expected by Go test infrastructure:
+        // <name>: address 0x...
+        // These are parsed by parseNamedAddresses in deployer_succinct.go
+        console.log("factoryProxy: address", address(factory));
+        console.log("anchorStateRegistry: address", address(registry));
+        console.log("sp1Verifier: address", sp1Config.verifierAddress);
 
         return deployedContracts;
     }
@@ -215,6 +232,13 @@ contract DeployOPSuccinctFDG is Script, Utils {
         Proposal memory startingAnchorRoot,
         GameType gameType
     ) internal returns (AnchorStateRegistry) {
+        // Check if using existing ASR (for e2e tests where games must use the same ASR as OptimismPortal2)
+        if (config.existingAnchorStateRegistry != address(0)) {
+            AnchorStateRegistry existingRegistry = AnchorStateRegistry(config.existingAnchorStateRegistry);
+            console.log("Using existing AnchorStateRegistry:", address(existingRegistry));
+            return existingRegistry;
+        }
+
         AnchorStateRegistry registry;
         if (config.anchorStateRegistryAddress != address(0)) {
             // Re-use anchor state registry

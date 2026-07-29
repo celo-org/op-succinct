@@ -7,7 +7,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use celo_eigenda_registry::CeloCanoeVerifierAddressFetcher;
 use celo_genesis::CeloRollupConfig;
-use celo_protocol::CeloToOpProviderAdapter;
 use hokulea_compute_proof::create_kzg_proofs_for_eigenda_preimage;
 use hokulea_proof::{
     eigenda_provider::OracleEigenDAPreimageProvider,
@@ -129,10 +128,12 @@ impl WitnessGenerator for EigenDAWitnessGenerator {
 
         let executor = EigenDAWitnessExecutor::new(eigenda_preimage_provider);
 
-        let (boot_info, input) = get_inputs_for_pipeline(oracle.clone()).await?;
+        let (boot_info, espresso, input) = get_inputs_for_pipeline(oracle.clone()).await?;
         if let Some((cursor, l1_provider, l2_provider)) = input {
-            // Wrap RollupConfig with CeloRollupConfig
-            let celo_rollup_config = CeloRollupConfig(boot_info.rollup_config.clone());
+            // Wrap RollupConfig with CeloRollupConfig, carrying the Espresso batch-authentication
+            // settings resolved during boot so host witness generation matches the guest.
+            let mut celo_rollup_config = CeloRollupConfig::new(boot_info.rollup_config.clone());
+            celo_rollup_config.espresso = espresso;
             let l1_config = Arc::new(boot_info.l1_config.clone());
             let pipeline = WitnessExecutorTrait::create_pipeline(
                 &executor,
@@ -142,7 +143,7 @@ impl WitnessGenerator for EigenDAWitnessGenerator {
                 oracle.clone(),
                 beacon,
                 l1_provider.clone(),
-                CeloToOpProviderAdapter(l2_provider.clone()),
+                l2_provider.clone(),
             )
             .await?;
             WitnessExecutorTrait::run(

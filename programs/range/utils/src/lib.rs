@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use celo_genesis::CeloRollupConfig;
 use celo_proof::CeloOracleL2ChainProvider;
-use celo_protocol::CeloToOpProviderAdapter;
 use kona_proof::l1::OracleL1ChainProvider;
 use op_succinct_client_utils::{
     boot::BootInfoStruct,
@@ -29,18 +28,20 @@ where
             O = PreimageStore,
             B = BlobStore,
             L1 = OracleL1ChainProvider<PreimageStore>,
-            L2 = CeloToOpProviderAdapter<CeloOracleL2ChainProvider<PreimageStore>>,
+            L2 = CeloOracleL2ChainProvider<PreimageStore>,
         > + Send
         + Sync,
 {
     ////////////////////////////////////////////////////////////////
     //                          PROLOGUE                          //
     ////////////////////////////////////////////////////////////////
-    let (boot_info, input) = get_inputs_for_pipeline(oracle.clone()).await.unwrap();
+    let (boot_info, espresso, input) = get_inputs_for_pipeline(oracle.clone()).await.unwrap();
     let boot_info = match input {
         Some((cursor, l1_provider, l2_provider)) => {
-            // Wrap RollupConfig with CeloRollupConfig
-            let celo_rollup_config = CeloRollupConfig(boot_info.rollup_config.clone());
+            // Wrap RollupConfig with CeloRollupConfig, carrying the Espresso batch-authentication
+            // settings resolved during boot so derivation matches celo-kona / op-node.
+            let mut celo_rollup_config = CeloRollupConfig::new(boot_info.rollup_config.clone());
+            celo_rollup_config.espresso = espresso;
             let l1_config = Arc::new(boot_info.l1_config.clone());
 
             let pipeline = executor
@@ -51,7 +52,7 @@ where
                     oracle,
                     beacon,
                     l1_provider,
-                    CeloToOpProviderAdapter(l2_provider.clone()),
+                    l2_provider.clone(),
                 )
                 .await
                 .unwrap();

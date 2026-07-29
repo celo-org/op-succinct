@@ -45,7 +45,6 @@ cfg-if.workspace = true
 
 # celo-alloy
 celo-alloy-consensus.workspace = true
-celo-alloy-rpc-types-engine.workspace = true
 
 # Celo Execution
 alloy-celo-evm.workspace = true
@@ -55,3 +54,6 @@ celo-proof.workspace = true
 celo-driver.workspace = true
 celo-protocol.workspace = true
 celo-genesis.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

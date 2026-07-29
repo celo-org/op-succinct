@@ -1,4 +1,3 @@
-use alloy_primitives::B256;
 use clap::Parser;
 use std::{num::NonZeroU64, path::PathBuf};
 
@@ -37,23 +36,12 @@ pub struct HostExecutorArgs {
     /// activated for op-node.
     #[clap(long)]
     pub safe_db_fallback: bool,
-    /// L1 head block hash to derive the L2 range from. When set, it is used directly instead of
-    /// looking it up via the op-node safeDB, so a caller who knows L1 head already can skip the
-    /// binary search to find the L1 block from which the `l2_end_block` can be derived.
-    #[arg(long)]
-    pub l1_head: Option<B256>,
     /// Skip writing CSV files and only log execution statistics.
     #[arg(long)]
     pub log_only: bool,
     /// Cluster proving timeout in seconds (only used when SP1_PROVER=cluster).
     #[arg(long, default_value = "21600")]
     pub cluster_timeout: u64,
-    /// Bypass span-batch-aligned splitting even when SafeDB is active. Forces the basic
-    /// fixed-size splitter so the range is partitioned solely by `--batch-size`. Useful for
-    /// estimating per-segment cost as the proposer sees it (one zkVM execution per
-    /// `RANGE_SPLIT_COUNT` segment) rather than per span batch.
-    #[arg(long)]
-    pub no_safe_head_split: bool,
 }
 
 /// Fallback batch size used when the user provides neither `--batch-size`
@@ -106,10 +94,8 @@ mod tests {
             env_file: PathBuf::from(".env"),
             prove: false,
             safe_db_fallback: false,
-            l1_head: None,
             cluster_timeout: 21600,
             log_only: false,
-            no_safe_head_split: false,
         }
     }
 

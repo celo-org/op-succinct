@@ -1,11 +1,11 @@
 use std::{fmt::Debug, sync::Arc};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use celo_derive::CeloEthereumDataSource;
 use celo_genesis::CeloRollupConfig;
 use celo_proof::CeloOracleL2ChainProvider;
-use celo_protocol::CeloToOpProviderAdapter;
-use kona_derive::{BlobProvider, EthereumDataSource};
+use kona_derive::BlobProvider;
 use kona_driver::PipelineCursor;
 use kona_genesis::L1ChainConfig;
 use kona_preimage::CommsClient;
@@ -44,8 +44,8 @@ where
     type O = O;
     type B = B;
     type L1 = OracleL1ChainProvider<Self::O>;
-    type L2 = CeloToOpProviderAdapter<CeloOracleL2ChainProvider<Self::O>>;
-    type DA = EthereumDataSource<Self::L1, Self::B>;
+    type L2 = CeloOracleL2ChainProvider<Self::O>;
+    type DA = CeloEthereumDataSource<Self::L1, Self::B>;
 
     async fn create_pipeline(
         &self,
@@ -58,15 +58,18 @@ where
         l2_provider: Self::L2,
     ) -> Result<OraclePipeline<Self::O, Self::L1, Self::L2, Self::DA>> {
         let da_provider =
-            EthereumDataSource::new_from_parts(l1_provider.clone(), beacon, &rollup_config);
+            CeloEthereumDataSource::new_from_parts(l1_provider.clone(), beacon, &rollup_config)
+                .map_err(|e| anyhow!("failed to build Celo Ethereum data source: {e}"))?;
         Ok(OraclePipeline::new(
-            Arc::new(rollup_config.0.clone()),
+            Arc::new(rollup_config.op_rollup_config.clone()),
             l1_config,
             cursor,
             oracle,
             da_provider,
             l1_provider,
             l2_provider,
+            // No interop dependency set: OP Succinct chains are non-interop.
+            None,
         )
         .await?)
     }

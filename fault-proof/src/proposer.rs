@@ -272,6 +272,16 @@ impl ProposerState {
                 .cloned()
         });
 
+        // Log when the head comes from a catch-up chain so operators can tell the proposer is
+        // recovering along a chain outside the anchor subtree.
+        if let Some(head) = override_head.as_ref() {
+            tracing::debug!(
+                head_index = %head.index,
+                head_l2_block = %head.l2_block,
+                "Canonical head selected from a catch-up chain outside the anchor subtree"
+            );
+        }
+
         override_head.or(anchor_head)
     }
 }
@@ -638,27 +648,27 @@ where
         host: &H,
         fetcher: &OPSuccinctDataFetcher,
     ) -> Result<()> {
-        let finalized_l2_block = host
-            .get_finalized_l2_block_number(fetcher, anchor_l2_block.to::<u64>())
+        let max_provable_l2_block = host
+            .get_max_provable_l2_block_number(fetcher, anchor_l2_block.to::<u64>())
             .await?
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Cannot fetch finalized L2 block number from L2 RPC: {}\n\
+                    "Cannot fetch host-resolved max provable L2 block number from L2 RPC: {}\n\
                      Please check that your L2 node is running and accessible.",
                     config.l2_rpc
                 )
             })?;
 
-        if anchor_l2_block > U256::from(finalized_l2_block) {
+        if anchor_l2_block > U256::from(max_provable_l2_block) {
             return Err(anyhow::anyhow!(
                 "Contract misconfiguration detected: Contract's anchor L2 block ({}) is ahead of \
-                 the current finalized L2 block ({}). This indicates:\n\
+                 the host-resolved max provable L2 block ({}). This indicates:\n\
                  1. The contract's startingL2BlockNumber is misconfigured to a future value, OR\n\
                  2. Your L2 node is not fully synced, OR\n\
                  3. Your L2 RPC endpoint is incorrect.\n\n\
                  Please verify your configuration before starting the proposer.",
                 anchor_l2_block,
-                finalized_l2_block
+                max_provable_l2_block
             ));
         }
 
@@ -704,10 +714,10 @@ where
 
         // If L1 hasn't advanced past the last synced block, all on-chain state is identical.
         //
-        // Diverges from upstream: `confirmed_number < prev` indicates backend regression
-        // from a load-balanced RPC, or a deep L1 reorg past `sync_l1_confirmations`. This case
-        // should be logged at WARN so operators can detect unhealthy backends or L1 reorg;
-        // the equal case stays at DEBUG since it's the normal "L1 hasn't ticked" path.
+        // `confirmed_number < prev` indicates backend regression from a load-balanced RPC, or a
+        // deep L1 reorg past `sync_l1_confirmations`. This case should be logged at WARN so
+        // operators can detect unhealthy backends or L1 reorg; the equal case stays at DEBUG
+        // since it's the normal "L1 hasn't ticked" path.
         let prev = self.last_synced_l1_block.load(Ordering::Relaxed);
         if confirmed_number > 0 && confirmed_number <= prev {
             if confirmed_number < prev {
@@ -1811,14 +1821,25 @@ where
         if let Some(canonical_head_l2_block) = canonical_head_l2_block {
             ProposerGauge::LatestGameL2BlockNumber.set(canonical_head_l2_block.to::<u64>() as f64);
 
-            if let Some(finalized_l2_block_number) = self
+            // Literal L2 finalized: stays unaffected by L1_BLOCK_TAG so existing dashboards keep
+            // their meaning under non-default selection.
+            ProposerGauge::FinalizedL2BlockNumber
+                .set(self.fetcher.get_l2_header(BlockId::finalized()).await?.number as f64);
+
+            // Host-resolved max provable L2 block: matches finalized under default
+            // Ethereum/EigenDA, diverges under non-default (L2 safe head at the configured L1
+            // anchor) and under Celestia (Blobstream-resolved).
+            if let Some(max_provable_l2_block_number) = self
                 .host
-                .get_finalized_l2_block_number(&self.fetcher, canonical_head_l2_block.to::<u64>())
+                .get_max_provable_l2_block_number(
+                    &self.fetcher,
+                    canonical_head_l2_block.to::<u64>(),
+                )
                 .await?
             {
-                ProposerGauge::FinalizedL2BlockNumber.set(finalized_l2_block_number as f64);
+                ProposerGauge::MaxProvableL2BlockNumber.set(max_provable_l2_block_number as f64);
             } else {
-                ProposerGauge::FinalizedL2BlockNumber.set(0.0);
+                ProposerGauge::MaxProvableL2BlockNumber.set(0.0);
             }
 
             if let Some(anchor_game) = anchor_game {
@@ -1983,7 +2004,7 @@ where
             let mut task_counts: HashMap<&str, usize> = HashMap::new();
             let mut proving_games: Vec<String> = Vec::new();
 
-            for (_, (_, info)) in tasks.iter() {
+            for (_, info) in tasks.values() {
                 let task_type = match info {
                     TaskInfo::GameCreation { .. } => "GameCreation",
                     TaskInfo::GameProving { game_address, .. } => {
@@ -2235,15 +2256,15 @@ where
             return Ok((false, U256::ZERO, u32::MAX));
         }
 
-        let finalized_l2_head_block_number = self
+        let max_provable_l2_block_number = self
             .host
-            .get_finalized_l2_block_number(&self.fetcher, canonical_head_l2_block.to::<u64>())
+            .get_max_provable_l2_block_number(&self.fetcher, canonical_head_l2_block.to::<u64>())
             .await?;
 
         Ok((
-            finalized_l2_head_block_number
-                .map(|finalized_block| {
-                    U256::from(finalized_block) >= next_l2_block_number_for_proposal
+            max_provable_l2_block_number
+                .map(|max_provable_block| {
+                    U256::from(max_provable_block) >= next_l2_block_number_for_proposal
                 })
                 .unwrap_or(false),
             next_l2_block_number_for_proposal,
@@ -2790,6 +2811,26 @@ mod tests {
                 Some(anchor),
             );
             assert_eq!(s.select_canonical_head().unwrap().index, U256::from(7));
+        }
+
+        #[test]
+        fn multiple_catchup_chains_select_highest_tip() {
+            // Repeated stall/recovery cycles can leave several genesis-rooted catch-up chains in
+            // the cache at once. The head must be the highest-block tip across all qualifying
+            // chains pooled together (chain B's tip 9), even though chain B's root (block 250)
+            // sits below chain A's tip (block 300).
+            let anchor = game_with(5, 4, 100);
+            let s = state(
+                vec![
+                    anchor.clone(),
+                    game_with(6, u32::MAX, 200),
+                    game_with(7, 6, 300),
+                    game_with(8, u32::MAX, 250),
+                    game_with(9, 8, 400),
+                ],
+                Some(anchor),
+            );
+            assert_eq!(s.select_canonical_head().unwrap().index, U256::from(9));
         }
     }
 

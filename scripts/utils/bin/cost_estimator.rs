@@ -1,3 +1,4 @@
+use alloy_primitives::B256;
 use anyhow::Result;
 use clap::Parser;
 use futures::StreamExt;
@@ -8,7 +9,8 @@ use op_succinct_host_utils::{
         split_range_basic, SpanBatchRange,
     },
     fetcher::OPSuccinctDataFetcher,
-    host::OPSuccinctHost,
+    host::{enforce_l1_selection_supported, OPSuccinctHost},
+    l1_selection::L1BlockSelectionConfig,
     stats::ExecutionStats,
     witness_cache::{load_stdin_from_cache, save_stdin_to_cache},
     witness_generation::WitnessGenerator,
@@ -27,6 +29,36 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
+
+// Cost-estimator-specific CLI args. Wraps `HostExecutorArgs` and adds the estimator-only
+// `--no-safe-head-split` and `--l1-head` flags so unrelated host binaries (e.g. `multi`,
+// `gen-sp1-test-artifacts`) don't advertise flags they ignore.
+#[derive(Debug, Clone, Parser)]
+#[command(about = "Estimate OP Succinct execution costs over an L2 block range")]
+struct CostEstimatorArgs {
+    #[command(flatten)]
+    host: HostExecutorArgs,
+    /// Bypass span-batch-aligned splitting even when SafeDB is active. Forces the basic
+    /// fixed-size splitter so the range is partitioned solely by `--batch-size`. Useful for
+    /// estimating per-segment cost as the proposer sees it (one zkVM execution per
+    /// `RANGE_SPLIT_COUNT` segment) rather than per span batch.
+    #[arg(long)]
+    no_safe_head_split: bool,
+    /// L1 head block hash to derive the L2 range from. When set, it is used directly instead of
+    /// looking it up via the op-node safeDB, so a caller that already knows the L1 head can skip
+    /// the safeDB binary search (and the `--safe-db-fallback` timestamp estimation). This matches
+    /// the fault-proof proposer, which anchors each range to the L1 head committed on-chain.
+    #[arg(long)]
+    l1_head: Option<B256>,
+}
+
+fn cost_estimator_l1_selection(has_explicit_l1_head: bool) -> Result<L1BlockSelectionConfig> {
+    if has_explicit_l1_head {
+        Ok(L1BlockSelectionConfig::default())
+    } else {
+        L1BlockSelectionConfig::from_env()
+    }
+}
 
 /// Run the zkVM execution process for each split range in parallel. Writes the execution stats for
 /// each block range to a CSV file after each execution completes (not guaranteed to be in order),
@@ -126,7 +158,7 @@ where
         .map(|r| r.unwrap())
         .collect::<Vec<_>>();
 
-    let execution_inputs = stdins.into_iter().zip(block_data.into_iter()).collect::<Vec<_>>();
+    let execution_inputs = stdins.into_iter().zip(block_data).collect::<Vec<_>>();
 
     // Execute the program for each block range in parallel.
     // CpuProver creates its own tokio runtime, so run it outside the async context.
@@ -227,7 +259,7 @@ fn aggregate_execution_stats(
 
     // For statistics that are per-block or per-transaction, we take the average over the entire
     // range.
-    let safe_div = |a: u64, b: u64| if b > 0 { a / b } else { 0 };
+    let safe_div = |a: u64, b: u64| a.checked_div(b).unwrap_or(0);
     aggregate_stats.cycles_per_block =
         safe_div(aggregate_stats.total_instruction_count, aggregate_stats.nb_blocks);
     aggregate_stats.cycles_per_transaction =
@@ -255,16 +287,23 @@ async fn main() -> Result<()> {
     rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider())
         .unwrap();
 
-    let args = HostExecutorArgs::parse();
+    let args = CostEstimatorArgs::parse();
+    let no_safe_head_split = args.no_safe_head_split;
+    let l1_head = args.l1_head;
+    let args = args.host;
 
     dotenv::from_path(&args.env_file).ok();
     utils::setup_logger();
 
-    let data_fetcher = OPSuccinctDataFetcher::new_with_rollup_config().await?;
+    let l1_selection = cost_estimator_l1_selection(l1_head.is_some())?;
+    let data_fetcher =
+        OPSuccinctDataFetcher::new_with_rollup_config_and_l1_selection(l1_selection).await?;
     let l2_chain_id = data_fetcher.get_l2_chain_id().await?;
 
     // Get the host CLIs in order, in parallel.
     let host = initialize_host(Arc::new(data_fetcher.clone()));
+
+    enforce_l1_selection_supported(host.as_ref(), &data_fetcher, l1_selection).await?;
 
     let (l2_start_block, l2_end_block) = if args.rolling {
         info!("Using rolling block range");
@@ -286,11 +325,16 @@ async fn main() -> Result<()> {
     // safeDB (optimism_safeHeadAtL1Block), which may be disabled or unreachable, and there is no
     // reason to touch it on a path that will not use safeHead-aligned splitting. Otherwise probe,
     // and use the basic splitter when the safeDB is not active.
-    let split_ranges = if args.no_safe_head_split {
+    let split_ranges = if no_safe_head_split {
         split_range_basic(l2_start_block, l2_end_block, args.effective_batch_size())
     } else if data_fetcher.is_safe_db_activated().await? {
-        split_range_based_on_safe_heads(l2_start_block, l2_end_block, args.effective_batch_size())
-            .await?
+        split_range_based_on_safe_heads(
+            &data_fetcher,
+            l2_start_block,
+            l2_end_block,
+            args.effective_batch_size(),
+        )
+        .await?
     } else {
         split_range_basic(l2_start_block, l2_end_block, args.effective_batch_size())
     };
@@ -299,7 +343,7 @@ async fn main() -> Result<()> {
 
     let host_args = futures::stream::iter(split_ranges.iter())
         .map(|range| async {
-            host.fetch(range.start, range.end, args.l1_head, args.safe_db_fallback)
+            host.fetch(range.start, range.end, l1_head, args.safe_db_fallback)
                 .await
                 .expect("Failed to get host CLI args")
         })

@@ -6,7 +6,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::rpc_types::{OutputResponse, SafeHeadResponse};
+use crate::{
+    l1_selection::L1BlockSelectionConfig,
+    rpc_types::{OutputResponse, SafeHeadResponse},
+};
 use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_primitives::{address, keccak256, Address, Bytes, B256, U256, U64};
@@ -104,6 +107,10 @@ pub struct OPSuccinctDataFetcher {
     pub rollup_config: Option<CeloRollupConfig>,
     pub rollup_config_path: Option<PathBuf>,
     pub l1_config_path: Option<PathBuf>,
+    /// Selection of which L1 block to anchor proof generation against. Defaults to
+    /// `finalized` with zero confirmations so existing deployments retain byte-identical
+    /// behavior.
+    pub l1_selection: L1BlockSelectionConfig,
 }
 
 impl Default for OPSuccinctDataFetcher {
@@ -179,7 +186,18 @@ pub struct FeeData {
 
 impl OPSuccinctDataFetcher {
     /// Gets the RPC URL's and saves the rollup config for the chain to the rollup config file.
+    ///
+    /// Reads `L1_BLOCK_TAG` / `L1_CONFIRMATIONS` from the environment via
+    /// [`L1BlockSelectionConfig::from_env_or_default`] (panics on malformed values, with a
+    /// message naming the offending env var). Proposer entry points should call
+    /// [`L1BlockSelectionConfig::from_env`] beforehand to surface a clean startup error.
     pub fn new() -> Self {
+        Self::new_with_l1_selection(L1BlockSelectionConfig::from_env_or_default())
+    }
+
+    /// Construct a fetcher with an explicit L1 selection config, bypassing the env parse.
+    /// Intended for tests and override scenarios.
+    pub fn new_with_l1_selection(l1_selection: L1BlockSelectionConfig) -> Self {
         let rpc_config = get_rpcs_from_env();
 
         let l1_provider =
@@ -194,11 +212,22 @@ impl OPSuccinctDataFetcher {
             rollup_config: None,
             rollup_config_path: None,
             l1_config_path: None,
+            l1_selection,
         }
     }
 
     /// Initialize the fetcher with a rollup config.
+    ///
+    /// See [`OPSuccinctDataFetcher::new`] for env-parsing behavior.
     pub async fn new_with_rollup_config() -> Result<Self> {
+        Self::new_with_rollup_config_and_l1_selection(L1BlockSelectionConfig::from_env_or_default())
+            .await
+    }
+
+    /// Initialize the fetcher with a rollup config and explicit L1 selection.
+    pub async fn new_with_rollup_config_and_l1_selection(
+        l1_selection: L1BlockSelectionConfig,
+    ) -> Result<Self> {
         let rpc_config = get_rpcs_from_env();
 
         let l1_provider =
@@ -225,7 +254,29 @@ impl OPSuccinctDataFetcher {
             rollup_config: Some(rollup_config),
             rollup_config_path: Some(rollup_config_path),
             l1_config_path: Some(l1_config_path),
+            l1_selection,
         })
+    }
+
+    /// Resolve the L1 [`Header`] selected by the configured tag and confirmations.
+    ///
+    /// For the default selection (`finalized`, 0) this returns the finalized header directly.
+    /// For non-default selections it fetches the tag's header, then walks back by
+    /// `confirmations` blocks (saturating at 0).
+    pub async fn resolve_selected_l1_header(&self) -> Result<Header> {
+        let base = self.get_l1_header(self.l1_selection.tag.to_block_id()).await?;
+        if self.l1_selection.confirmations == 0 {
+            return Ok(base);
+        }
+        let target_number = base.number.saturating_sub(self.l1_selection.confirmations);
+        if target_number == base.number {
+            // Only reachable when `base.number == 0` (genesis): `confirmations > 0` here, so
+            // `saturating_sub` only fixes back to `base.number` when the base is already 0.
+            // For larger over-confirmations (e.g. base=100, confirmations=1_000_000) this branch
+            // does not fire and the call below fetches block 0.
+            return Ok(base);
+        }
+        self.get_l1_header(target_number.into()).await
     }
 
     pub async fn get_l2_chain_id(&self) -> Result<u64> {
@@ -322,32 +373,44 @@ impl OPSuccinctDataFetcher {
         }
     }
 
-    /// Finds the L1 block at the provided timestamp.
+    /// Finds the L1 block at the provided timestamp, bounded above by the configured L1
+    /// selection.
+    ///
+    /// Used by the timestamp-based fallback for `get_l1_head`: once the proposer has decided
+    /// which L1 block to anchor to, the fallback search must not return a block past it.
     pub async fn find_l1_block_by_timestamp(&self, target_timestamp: u64) -> Result<(B256, u64)> {
-        self.find_block_by_timestamp(&self.l1_provider, target_timestamp).await
+        let upper_bound_block = self.resolve_selected_l1_header().await?.number;
+        self.find_block_by_timestamp(&self.l1_provider, target_timestamp, upper_bound_block).await
     }
 
     /// Finds the L2 block at the provided timestamp.
+    ///
+    /// Bounded by L2 finalized; this path intentionally does not follow the L1 selection
+    /// config because L2 finality is a separate concern.
     pub async fn find_l2_block_by_timestamp(&self, target_timestamp: u64) -> Result<(B256, u64)> {
-        self.find_block_by_timestamp(&self.l2_provider, target_timestamp).await
+        let upper_bound_block = self
+            .l2_provider
+            .get_block(BlockId::finalized())
+            .await?
+            .ok_or_else(|| anyhow!("Failed to get finalized L2 block for timestamp search bound"))?
+            .header()
+            .number();
+        self.find_block_by_timestamp(&self.l2_provider, target_timestamp, upper_bound_block).await
     }
 
-    /// Finds the block at the provided timestamp, using the provided provider.
+    /// Finds the block at the provided timestamp, using the provided provider, bounded above
+    /// by `upper_bound_block` (inclusive).
     async fn find_block_by_timestamp<N>(
         &self,
         provider: &RootProvider<N>,
         target_timestamp: u64,
+        upper_bound_block: u64,
     ) -> Result<(B256, u64)>
     where
         N: Network,
     {
-        let latest_block = provider.get_block(BlockId::finalized()).await?;
         let mut low = 0;
-        let mut high = if let Some(block) = latest_block {
-            block.header().number()
-        } else {
-            bail!("Failed to get latest block");
-        };
+        let mut high = upper_bound_block;
 
         while low <= high {
             let mid = (low + high) / 2;
@@ -420,29 +483,39 @@ impl OPSuccinctDataFetcher {
         let rollup_config = if let Some(registry_config) = ROLLUP_CONFIGS.get(&chain_id) {
             tracing::info!("Loaded L2 config for chain ID {} from registry", chain_id);
             if let Some(ref node_config) = node_rpc_config {
+                // op-node keeps the Fjord max sequencer drift as a Go constant and never emits it
+                // in its rollup-config JSON, so the fetched config deserialises to the serde
+                // default (1800) while our custom celo registry stamps 2892 onto any celo registry
+                // config. Normalise that one field on a copy before hashing, so the check only
+                // fires on a genuine registry-vs-node divergence rather than this representation
+                // gap.
+                let mut node_config = node_config.clone();
+                node_config.op_rollup_config.fjord_max_sequencer_drift =
+                    registry_config.op_rollup_config.fjord_max_sequencer_drift;
+
                 let registry_hash = hash_rollup_config(registry_config);
-                let node_rpc_hash = hash_rollup_config(node_config);
+                let node_rpc_hash = hash_rollup_config(&node_config);
                 if registry_hash != node_rpc_hash {
                     tracing::warn!(
-                        "Rollup config hash mismatch for chain ID {}: registry hash = {:?}, node RPC hash = {:?}",
-                        chain_id,
-                        registry_hash,
-                        node_rpc_hash
-                    );
+                    "Rollup config hash mismatch for chain ID {}: registry hash = {:?}, node RPC hash = {:?}",
+                    chain_id,
+                    registry_hash,
+                    node_rpc_hash
+                );
                 }
             }
             registry_config.clone()
         } else {
             tracing::warn!(
-                "No rollup config found in registry for chain ID {}. Falling back to node RPC config",
-                chain_id
-            );
+            "No rollup config found in registry for chain ID {}. Falling back to node RPC config",
+            chain_id
+        );
             node_rpc_config.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "No rollup config available for chain ID {}: not in registry and node RPC fetch failed",
-                    chain_id
-                )
-            })?
+            anyhow::anyhow!(
+                "No rollup config available for chain ID {}: not in registry and node RPC fetch failed",
+                chain_id
+            )
+        })?
         };
 
         // Create configs directory if it doesn't exist
@@ -454,7 +527,7 @@ impl OPSuccinctDataFetcher {
         let rollup_config_path = l2_config_dir.join(format!("{}.json", rollup_config.l2_chain_id));
 
         // Write the rollup config to the file
-        let rollup_config_str = serde_json::to_string_pretty(&rollup_config.0)?;
+        let rollup_config_str = serde_json::to_string_pretty(&rollup_config)?;
         fs::write(&rollup_config_path, rollup_config_str)?;
 
         tracing::info!(
@@ -531,9 +604,9 @@ impl OPSuccinctDataFetcher {
         let l1_config = L1_CONFIGS.get(&rollup_config.l1_chain_id).ok_or_else(|| {
             anyhow::anyhow!(
                 "No built-in L1 config exists for chain ID {}.\n\
-             To proceed, either:\n\
-             • Create a config file at: {}\n\
-             • Or set L1_CONFIG_DIR to the directory containing <chain_id>.json",
+         To proceed, either:\n\
+         • Create a config file at: {}\n\
+         • Or set L1_CONFIG_DIR to the directory containing <chain_id>.json",
                 rollup_config.l1_chain_id,
                 l1_config_path.display()
             )
@@ -723,8 +796,9 @@ impl OPSuccinctDataFetcher {
     /// Get the L1 block from which the `l2_end_block` can be derived.
     ///
     /// Use binary search to find the first L1 block with an L2 safe head >= l2_end_block.
+    /// Bounded above by the configured L1 selection.
     pub async fn get_safe_l1_block_for_l2_block(&self, l2_end_block: u64) -> Result<(B256, u64)> {
-        let latest_l1_header = self.get_l1_header(BlockId::finalized()).await?;
+        let latest_l1_header = self.resolve_selected_l1_header().await?;
 
         // Get the l1 origin of the l2 end block.
         let l2_end_block_hex = format!("0x{l2_end_block:x}");
@@ -776,6 +850,10 @@ impl OPSuccinctDataFetcher {
     /// for the end L2 block was posted. If the safeDB is not activated:
     ///   - If `safe_db_fallback` is `true`, estimate the L1 head based on the L2 block timestamp.
     ///   - Else, return an error.
+    ///
+    /// The timestamp-based fallback caps at the configured L1 selection rather than
+    /// `finalized` directly. For the default selection (`finalized`, 0) this is identical to
+    /// the historical behavior; for non-default selections it follows the operator's choice.
     pub async fn get_l1_head(
         &self,
         l2_end_block: u64,
@@ -794,19 +872,18 @@ impl OPSuccinctDataFetcher {
                     let max_batch_post_delay_minutes = 40;
                     let l2_block_timestamp =
                         self.get_l2_header(l2_end_block.into()).await?.timestamp;
-                    let finalized_l1_timestamp =
-                        self.get_l1_header(BlockId::finalized()).await?.timestamp;
+                    let upper_bound_timestamp = self.resolve_selected_l1_header().await?.timestamp;
 
                     let target_timestamp = min(
                         l2_block_timestamp + (max_batch_post_delay_minutes * 60),
-                        finalized_l1_timestamp,
+                        upper_bound_timestamp,
                     );
                     self.find_l1_block_by_timestamp(target_timestamp).await
                 } else {
                     Err(anyhow::anyhow!(
-                        "SafeDB is not activated on your op-node and the `SAFE_DB_FALLBACK` flag is set to false. Please enable the safeDB on your op-node to fix this, or set `SAFE_DB_FALLBACK` flag to true, which will be more expensive: {}",
-                        e
-                    ))
+                    "SafeDB is not activated on your op-node and the `SAFE_DB_FALLBACK` flag is set to false. Please enable the safeDB on your op-node to fix this, or set `SAFE_DB_FALLBACK` flag to true, which will be more expensive: {}",
+                    e
+                ))
                 }
             }
         }
@@ -954,11 +1031,12 @@ impl OPSuccinctDataFetcher {
             ),
             l1_beacon_address,
             data_dir: None, // Use in-memory key-value store.
+            // Irrelevant with an in-memory KV store (no on-disk preimage data).
+            data_format: kona_host::DataFormat::default(),
             native: false,
             server: true,
             rollup_config_path: self.rollup_config_path.clone(),
             l1_config_path: self.l1_config_path.clone(),
-            enable_experimental_witness_endpoint: true,
         })
     }
 }
@@ -970,7 +1048,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn test_rollup_config(chain_id: u64) -> CeloRollupConfig {
-        CeloRollupConfig(RollupConfig { l2_chain_id: chain_id.into(), ..Default::default() })
+        CeloRollupConfig::new(RollupConfig { l2_chain_id: chain_id.into(), ..Default::default() })
     }
 
     #[test]

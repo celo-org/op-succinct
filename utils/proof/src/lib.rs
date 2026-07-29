@@ -1,3 +1,8 @@
+// The SP1 cluster proof types (sp1-cluster-* v2.4.2) produce a deeply nested
+// async future in `cluster_proof_blocking`, whose layout exceeds the default
+// recursion limit of 128. Raise it so the layout query can complete.
+#![recursion_limit = "256"]
+
 use std::{
     sync::Arc,
     time::{Instant, SystemTime},
@@ -35,6 +40,10 @@ pub fn get_range_elf_embedded() -> &'static [u8] {
             use op_succinct_elfs::EIGENDA_RANGE_ELF_EMBEDDED;
 
             EIGENDA_RANGE_ELF_EMBEDDED
+        } else if #[cfg(feature = "altda")] {
+            use op_succinct_elfs::ALTDA_RANGE_ELF_EMBEDDED;
+
+            ALTDA_RANGE_ELF_EMBEDDED
         } else {
             use op_succinct_elfs::RANGE_ELF_EMBEDDED;
 
@@ -63,6 +72,16 @@ cfg_if::cfg_if! {
         ) -> Arc<EigenDAOPSuccinctHost> {
             tracing::info!("Initializing host with EigenDA");
             Arc::new(EigenDAOPSuccinctHost::new(fetcher))
+        }
+    } else if #[cfg(feature = "altda")] {
+        use op_succinct_altda_host_utils::host::AltDAOPSuccinctHost;
+
+        /// Initialize the AltDA host.
+        pub fn initialize_host(
+            fetcher: Arc<OPSuccinctDataFetcher>,
+        ) -> Arc<AltDAOPSuccinctHost> {
+            tracing::info!("Initializing host with AltDA");
+            Arc::new(AltDAOPSuccinctHost::new(fetcher))
         }
     } else {
         use op_succinct_ethereum_host_utils::host::SingleChainOPSuccinctHost;
