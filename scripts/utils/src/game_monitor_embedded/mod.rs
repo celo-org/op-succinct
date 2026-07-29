@@ -151,7 +151,12 @@ pub struct EmbeddedArgs {
     ///   `--background-retry-max-age-secs`.
     #[arg(long, value_parser = parse_duration, default_value = "10m")]
     pub retry_backoff_delay: Duration,
-    /// Blocks per range — caps SP1 guest memory per execution.
+    /// Blocks per range. Scales the memory footprint of each unit: host RSS per
+    /// build/execute grows roughly linearly with the range's gas (what the admission model
+    /// projects), as does the SP1 guest's touched memory — the guest is 64-bit and bounded
+    /// only by SP1's soft `MEMORY_LIMIT` budget (default 24 GiB, env-overridable), not by
+    /// address space. Larger ranges also coarsen retry/cache/speculation granularity: the
+    /// proof cache, requeues, and the prebuild pipeline all work per range.
     #[arg(long, default_value = "200")]
     pub batch_size: u64,
     /// Maximum number of games executed concurrently (replaces the legacy
