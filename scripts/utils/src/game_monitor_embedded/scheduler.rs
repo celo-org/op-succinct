@@ -1,4 +1,4 @@
-//! Cache-fronted scheduling (outstanding-work #26).
+//! Cache-fronted scheduling.
 //!
 //! Two worker pools — witness **build** and proof **execute** — each drain two feeders in
 //! strict order: first a FIFO **priority** queue of on-demand work (ranges a discovered game
@@ -18,7 +18,7 @@
 //! block. Window prediction is operator config, not protocol law (a proposal-interval change
 //! or a re-anchored game shifts every boundary), and a wasted speculative execute is the
 //! dominant cost (~10 min, ~12 GiB, uncancellable) — the cap bounds that waste. Speculative
-//! *builds* stay uncapped (cheap; finalization-bounded), as item #7 decided.
+//! *builds* stay uncapped (cheap; finalization-bounded).
 //!
 //! Workers still pass every unit through the shared memory-admission gate; the pools decide
 //! only *ordering*. Failures of demanded units are recorded per range and consumed by the

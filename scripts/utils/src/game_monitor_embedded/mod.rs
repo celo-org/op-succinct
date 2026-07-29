@@ -3,7 +3,7 @@
 //! replacing the legacy monitor that shelled out to the `cost-estimator` binary and
 //! scraped its logs.
 //!
-//! # Cache-fronted scheduling (outstanding-work #26)
+//! # Cache-fronted scheduling
 //!
 //! Everything starts in [`run`], which builds the shared resources once and then drives the
 //! control plane (discovery/retry, the main loop) and the data plane (the
@@ -444,7 +444,7 @@ fn apply_requeue(
 /// Run a spawned game task's body, converting a panic into a `Transient` result instead of
 /// letting it unwind the task. The main loop frees a game's concurrency slot only when the task
 /// reports a result (`running_games.remove`), so an uncaught panic would send nothing and leak
-/// the slot forever — enough of them wedge the monitor (item #23). A panic is treated as
+/// the slot forever — enough of them wedge the monitor. A panic is treated as
 /// transient: the two-tier retry recovers a flaky-dependency panic and bounds a deterministic one
 /// (retry budget -> background -> age-out). `recovery_pg` is a clone kept outside `body`, since
 /// `body` moves its own `pg` and it is gone once the task unwinds; the game's block range is
@@ -557,7 +557,7 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
         }
     };
 
-    // ── Cache-fronted scheduler + worker pools (outstanding-work #26) ──────
+    // ── Cache-fronted scheduler + worker pools ─────────────────────────────
     // The scheduler owns the FIFO-priority / LIFO-speculative queues; the worker pools
     // drain them, passing every unit through the shared admission gate. The speculative
     // execute horizon is seeded from the latest on-chain game (0 keeps speculation off
@@ -799,7 +799,7 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
                     // on-demand build, incl. panics deep in kona/sp1) into a `Transient` result so
                     // the main loop's slot release still runs; without this a
                     // panicking task sends no result and permanently leaks its
-                    // concurrency slot (item #23).
+                    // concurrency slot.
                     let recovery_pg = pg.clone();
                     let result = catch_game_panic(recovery_pg, async move {
                         // Bound the control-plane game-data read; a timeout is a transient defer.
