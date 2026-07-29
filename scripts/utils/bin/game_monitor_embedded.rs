@@ -8,7 +8,7 @@ use tracing_subscriber::{fmt, prelude::*};
 // jemalloc (over the default glibc allocator) so freed memory is returned to the OS promptly
 // instead of being stranded in per-thread arenas. This keeps process RSS tracking live usage,
 // which the memory-admission sampler depends on: with glibc, RSS stayed at its high-water mark
-// between units and poisoned the learned per-gas cost. The aggressive decay config
+// between units and corrupted the learned per-gas cost. The aggressive decay config
 // (`background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0`) is baked in at build time via
 // `JEMALLOC_SYS_WITH_MALLOC_CONF` in Dockerfile.game-monitor-embedded.
 #[global_allocator]

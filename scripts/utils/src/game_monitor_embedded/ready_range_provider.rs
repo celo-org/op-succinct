@@ -11,8 +11,8 @@ use crate::game_monitor_embedded::readiness::range_ready;
 /// It owns everything needed to answer one question — "what's the next range ready to
 /// process?" — so the caller is free to do whatever it wants with each range it receives
 /// (build a witness, estimate, prove, …):
-///   * predicts game windows from the proposal cadence (`[frontier, frontier + interval]`, which
-///     equals the next game's `[start, end]`),
+///   * predicts game windows from the proposal cadence (`[window_start, window_start +
+///     interval]`, which equals the next game's `[start, end]`),
 ///   * splits each window into fixed-size (`batch_size`) sub-ranges **anchored at the window
 ///     start**, so the boundaries match the executor's split of the real game (cache keys line up),
 ///   * hands them out one at a time as each becomes soundly ready: its end is L2-finalized AND L1
@@ -73,7 +73,7 @@ impl ReadyRangeProvider {
         let sub_ranges = split_range_basic(self.window_start, split_end, self.batch_size);
 
         // Locate the sub-range starting at the cursor (a real boundary from a prior hand-out,
-        // stable because boundaries below the finalized frontier don't move).
+        // stable because boundaries below the finalized head don't move).
         let idx = sub_ranges.iter().position(|r| r.start == self.cursor)?;
 
         // The last sub-range of an INCOMPLETE window ends at the finalized cap — an

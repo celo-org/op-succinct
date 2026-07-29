@@ -20,7 +20,8 @@ type WitnessOf<H> = <<H as OPSuccinctHost>::WitnessGenerator as WitnessGenerator
 
 /// Execute ONE sub-range: proof-cache hit returns the cached stats; a miss runs the SP1
 /// execute under an admission slot and persists the result. Run by the execute workers —
-/// the caller (worker) has already ensured the range's stdin exists (or parked the demand).
+/// the caller (worker) has already ensured the range's stdin exists (or put the demand
+/// into the waiting set).
 ///
 /// Runs in a per-range span (spec §4.6) — workers have no `game` context, so executes are
 /// attributed to `range` alone, with the `execute` child span nested underneath.
@@ -82,8 +83,9 @@ where
 /// from the proof cache.
 ///
 /// The game itself does no heavy work: it splits `[start_block, end_block]` into fixed
-/// `batch_size` sub-ranges (anchored at the game start, matching the speculative feeder so
-/// cache keys line up), demands whatever the proof cache is missing, and waits. Demands go
+/// `batch_size` sub-ranges (anchored at the game start, matching the speculative build
+/// task so cache keys line up), demands whatever the proof cache is missing, and waits.
+/// Demands go
 /// onto the execute pool's FIFO priority queue — served before all speculative work, in the
 /// order games issued them — and an un-built range promotes a witness demand rather than
 /// building inline. A game whose ranges were all pre-computed completes without executing
@@ -112,7 +114,7 @@ where
 {
     let sub_ranges = split_range_basic(game.start_block, game.end_block, batch_size);
     let keys: Vec<RangeKey> = sub_ranges.iter().map(|r| (r.start, r.end)).collect();
-    // This game is now the newest known — raise the speculative-execute horizon.
+    // This game is now the newest known — raise the speculative execute limit.
     scheduler.note_game_end(game.end_block);
 
     loop {

@@ -5,28 +5,30 @@
 //!
 //! # Cache-fronted scheduling
 //!
-//! Everything starts in [`run`], which builds the shared resources once and then drives the
-//! control plane (discovery/retry, the main loop) and the data plane (the
-//! [`scheduler::Scheduler`]'s build and execute worker pools). They meet at two on-disk
-//! caches keyed `chain_id/start/end/da_type`: the **witness (stdin) cache** and the **proof
-//! cache** (`ExecutionStats` per range).
+//! Everything starts in [`run`], which builds the shared resources once, then drives the
+//! main loop (discovery, game scheduling, retry) and the worker pools that do the heavy
+//! work (witness builds, SP1 executes), with the [`scheduler::Scheduler`]'s queues deciding
+//! what the workers run next. The two sides share two on-disk caches keyed
+//! `chain_id/start/end/da_type`: the **witness (stdin) cache** and the **proof cache**
+//! (`ExecutionStats` per range).
 //!
-//! * **Speculative feeders** (proactive). A [`ReadyRangeProvider`] predicts the next game
-//!   window from the proposal cadence, splits it into fixed sub-ranges anchored at the
+//! * **Speculative work** (ahead of the chain). A [`ReadyRangeProvider`] predicts the next
+//!   game window from the proposal cadence, splits it into fixed sub-ranges anchored at the
 //!   window start, and offers each soundly-finalized sub-range to the build pool's
-//!   speculative LIFO queue (newest first). A completed speculative build feeds the execute
-//!   pool's speculative LIFO queue, bounded by the lead cap
+//!   speculative LIFO queue (newest first). A completed speculative build is then queued
+//!   for speculative execution, bounded by the lead cap
 //!   (`--max-speculative-lead-windows` past the newest discovered game) — so both the
 //!   witness *and* the execute are usually already cached when the game arrives.
 //!
-//! * **Games** (reactive, the main loop). The factory poll enqueues new games newest-first;
+//! * **Games** (as they appear on-chain). The factory poll enqueues new games newest-first;
 //!   each due game runs as a light task that splits into the same sub-ranges, demands
 //!   whatever the proof cache is missing (FIFO priority queues, served before all
 //!   speculative work), and assembles the aggregate from the cache. An un-built range
 //!   promotes a witness demand rather than building inline.
 //!
-//! Because the feeder anchors its splits at the proposal boundary, its sub-range boundaries
-//! match the games', the cache keys line up, and the happy path is pure cache assembly.
+//! Because the speculative split is anchored at the proposal boundary, its sub-range
+//! boundaries match the games', the cache keys line up, and in the common case a game
+//! completes by assembling already-cached results.
 //!
 //! # Concurrency and state
 //!
@@ -34,7 +36,7 @@
 //! run on the worker pools (`--max-concurrent-builds` build workers,
 //! `--max-concurrent-units` execute workers). Each game task reports its outcome over an
 //! mpsc channel as a `GameTaskResult`; the main loop is the *only* writer of the scheduling
-//! state ([`PendingGame`] queue, [`BackgroundRetry`] queue, [`SequenceTracker`] frontier,
+//! state ([`PendingGame`] queue, [`BackgroundRetry`] queue, [`SequenceTracker`] watermark,
 //! prune list), so none of it needs locking. The outcome is applied single-threaded by
 //! `apply_game_result`.
 //!
@@ -52,18 +54,18 @@
 //! Failures follow a two-tier policy ([`state::requeue_decision`]): a small **Primary**
 //! budget with linear backoff, then a long **Background** queue that quadruples the wait
 //! each attempt, up to `--background-retry-max-age-secs` (~3.5 days). Conditions that are
-//! nobody's fault — the finalized L2 head not yet reaching a game's end block, a
-//! control-plane RPC blip — are *deferred* (re-queued) without spending budget. Moving a
-//! game to the background queue advances the [`SequenceTracker`] frontier, so one stuck
-//! game never stalls the contiguous frontier or the daemon.
+//! nobody's fault — the finalized L2 head not yet reaching a game's end block, a transient
+//! failure in one of the monitor's own RPC reads — are *deferred* (re-queued) without
+//! spending budget. Moving a game to the background queue advances the [`SequenceTracker`]
+//! watermark, so one stuck game never stalls the watermark or the daemon.
 //!
 //! # Restart
 //!
-//! Progress is persisted to `progress.json` (the contiguous-completed frontier, the
-//! out-of-order completions above it, and the background queue) and restored on startup via
-//! [`state::resume_index`]; an explicit `--start-index` overrides it, otherwise it falls back
-//! to the latest on-chain game. Restoring the above-frontier completions means a restart skips
-//! games already done rather than re-running them.
+//! Progress is persisted to `progress.json` (the watermark, the out-of-order completions
+//! above it, and the background queue) and restored on startup via [`state::resume_index`];
+//! an explicit `--start-index` overrides it, otherwise it falls back to the latest on-chain
+//! game. Restoring the above-watermark completions means a restart skips games already done
+//! rather than re-running them.
 //!
 //! # Submodules
 //!
@@ -161,7 +163,7 @@ pub struct EmbeddedArgs {
     pub batch_size: u64,
     /// Maximum number of games executed concurrently (replaces the legacy
     /// `--max-concurrent`). Per-range memory is bounded separately by RSS admission;
-    /// this caps game-task fan-out and concurrent control-plane fetches.
+    /// this caps game-task fan-out and the games' concurrent on-chain reads.
     #[arg(long, default_value = "5")]
     pub max_concurrent_games: usize,
     /// Primary-retry budget before a game moves to the background queue.
@@ -262,10 +264,10 @@ struct PrunableStdin {
 /// Outcome of one spawned game-execution task, sent back to the main loop which owns the
 /// scheduling state and applies the mutation single-threaded (no locks on the queues).
 enum GameTaskResult {
-    /// Game executed: advance the frontier, drop any background entry, schedule prunes.
+    /// Game executed: advance the watermark, drop any background entry, schedule prunes.
     /// `stats` is boxed to keep this large variant from bloating every `GameTaskResult`.
     Success { pg: PendingGame, stats: Box<ExecutionStats>, ranges: Vec<SpanBatchRange> },
-    /// Non-type-42 game: advance the frontier, drop any background entry.
+    /// Non-type-42 game: advance the watermark, drop any background entry.
     WrongType { pg: PendingGame, game_type: u32 },
     /// Transient execution failure: apply the two-tier requeue policy. Carries the game's
     /// block range so a move to the background queue records it (for cache protection).
@@ -276,12 +278,12 @@ enum GameTaskResult {
         end_block: u64,
         error: String,
     },
-    /// Fatal execution failure: advance the frontier (never stall), drop background entry.
+    /// Fatal execution failure: advance the watermark (never stall), drop background entry.
     /// The failed game's stdin is deliberately NOT pruned — it is kept for debugging and only
     /// reclaimed by the size-cap GC — so no ranges are carried.
     Fatal { pg: PendingGame, error: String },
-    /// Pre-execution transient condition (L2 behind, control-plane blip): re-queue the
-    /// same attempt without spending retry budget.
+    /// Pre-execution transient condition (L2 behind, or a transient failure in one of the
+    /// monitor's own RPC reads): re-queue the same attempt without spending retry budget.
     Defer { pg: PendingGame },
 }
 
@@ -373,7 +375,7 @@ fn apply_game_result(
     }
 }
 
-/// Mark a game complete: advance the frontier, drop any queued/background entries
+/// Mark a game complete: advance the watermark, drop any queued/background entries
 /// for it, and persist progress (warn-only on failure).
 fn complete_game(
     game_index: u64,
@@ -414,7 +416,7 @@ fn apply_requeue(
             });
         }
         RequeueDecision::ToBackground { first_wait } => {
-            // Primary budget exhausted: advance the frontier (never stall) and enqueue
+            // Primary budget exhausted: advance the watermark (never stall) and enqueue
             // a background retry.
             tracker.add(pg.game_index);
             background.push_back(BackgroundRetry {
@@ -444,7 +446,7 @@ fn apply_requeue(
 /// Run a spawned game task's body, converting a panic into a `Transient` result instead of
 /// letting it unwind the task. The main loop frees a game's concurrency slot only when the task
 /// reports a result (`running_games.remove`), so an uncaught panic would send nothing and leak
-/// the slot forever — enough of them wedge the monitor. A panic is treated as
+/// the slot forever — enough of them permanently deadlock the monitor. A panic is treated as
 /// transient: the two-tier retry recovers a flaky-dependency panic and bounds a deterministic one
 /// (retry budget -> background -> age-out). `recovery_pg` is a clone kept outside `body`, since
 /// `body` moves its own `pg` and it is gone once the task unwinds; the game's block range is
@@ -523,8 +525,9 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
     admission.clone().spawn_sampler();
 
     // ── L1 provider + dispute game factory (from env, matching the legacy) ──
-    // Built before the pipeline spawn so we can seed the predictor's frontier from the
-    // latest on-chain game's proposal boundary (see `latest_game_end_block`).
+    // Built before the speculative build task is spawned so we can seed the predictor's
+    // window start from the latest on-chain game's proposal boundary (see
+    // `latest_game_end_block`).
     let l1_rpc = std::env::var("L1_RPC").context("L1_RPC not set")?;
     let factory_address = std::env::var("DISPUTE_GAME_FACTORY_ADDRESS")
         .context("DISPUTE_GAME_FACTORY_ADDRESS not set")?
@@ -560,8 +563,8 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
     // ── Cache-fronted scheduler + worker pools ─────────────────────────────
     // The scheduler owns the FIFO-priority / LIFO-speculative queues; the worker pools
     // drain them, passing every unit through the shared admission gate. The speculative
-    // execute horizon is seeded from the latest on-chain game (0 keeps speculation off
-    // until discovery observes one).
+    // execute limit is measured from the latest on-chain game's end block, seeded here
+    // (0 keeps speculative execution off until discovery observes a game).
     let poll = Duration::from_secs(args.poll_interval);
     let lead_blocks = args.proposal_interval.saturating_mul(args.max_speculative_lead_windows);
     let sched = Arc::new(Scheduler::new(pipeline_seed.unwrap_or(0), lead_blocks));
@@ -575,10 +578,10 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
         args.max_concurrent_units.max(1),
     );
 
-    // ── Speculative build feeder ───────────────────────────────────────────
+    // ── Speculative build task ─────────────────────────────────────────────
     // Offers each soundly-finalized predicted sub-range to the build pool's speculative
-    // queue. Builds themselves run on the workers; a completed speculative build then feeds
-    // the (lead-capped) speculative execute queue inside the scheduler.
+    // queue. Builds themselves run on the workers; a completed speculative build is then
+    // queued for (lead-capped) speculative execution inside the scheduler.
     if let Some(seed) = pipeline_seed {
         let estimator = estimator.clone();
         let fetcher = fetcher.clone();
@@ -658,7 +661,7 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
             }
         }
 
-        // Backstop GC: bound the cache to `--max-cache-bytes`, evicting oldest blobs first
+        // Fallback GC: bound the cache to `--max-cache-bytes`, evicting oldest blobs first
         // but never a range still owed to a background retry (whose stdin we keep cached for
         // the retry). Reclaims the orphans the per-game prune misses — Fatal/WrongType
         // outcomes, un-executed prebuilds, and everything leaked when a restart drops the
@@ -689,8 +692,8 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
         tokio::time::sleep(poll).await;
 
         // (a) Discovery: queue newly-created games, immediately eligible — readiness (L2/L1
-        // finalization) gates when each actually runs, not a fixed delay. Bound the control-plane
-        // read so a wedged RPC can't stall the loop; a timeout yields an Err handled like any
+        // finalization) gates when each actually runs, not a fixed delay. Bound the gameCount
+        // read so a hung RPC can't stall the loop; a timeout yields an Err handled like any
         // other fetch failure (warn + retry next tick).
         let count =
             match network_call_with_timeout(args.network_call_timeout_secs, "gameCount", async {
@@ -802,7 +805,7 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
                     // concurrency slot.
                     let recovery_pg = pg.clone();
                     let result = catch_game_panic(recovery_pg, async move {
-                        // Bound the control-plane game-data read; a timeout is a transient defer.
+                        // Bound the game-data read; a timeout is a transient defer.
                         let fetched =
                             network_call_with_timeout(timeout_secs, "fetch_game_data", async {
                                 Ok(fetch_game_data(pg.game_index, &factory, l1_provider.clone())
@@ -822,7 +825,7 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
                                 // Readiness gate: defer until the game's end block is finalized on
                                 // L2 AND L1 has finalized past its `l1_head + buffer` (so the
                                 // host's finality cap can't shrink the `+ 20` derivation
-                                // read-ahead slack). Not-ready or a control-plane blip both
+                                // read-ahead slack). Not-ready or a transient RPC failure both
                                 // re-queue without spending retry budget.
                                 match readiness::range_ready(
                                     &fetcher,
@@ -893,10 +896,10 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
         }
         pending_games = remaining;
 
-        // Orchestrator status snapshot, once per poll — the whole control plane at a glance:
-        // the completion watermark, the depth of each queue, the scheduler's queued work
-        // (builds/executes awaiting a worker, executes parked behind a witness demand), plus
-        // the heavy sub-range units the admission gate has in flight.
+        // Status snapshot, once per poll — the monitor's state at a glance: the completion
+        // watermark, the depth of each game queue, the scheduler's queued work
+        // (builds/executes awaiting a worker, executes waiting on a witness), plus the
+        // heavy sub-range units the admission gate has in flight.
         let (active_witness, active_prove) = admission.in_flight_units();
         let depths = sched.depths();
         tracing::info!(

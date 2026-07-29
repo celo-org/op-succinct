@@ -54,7 +54,7 @@ pub struct ProgressState {
 pub enum RequeueDecision {
     /// Re-queue as Primary after `delay`, with the new retry count.
     Primary { retries: u32, delay: Duration },
-    /// Primary exhausted: complete the game (advance frontier) and enqueue Background.
+    /// Primary exhausted: complete the game (advance the watermark) and enqueue Background.
     ToBackground { first_wait: Duration },
     /// Background attempt failed: quadruple the wait.
     Background { next_wait: Duration },

@@ -29,7 +29,7 @@ impl RssSource for CgroupCurrent {
 }
 
 /// Fallback for platforms without `/proc` or cgroups (e.g. macOS dev). Always `None`, so
-/// the sampler simply records nothing and the model never warms from samples.
+/// the sampler simply records nothing and the model never learns from samples.
 pub struct Unsupported;
 
 impl RssSource for Unsupported {
