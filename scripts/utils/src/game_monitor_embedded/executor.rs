@@ -79,7 +79,7 @@ where
 }
 
 /// Execute a game by demanding its sub-ranges from the scheduler and assembling the results
-/// from the proof cache (outstanding-work #26).
+/// from the proof cache.
 ///
 /// The game itself does no heavy work: it splits `[start_block, end_block]` into fixed
 /// `batch_size` sub-ranges (anchored at the game start, matching the speculative feeder so
