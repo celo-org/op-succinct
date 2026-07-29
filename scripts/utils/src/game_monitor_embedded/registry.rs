@@ -12,50 +12,50 @@ use op_succinct_estimator::memory::WorkKind;
 /// bookkeeping, no map.
 #[derive(Debug, Default)]
 pub struct WorkloadRegistry {
-    sum_build_gas: AtomicU64,
-    sum_execute_gas: AtomicU64,
-    build_units: AtomicU64,
-    execute_units: AtomicU64,
+    sum_witness_gas: AtomicU64,
+    sum_prove_gas: AtomicU64,
+    witness_units: AtomicU64,
+    prove_units: AtomicU64,
 }
 
 impl WorkloadRegistry {
-    /// `(sum_build_gas, sum_execute_gas)` currently in flight.
+    /// `(sum_witness_gas, sum_prove_gas)` currently in flight.
     pub fn snapshot(&self) -> (u64, u64) {
-        (self.sum_build_gas.load(Relaxed), self.sum_execute_gas.load(Relaxed))
+        (self.sum_witness_gas.load(Relaxed), self.sum_prove_gas.load(Relaxed))
     }
 
-    /// `(build_units, execute_units)` currently in flight.
+    /// `(witness_units, prove_units)` currently in flight.
     pub fn units(&self) -> (u64, u64) {
-        (self.build_units.load(Relaxed), self.execute_units.load(Relaxed))
+        (self.witness_units.load(Relaxed), self.prove_units.load(Relaxed))
     }
 
-    /// Number of units (builds + executes) currently in flight.
+    /// Number of units (witness + prove) currently in flight.
     pub fn in_flight(&self) -> u64 {
-        self.build_units.load(Relaxed) + self.execute_units.load(Relaxed)
+        self.witness_units.load(Relaxed) + self.prove_units.load(Relaxed)
     }
 
     fn add(&self, kind: WorkKind, gas: u64) {
         match kind {
-            WorkKind::Build => {
-                self.sum_build_gas.fetch_add(gas, Relaxed);
-                self.build_units.fetch_add(1, Relaxed);
+            WorkKind::Witness => {
+                self.sum_witness_gas.fetch_add(gas, Relaxed);
+                self.witness_units.fetch_add(1, Relaxed);
             }
-            WorkKind::Execute => {
-                self.sum_execute_gas.fetch_add(gas, Relaxed);
-                self.execute_units.fetch_add(1, Relaxed);
+            WorkKind::Prove => {
+                self.sum_prove_gas.fetch_add(gas, Relaxed);
+                self.prove_units.fetch_add(1, Relaxed);
             }
         };
     }
 
     fn sub(&self, kind: WorkKind, gas: u64) {
         match kind {
-            WorkKind::Build => {
-                self.sum_build_gas.fetch_sub(gas, Relaxed);
-                self.build_units.fetch_sub(1, Relaxed);
+            WorkKind::Witness => {
+                self.sum_witness_gas.fetch_sub(gas, Relaxed);
+                self.witness_units.fetch_sub(1, Relaxed);
             }
-            WorkKind::Execute => {
-                self.sum_execute_gas.fetch_sub(gas, Relaxed);
-                self.execute_units.fetch_sub(1, Relaxed);
+            WorkKind::Prove => {
+                self.sum_prove_gas.fetch_sub(gas, Relaxed);
+                self.prove_units.fetch_sub(1, Relaxed);
             }
         };
     }
@@ -95,16 +95,16 @@ mod tests {
         assert_eq!(reg.snapshot(), (0, 0));
         assert_eq!(reg.in_flight(), 0);
         {
-            let _b = AdmitGuard::new(reg.clone(), WorkKind::Build, 100);
-            let _e = AdmitGuard::new(reg.clone(), WorkKind::Execute, 250);
+            let _b = AdmitGuard::new(reg.clone(), WorkKind::Witness, 100);
+            let _e = AdmitGuard::new(reg.clone(), WorkKind::Prove, 250);
             assert_eq!(reg.snapshot(), (100, 250));
             assert_eq!(reg.in_flight(), 2);
             {
-                let _b2 = AdmitGuard::new(reg.clone(), WorkKind::Build, 50);
+                let _b2 = AdmitGuard::new(reg.clone(), WorkKind::Witness, 50);
                 assert_eq!(reg.snapshot(), (150, 250));
                 assert_eq!(reg.in_flight(), 3);
             }
-            // inner build guard dropped
+            // inner witness guard dropped
             assert_eq!(reg.snapshot(), (100, 250));
             assert_eq!(reg.in_flight(), 2);
         }

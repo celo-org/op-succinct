@@ -4,7 +4,7 @@
 
 **Goal:** Replace the subprocess-based game monitor with a single contained daemon that runs cost-estimation in-process, driven by a predictive finalization-triggered witness pipeline, with on-disk caching of both `WitnessData` and `SP1Stdin`.
 
-**Architecture:** A new library crate `utils/estimator` lifts the cost-estimator core into two methods — `build_range_witness` (fetch + crunch + cache) and `execute_range` (load + SP1 execute). A new binary `scripts/utils/bin/game_monitor_contained.rs` keeps today's proven control-plane (finalized discovery, type-42 filter, `--delay`, two-tier retry, `last_contiguous` frontier, `progress.json` resume) but calls the library directly instead of spawning a subprocess, and runs a background pipeline that prebuilds each range's stdin as its L2 blocks finalize. Both heavy workloads (witness-gen and execute) share one RSS-admission budget read from the cgroup.
+**Architecture:** A new library crate `utils/estimator` lifts the cost-estimator core into two methods — `witness_range` (fetch + crunch + cache) and `prove_range` (load + SP1 execute). A new binary `scripts/utils/bin/game_monitor_contained.rs` keeps today's proven control-plane (finalized discovery, type-42 filter, `--delay`, two-tier retry, `last_contiguous` frontier, `progress.json` resume) but calls the library directly instead of spawning a subprocess, and runs a background pipeline that pre-generates each range's stdin as its L2 blocks finalize. Both heavy workloads (witness generation and prove) share one RSS-admission budget read from the cgroup.
 
 **Tech Stack:** Rust, tokio, `sp1-sdk` (`CpuProver` blocking), alloy 1.6.3 (`RetryBackoffLayer`), rkyv 0.8 (`WitnessData` blobs), bincode (`SP1Stdin` blobs), `tracing` + `tracing-subscriber` (JSON to stdout), `thiserror`.
 
@@ -30,7 +30,7 @@
 - `utils/estimator/src/stats.rs` — lifted `aggregate_execution_stats`.
 - `utils/estimator/src/cache.rs` — `WitnessCache`: keyed `WitnessData` + `SP1Stdin` blobs, DA discriminator, absolute base dir, separate-clock pruning.
 - `utils/estimator/src/retry.rs` — `network_call_with_timeout` helper (lifted from `fault-proof`).
-- `utils/estimator/src/estimator.rs` — `Estimator<H>` with `build_range_witness` + `execute_range`.
+- `utils/estimator/src/estimator.rs` — `Estimator<H>` with `witness_range` + `prove_range`.
 - `utils/estimator/src/memory.rs` — cgroup budget parsing + `RssAdmission` gate + peak-RSS history.
 - `utils/estimator/src/window.rs` — `PROPOSAL_INTERVAL` window prediction (pure).
 - `scripts/utils/bin/game_monitor_contained.rs` — the daemon.
@@ -123,7 +123,7 @@ ethereum = ["op-succinct-ethereum-host-utils", "op-succinct-proof-utils/ethereum
 Create `utils/estimator/src/lib.rs`:
 
 ```rust
-//! In-process cost estimator: fetch + crunch witness data and execute SP1 ranges,
+//! In-process cost estimator: fetch + crunch witness data and prove SP1 ranges,
 //! with on-disk caching of both `WitnessData` and `SP1Stdin`.
 
 pub mod error;
@@ -648,7 +648,7 @@ impl WitnessCache {
         Ok(Some(rkyv::from_bytes::<W, RkyvError>(&bytes)?))
     }
 
-    /// Drop the (large) `WitnessData` blob once its stdin is built. Idempotent.
+    /// Drop the (large) `WitnessData` blob once its stdin is generated. Idempotent.
     pub fn drop_witness(&self, start: u64, end: u64) -> Result<()> {
         let path = self.witness_path(start, end);
         if path.exists() {
@@ -708,7 +708,7 @@ git commit -m "feat(estimator): cache WitnessData blobs via rkyv + drop_witness"
 - Modify: `utils/estimator/src/cache.rs`
 - Test: inline in `cache.rs`
 
-Spec §4.4 pruning: drop `WitnessData` once `SP1Stdin` is built (Task 6 `drop_witness` already does this on demand); keep `SP1Stdin` until the owning game **succeeds** + a configurable grace window (~1h). Games are disjoint, so stdin pruning is time-based per range. Implement age-based pruning the daemon schedules.
+Spec §4.4 pruning: drop `WitnessData` once `SP1Stdin` is generated (Task 6 `drop_witness` already does this on demand); keep `SP1Stdin` until the owning game **succeeds** + a configurable grace window (~1h). Games are disjoint, so stdin pruning is time-based per range. Implement age-based pruning the daemon schedules.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1173,16 +1173,16 @@ git commit -m "feat(host): RetryBackoffLayer on L1/L2 providers + RPC timeout (F
 
 ---
 
-## Task 12: `Estimator<H>` — `build_range_witness` (fetch + crunch + cache both)
+## Task 12: `Estimator<H>` — `witness_range` (fetch + crunch + cache both)
 
 **Files:**
 - Create: `utils/estimator/src/estimator.rs`
 - Modify: `utils/estimator/src/lib.rs`
 - Test: inline in `estimator.rs` (construction/compile test only; behaviour is covered by Task 22 integration)
 
-Realizes the spec §4.3 producer half. A struct holds the shared `host`, `fetcher`, `cache`, `chain_id`. `build_range_witness` runs `host.run` then `get_sp1_stdin` **sequentially**, caching each, then drops `WitnessData` once stdin is built. A `WitnessData` cache hit skips `host.run`.
+Realizes the spec §4.3 producer half. A struct holds the shared `host`, `fetcher`, `cache`, `chain_id`. `witness_range` runs `host.run` then `get_sp1_stdin` **sequentially**, caching each, then drops `WitnessData` once the stdin is generated. A `WitnessData` cache hit skips `host.run`.
 
-- [ ] **Step 1: Write the estimator struct + `build_range_witness`**
+- [ ] **Step 1: Write the estimator struct + `witness_range`**
 
 Create `utils/estimator/src/estimator.rs`:
 
@@ -1220,9 +1220,9 @@ where
 {
     /// Producer: fetch `WitnessData` (host.run) then crunch to `SP1Stdin`, caching both,
     /// then drop the witness blob. A cached witness skips host.run; a cached stdin is a no-op.
-    pub async fn build_range_witness(&self, range: &SpanBatchRange) -> Result<(), EstimatorError> {
+    pub async fn witness_range(&self, range: &SpanBatchRange) -> Result<(), EstimatorError> {
         if self.cache.has_stdin(range.start, range.end) {
-            return Ok(()); // already built
+            return Ok(()); // already generated
         }
 
         // 1. WitnessData: load from cache, else host.fetch + host.run, then cache it.
@@ -1285,20 +1285,20 @@ Expected: compiles. The generic bounds on `WitnessOf<H>` must resolve for `Eigen
 
 ```bash
 git add utils/estimator/src/estimator.rs utils/estimator/src/lib.rs
-git commit -m "feat(estimator): build_range_witness (cache WitnessData + SP1Stdin, drop witness)"
+git commit -m "feat(estimator): witness_range (cache WitnessData + SP1Stdin, drop witness)"
 ```
 
 ---
 
-## Task 13: `Estimator<H>` — `execute_range` (load stdin + SP1 execute)
+## Task 13: `Estimator<H>` — `prove_range` (load stdin + SP1 execute)
 
 **Files:**
 - Modify: `utils/estimator/src/estimator.rs`
 - Test: inline in `estimator.rs` (compile/signature test; behaviour in Task 22)
 
-Realizes the spec §4.3 consumer half. Loads cached stdin (builds on miss), runs SP1 execute inside `spawn_blocking` (`CpuProver` spins its own runtime — `cost_estimator.rs:132-135`), and maps the `ExecutionReport` to `ExecutionStats` (`stats.rs:81-139`). **Concurrency is governed by the daemon's RSS gate (Task 17), not a rayon `par_iter`** (spec §4.3).
+Realizes the spec §4.3 consumer half. Loads cached stdin (generates on miss), runs SP1 execute inside `spawn_blocking` (`CpuProver` spins its own runtime — `cost_estimator.rs:132-135`), and maps the `ExecutionReport` to `ExecutionStats` (`stats.rs:81-139`). **Concurrency is governed by the daemon's RSS gate (Task 17), not a rayon `par_iter`** (spec §4.3).
 
-- [ ] **Step 1: Add `execute_range`**
+- [ ] **Step 1: Add `prove_range`**
 
 Append to the `impl<H: OPSuccinctHost> Estimator<H>` block in `estimator.rs`:
 
@@ -1313,21 +1313,21 @@ where
         + Archive,
     <WitnessOf<H> as Archive>::Archived: rkyv::Deserialize<WitnessOf<H>, HighDeserializer<RkyvError>>,
 {
-    /// Consumer: load the cached stdin (build on miss), run the SP1 execute, and
+    /// Consumer: load the cached stdin (generate on miss), run the SP1 execute, and
     /// produce `ExecutionStats`. The caller must hold an RSS-admission slot.
-    pub async fn execute_range(
+    pub async fn prove_range(
         &self,
         range: &SpanBatchRange,
     ) -> Result<ExecutionStats, EstimatorError> {
-        // Ensure stdin exists (cache hit is the common path; miss builds on demand).
+        // Ensure stdin exists (cache hit is the common path; miss generates on demand).
         if !self.cache.has_stdin(range.start, range.end) {
-            self.build_range_witness(range).await?;
+            self.witness_range(range).await?;
         }
         let stdin = self
             .cache
             .load_stdin(range.start, range.end)
             .map_err(EstimatorError::Transient)?
-            .ok_or_else(|| EstimatorError::Fatal(anyhow::anyhow!("stdin missing after build")))?;
+            .ok_or_else(|| EstimatorError::Fatal(anyhow::anyhow!("stdin missing after witness generation")))?;
 
         // Block data for stats (cheap relative to witness-gen). Parity: l1_head passed as 0.
         let block_data = self
@@ -1368,7 +1368,7 @@ Expected: compiles.
 
 ```bash
 git add utils/estimator/src/estimator.rs
-git commit -m "feat(estimator): execute_range (load stdin, spawn_blocking SP1 execute, stats)"
+git commit -m "feat(estimator): prove_range (load stdin, spawn_blocking SP1 execute, stats)"
 ```
 
 ---
@@ -1485,7 +1485,7 @@ git commit -m "feat(estimator): cgroup v1/v2 memory budget + usage parsing"
 - Modify: `utils/estimator/src/memory.rs`
 - Test: inline in `memory.rs`
 
-Spec §7: an admission gate that records **peak RSS** per unit (build and execute) keyed by **EVM gas**, projects the next unit's peak from history, and admits only if it fits the remaining budget with a margin. Pure projection logic is unit-tested with synthetic history; live usage comes from Task 14.
+Spec §7: an admission gate that records **peak RSS** per unit (witness and prove) keyed by **EVM gas**, projects the next unit's peak from history, and admits only if it fits the remaining budget with a margin. Pure projection logic is unit-tested with synthetic history; live usage comes from Task 14.
 
 - [ ] **Step 1: Write the failing tests + the gate**
 
@@ -1504,8 +1504,8 @@ pub struct RssSample {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkKind {
-    Build,
-    Execute,
+    Witness,
+    Prove,
 }
 
 /// Bounded history of peak-RSS samples used to project the next unit's footprint.
@@ -1570,15 +1570,15 @@ mod admission_tests {
     #[test]
     fn projects_from_history_ratio() {
         let mut h = RssHistory::new(8);
-        h.record(RssSample { gas: 1_000, peak_rss_bytes: 10_000, kind: WorkKind::Execute });
+        h.record(RssSample { gas: 1_000, peak_rss_bytes: 10_000, kind: WorkKind::Prove });
         // ratio 10 bytes/gas → 2000 gas projects 20_000.
-        assert_eq!(h.project_peak(WorkKind::Execute, 2_000, 1), 20_000);
+        assert_eq!(h.project_peak(WorkKind::Prove, 2_000, 1), 20_000);
     }
 
     #[test]
     fn falls_back_to_default_without_signal() {
         let h = RssHistory::new(8);
-        assert_eq!(h.project_peak(WorkKind::Build, 5_000, 42), 42);
+        assert_eq!(h.project_peak(WorkKind::Witness, 5_000, 42), 42);
     }
 
     #[test]
@@ -1592,7 +1592,7 @@ mod admission_tests {
     fn history_is_bounded() {
         let mut h = RssHistory::new(2);
         for g in 0..5 {
-            h.record(RssSample { gas: g + 1, peak_rss_bytes: 1, kind: WorkKind::Build });
+            h.record(RssSample { gas: g + 1, peak_rss_bytes: 1, kind: WorkKind::Witness });
         }
         assert_eq!(h.samples.len(), 2);
     }
@@ -1620,7 +1620,7 @@ git commit -m "feat(estimator): RSS admission gate + peak-RSS projection history
 - Modify: `utils/estimator/src/lib.rs`
 - Test: inline in `window.rs`
 
-Spec §4.2 step 1: predict the next window `[frontier, frontier + PROPOSAL_INTERVAL]` from the proposer's interval; track the frontier (last built end). Pure arithmetic, plus a lead-distance cap (spec §11) so the pipeline never runs unbounded ahead.
+Spec §4.2 step 1: predict the next window `[frontier, frontier + PROPOSAL_INTERVAL]` from the proposer's interval; track the frontier (last witnessed end). Pure arithmetic, plus a lead-distance cap (spec §11) so the pipeline never runs unbounded ahead.
 
 - [ ] **Step 1: Write the failing tests + the predictor**
 
@@ -1633,7 +1633,7 @@ use op_succinct_host_utils::block_range::SpanBatchRange;
 #[derive(Debug, Clone)]
 pub struct WindowPredictor {
     proposal_interval: u64,
-    /// Last built window end (the frontier).
+    /// Last witnessed window end (the frontier).
     frontier: u64,
     /// Max windows the pipeline may run ahead of the frontier.
     max_lead_windows: u64,
@@ -1661,10 +1661,10 @@ impl WindowPredictor {
         lead <= self.proposal_interval * self.max_lead_windows
     }
 
-    /// Advance the frontier once a window has been built.
-    pub fn advance_to(&mut self, built_end: u64) {
-        if built_end > self.frontier {
-            self.frontier = built_end;
+    /// Advance the frontier once a window has been witnessed.
+    pub fn advance_to(&mut self, witnessed_end: u64) {
+        if witnessed_end > self.frontier {
+            self.frontier = witnessed_end;
         }
     }
 }
@@ -1786,7 +1786,7 @@ pub struct ContainedArgs {
     #[arg(long, default_value = "30")]
     pub poll_interval: u64,
 
-    /// Discover→execute delay (seconds) — avoids the multi-backend 404 race.
+    /// Discover→prove delay (seconds) — avoids the multi-backend 404 race.
     #[arg(long, default_value = "600")]
     pub delay: u64,
 
@@ -2276,7 +2276,7 @@ git commit -m "feat(monitor): two-tier retry policy + progress resume (pure, tes
 - Modify: `scripts/utils/src/contained/mod.rs`
 - Test: inline in `pipeline.rs` (finalization-gate predicate; full loop covered by Task 22 integration)
 
-Spec §4.2: a background task that predicts the next window, computes its safe-head sub-ranges once its L2 blocks exist, and triggers `build_range_witness` per sub-range when the sub-range's end is L2-finalized **and** L1 has finalized past its `l1_head` (key-soundness gate, §4.4). Bounded concurrency shares the RSS gate (Task 15). The deterministic gate predicate is unit-tested; the live loop is integration-tested.
+Spec §4.2: a background task that predicts the next window, computes its safe-head sub-ranges once its L2 blocks exist, and triggers `witness_range` per sub-range when the sub-range's end is L2-finalized **and** L1 has finalized past its `l1_head` (key-soundness gate, §4.4). Bounded concurrency shares the RSS gate (Task 15). The deterministic gate predicate is unit-tested; the live loop is integration-tested.
 
 - [ ] **Step 1: Write the finalization-gate predicate + its test**
 
@@ -2334,8 +2334,8 @@ use op_succinct_host_utils::{
 use tokio::sync::Semaphore;
 
 /// One iteration: predict the next window, compute its sub-ranges if its blocks exist,
-/// and build each ready sub-range (RSS-admitted via `permits`). Returns the new frontier
-/// (advanced past the last fully-built window) or the unchanged frontier if not ready.
+/// and generate the witness for each ready sub-range (RSS-admitted via `permits`). Returns the new
+/// frontier (advanced past the last fully-witnessed window) or the unchanged frontier if not ready.
 pub async fn pipeline_step<H>(
     estimator: &Estimator<H>,
     fetcher: &OPSuccinctDataFetcher,
@@ -2365,21 +2365,21 @@ where
     )
     .await?;
 
-    // Build each sub-range concurrently, gated by the RSS-admission semaphore.
-    let builds = sub_ranges.iter().map(|range| async {
+    // Generate the witness for each sub-range concurrently, gated by the RSS-admission semaphore.
+    let witnesses = sub_ranges.iter().map(|range| async {
         let _permit = permits.clone().acquire_owned().await.expect("semaphore closed");
-        if let Err(e) = estimator.build_range_witness(range).await {
-            tracing::warn!(start = range.start, end = range.end, error = %e, "pipeline build failed");
+        if let Err(e) = estimator.witness_range(range).await {
+            tracing::warn!(start = range.start, end = range.end, error = %e, "pipeline witness generation failed");
         }
     });
-    futures::future::join_all(builds).await;
+    futures::future::join_all(witnesses).await;
 
     predictor.advance_to(window.end);
     Ok(())
 }
 ```
 
-> `get_l2_finalized_block_number` / `get_l2_finalized_block` — confirm the exact fetcher method name. The trait `OPSuccinctHost::get_finalized_l2_block_number` exists (`host.rs`); if the `fetcher` lacks a direct finalized-L2 helper, use the host's method (it takes `&fetcher` + a proposed block number) or `fetcher.get_l2_header(BlockId::finalized())`. Pick the one that exists; the predicate's contract (only build ready sub-ranges) is what matters. The `Semaphore` permit count is set by the RSS gate in Task 21 — here it bounds concurrency; Task 21 sizes it from `admits(...)`.
+> `get_l2_finalized_block_number` / `get_l2_finalized_block` — confirm the exact fetcher method name. The trait `OPSuccinctHost::get_finalized_l2_block_number` exists (`host.rs`); if the `fetcher` lacks a direct finalized-L2 helper, use the host's method (it takes `&fetcher` + a proposed block number) or `fetcher.get_l2_header(BlockId::finalized())`. Pick the one that exists; the predicate's contract (only witness ready sub-ranges) is what matters. The `Semaphore` permit count is set by the RSS gate in Task 21 — here it bounds concurrency; Task 21 sizes it from `admits(...)`.
 
 - [ ] **Step 3: Wire the module**
 
@@ -2395,21 +2395,21 @@ Expected: 2 tests pass; the crate compiles.
 
 ```bash
 git add scripts/utils/src/contained/pipeline.rs scripts/utils/src/contained/mod.rs
-git commit -m "feat(monitor): predictive witness pipeline (finalization-gated build)"
+git commit -m "feat(monitor): predictive witness pipeline (finalization-gated witness generation)"
 ```
 
 ---
 
-## Task 21: Wire the daemon — main loop joining executor + pipeline + RSS gate
+## Task 21: Wire the daemon — main loop joining prover + pipeline + RSS gate
 
 **Files:**
 - Modify: `scripts/utils/src/contained/mod.rs` (implement `run`)
 - Create: `scripts/utils/src/contained/executor.rs`
 - Test: build + a dry-run smoke test (no live RPC)
 
-Implement the reactive executor (spec §4.1 / §5) and the top-level `run` that builds the shared fetcher/host/estimator once (spec §6: build once at startup), spawns the pipeline task, and runs the discovery/execute/retry loop. The RSS gate sizes the shared semaphore.
+Implement the reactive prover (spec §4.1 / §5) and the top-level `run` that builds the shared fetcher/host/estimator once (spec §6: build once at startup), spawns the pipeline task, and runs the discovery/prove/retry loop. The RSS gate sizes the shared semaphore.
 
-- [ ] **Step 1: Write the executor (per-game: split → load-or-build stdin → execute → aggregate)**
+- [ ] **Step 1: Write the prover (per-game: split → load-or-generate stdin → prove → aggregate)**
 
 Create `scripts/utils/src/contained/executor.rs`:
 
@@ -2425,10 +2425,10 @@ use tokio::sync::Semaphore;
 
 use crate::contained::discovery::GameData;
 
-/// Execute every safe-head sub-range of a game and aggregate the stats.
-/// A cache hit (pipeline prebuilt the stdin) skips host.run; a miss builds on demand.
-/// Each execute holds an RSS-admission permit.
-pub async fn execute_game<H>(
+/// Prove every safe-head sub-range of a game and aggregate the stats.
+/// A cache hit (pipeline pre-generated the stdin) skips host.run; a miss generates on demand.
+/// Each prove holds an RSS-admission permit.
+pub async fn prove_game<H>(
     estimator: &Estimator<H>,
     fetcher: &OPSuccinctDataFetcher,
     permits: &Arc<Semaphore>,
@@ -2449,7 +2449,7 @@ where
     let mut per_range = Vec::with_capacity(sub_ranges.len());
     for range in &sub_ranges {
         let _permit = permits.clone().acquire_owned().await.expect("semaphore closed");
-        let stats = estimator.execute_range(range).await?;
+        let stats = estimator.prove_range(range).await?;
         per_range.push(stats);
     }
     Ok(aggregate_execution_stats(&per_range, 0, 0))
@@ -2458,7 +2458,7 @@ where
 
 - [ ] **Step 2: Implement `run` in `contained/mod.rs`**
 
-Replace the placeholder `run` with the real one. Build shared resources once, derive the RSS budget, spawn the pipeline, and run the discovery/execute/retry loop. (Use the existing `game_monitor.rs:1361-1571` loop structure as the reference for ordering: cleanup → evict-aged → primary spawns → background retries → discovery.)
+Replace the placeholder `run` with the real one. Build shared resources once, derive the RSS budget, spawn the pipeline, and run the discovery/prove/retry loop. (Use the existing `game_monitor.rs:1361-1571` loop structure as the reference for ordering: cleanup → evict-aged → primary spawns → background retries → discovery.)
 
 ```rust
 pub mod discovery;
@@ -2530,7 +2530,7 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
         let poll = Duration::from_secs(args.poll_interval);
         let max_lead = args.max_lead_windows;
         tokio::spawn(async move {
-            // Frontier starts at the finalized head; refined as windows build.
+            // Frontier starts at the finalized head; refined as windows are witnessed.
             let start_frontier = fetcher
                 .get_l2_header(BlockId::finalized())
                 .await
@@ -2550,7 +2550,7 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
         });
     }
 
-    // Reactive control plane (executor) — discovery/execute/retry loop.
+    // Reactive control plane (prover) — discovery/prove/retry loop.
     let l1_provider = ProviderBuilder::default().connect_http(std::env::var("L1_RPC")?.parse()?);
     let factory_address: alloy_primitives::Address =
         std::env::var("DISPUTE_GAME_FACTORY_ADDRESS")?.parse()?;
@@ -2586,7 +2586,7 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
             next_game_index += 1;
         }
 
-        // Execute any due games (serially through the RSS gate inside execute_game).
+        // Prove any due games (serially through the RSS gate inside prove_game).
         let now = Instant::now();
         let due: Vec<_> = pending
             .iter()
@@ -2598,13 +2598,13 @@ pub async fn run(args: ContainedArgs) -> anyhow::Result<()> {
             let pg = pending.remove(i).unwrap();
             match discovery::fetch_game_data(pg.game_index, &factory, l1_provider.clone()).await {
                 Ok(game) => {
-                    match executor::execute_game(
+                    match executor::prove_game(
                         &estimator, &fetcher, &permits, &game, args.batch_size,
                     )
                     .await
                     {
                         Ok(stats) => {
-                            tracing::info!(game = pg.game_index, ?stats, "game executed");
+                            tracing::info!(game = pg.game_index, ?stats, "game proved");
                             tracker.add(pg.game_index);
                             // Schedule stdin prune after grace (Task 22 wires the timer).
                             state::save_progress(&progress_path, &tracker, &background)?;
@@ -2721,12 +2721,12 @@ Expected: PASS.
 
 ```bash
 git add scripts/utils/src/contained/
-git commit -m "feat(monitor): wire run loop — executor + pipeline + RSS admission"
+git commit -m "feat(monitor): wire run loop — prover + pipeline + RSS admission"
 ```
 
 ---
 
-## Task 22: Integration tests — parity, prebuild-skip, forced-failure recovery, prune
+## Task 22: Integration tests — parity, pre-generate-skip, forced-failure recovery, prune
 
 **Files:**
 - Create: `scripts/utils/tests/contained_integration.rs`
@@ -2754,40 +2754,40 @@ async fn aggregated_stats_match_cost_estimator_baseline() {
         eprintln!("skipping: OPS_IT_L2_RPC unset");
         return;
     }
-    // Build a fetcher/host/estimator over a small range; execute via execute_game's path
-    // (split → execute_range → aggregate). Assert nb_blocks == end - start and that
+    // Build a fetcher/host/estimator over a small range; prove via prove_game's path
+    // (split → prove_range → aggregate). Assert nb_blocks == end - start and that
     // total_instruction_count > 0. Compare batch_start/batch_end to the requested range.
     // (A full byte-equality baseline vs the cost-estimator CSV is the gold standard; at
     // minimum assert the aggregate is non-trivial and the range matches.)
-    // ... construct Estimator as in contained::run, call executor::execute_game over a
+    // ... construct Estimator as in contained::run, call executor::prove_game over a
     // GameData with the env-provided start/end, assert on the returned ExecutionStats.
 }
 ```
 
 > Fill the body using the same construction as `contained::run` (Task 21). The assertion bar: `stats.batch_end == end`, `stats.nb_blocks == end - start`, `stats.total_instruction_count > 0`. For a true baseline, run the existing `cost-estimator --start S --end E --batch-size B` and compare `total_instruction_count` within a small tolerance (cycle counts are deterministic, so equality should hold).
 
-- [ ] **Step 2: Prebuild-skip — pipeline builds stdin, executor skips host.run**
+- [ ] **Step 2: Pre-generate-skip — pipeline generates stdin, prover skips host.run**
 
 Add:
 
 ```rust
 #[tokio::test]
-async fn executor_skips_host_run_when_pipeline_prebuilt_stdin() {
+async fn prover_skips_host_run_when_pipeline_pregenerated_stdin() {
     if !it_enabled() {
         return;
     }
-    // 1. Run build_range_witness over a sub-range → assert cache.has_stdin(range).
+    // 1. Run witness_range over a sub-range → assert cache.has_stdin(range).
     // 2. Assert the witness blob was dropped: cache.has_witness(range) == false.
-    // 3. Run execute_range over the same range → assert it returns stats without a
-    //    network host.run (instrument by asserting wall-clock << a cold build, or by
+    // 3. Run prove_range over the same range → assert it returns stats without a
+    //    network host.run (instrument by asserting wall-clock << a cold witness generation, or by
     //    pointing the host at an unreachable L2_NODE so a host.run would error but the
     //    cached stdin path succeeds).
 }
 ```
 
-> The cleanest assertion that `host.run` was skipped: after building the stdin, drop the witness, then set the host's `L2_NODE_RPC` to an unroutable address and confirm `execute_range` still succeeds (it only reads the cached stdin + fetches cheap block_data; if block_data also needs L2, keep L2_RPC valid and only break the witness-server path). Adapt to whichever dependency uniquely gates `host.run`.
+> The cleanest assertion that `host.run` was skipped: after generating the stdin, drop the witness, then set the host's `L2_NODE_RPC` to an unroutable address and confirm `prove_range` still succeeds (it only reads the cached stdin + fetches cheap block_data; if block_data also needs L2, keep L2_RPC valid and only break the witness-server path). Adapt to whichever dependency uniquely gates `host.run`.
 
-- [ ] **Step 3: Forced mid-build failure recovers without redoing a cached step**
+- [ ] **Step 3: Forced mid-witness-generation failure recovers without redoing a cached step**
 
 Add:
 
@@ -2801,13 +2801,13 @@ async fn forced_rpc_failure_recovers_without_recrunch() {
     //    — to do this, intercept before get_sp1_stdin (e.g. call host.run + save_witness
     //    directly, skipping stdin).
     // 2. Inject a get_sp1_stdin failure path is hard; instead assert the resilience
-    //    invariant directly: with WitnessData cached, a second build_range_witness call
+    //    invariant directly: with WitnessData cached, a second witness_range call
     //    does NOT call host.fetch/host.run (point L2_NODE at an unroutable host) and still
     //    produces the stdin from the cached witness. Assert cache.has_stdin == true after.
 }
 ```
 
-- [ ] **Step 4: Prune — stdin evicts after grace; witness dropped once stdin built**
+- [ ] **Step 4: Prune — stdin evicts after grace; witness dropped once stdin generated**
 
 Add (no live RPC needed — pure cache mechanics):
 
@@ -2836,7 +2836,7 @@ Expected: the pure `stdin_prunes_after_grace_and_witness_dropped` passes; the RP
 
 ```bash
 git add scripts/utils/tests/contained_integration.rs
-git commit -m "test(monitor): integration — parity, prebuild-skip, recovery, prune"
+git commit -m "test(monitor): integration — parity, pre-generate-skip, recovery, prune"
 ```
 
 ---
@@ -2851,7 +2851,7 @@ Spec §4.4: keep an stdin blob until the owning game **succeeds** + grace (~1h).
 
 - [ ] **Step 1: Track succeeded ranges + add a prune sweep**
 
-In `contained/mod.rs`, after a game executes successfully, record its sub-ranges and the success time, then in each loop iteration prune any whose stdin age exceeds the grace. Add a small `Prunable` list:
+In `contained/mod.rs`, after a game proves successfully, record its sub-ranges and the success time, then in each loop iteration prune any whose stdin age exceeds the grace. Add a small `Prunable` list:
 
 ```rust
 struct PrunableStdin {
@@ -2875,7 +2875,7 @@ prunables.retain(|p| {
 });
 ```
 
-> `execute_game` already computes the sub-ranges; return them (or recompute deterministically) so the prune list is exact. Prefer returning `(ExecutionStats, Vec<SpanBatchRange>)` from `execute_game` to avoid a second split.
+> `prove_game` already computes the sub-ranges; return them (or recompute deterministically) so the prune list is exact. Prefer returning `(ExecutionStats, Vec<SpanBatchRange>)` from `prove_game` to avoid a second split.
 
 - [ ] **Step 2: Unit-test the grace predicate**
 
@@ -2915,17 +2915,17 @@ Spec §7: the old absolute-duration kill-guard becomes **warn + stop admitting +
 
 - [ ] **Step 1: Add the admission-freeze on overrun**
 
-In `contained/mod.rs`, track the start time of each in-flight execute; if any exceeds `max_process_duration_secs` (add the flag, default `10800`), log `tracing::error!` and stop acquiring new permits (e.g. set an `AtomicBool admission_frozen` checked before `acquire_owned`). Do not kill the task.
+In `contained/mod.rs`, track the start time of each in-flight prove; if any exceeds `max_process_duration_secs` (add the flag, default `10800`), log `tracing::error!` and stop acquiring new permits (e.g. set an `AtomicBool admission_frozen` checked before `acquire_owned`). Do not kill the task.
 
 ```rust
-// Before acquiring a permit in pipeline_step / execute_game:
+// Before acquiring a permit in pipeline_step / prove_game:
 if admission_frozen.load(std::sync::atomic::Ordering::Relaxed) {
     tracing::warn!("admission frozen due to overrun; not starting new work");
     return Ok(()); // or skip this range
 }
 ```
 
-> Thread an `Arc<AtomicBool>` into `pipeline_step` and `execute_game`. The watchdog can be a lightweight check in the main loop comparing `Instant::now()` against recorded in-flight start times. Keep it minimal — the real protection is batch-size bounding runtime (spec §11); this is the alerting backstop.
+> Thread an `Arc<AtomicBool>` into `pipeline_step` and `prove_game`. The watchdog can be a lightweight check in the main loop comparing `Instant::now()` against recorded in-flight start times. Keep it minimal — the real protection is batch-size bounding runtime (spec §11); this is the alerting backstop.
 
 - [ ] **Step 2: Full workspace verification**
 
@@ -2954,15 +2954,15 @@ git commit -m "feat(monitor): warn+freeze-admission overrun guard (no in-process
 
 This plan was checked against the spec section by section:
 
-- **§4.1 reactive control plane** → Tasks 18 (discovery/type-42/finalized), 19 (retry/frontier/progress), 21 (executor + main loop), 23 (prune), 24 (overrun guard).
-- **§4.2 predictive pipeline** → Tasks 16 (window prediction), 20 (sub-range compute + finalization gate + build), 8 (shared-fetcher splitter).
-- **§4.3 `utils/estimator`** → Tasks 1 (crate), 12 (`build_range_witness`), 13 (`execute_range`), 2 (`EstimatorError`), 3 (`aggregate_execution_stats`).
+- **§4.1 reactive control plane** → Tasks 18 (discovery/type-42/finalized), 19 (retry/frontier/progress), 21 (prover + main loop), 23 (prune), 24 (overrun guard).
+- **§4.2 predictive pipeline** → Tasks 16 (window prediction), 20 (sub-range compute + finalization gate + witness generation), 8 (shared-fetcher splitter).
+- **§4.3 `utils/estimator`** → Tasks 1 (crate), 12 (`witness_range`), 13 (`prove_range`), 2 (`EstimatorError`), 3 (`aggregate_execution_stats`).
 - **§4.4 witness cache** → Tasks 4 (key/DA discriminator/absolute base), 5 (stdin blobs), 6 (WitnessData blobs + drop), 7 (separate-clock prune), 23 (grace).
-- **§4.5 resilience** → Tasks 9 (`network_call_with_timeout`), 10 (harden `OnlineBlobStore`), 11 (`RetryBackoffLayer`), and the build/execute retry boundaries realized in 12/13/19.
+- **§4.5 resilience** → Tasks 9 (`network_call_with_timeout`), 10 (harden `OnlineBlobStore`), 11 (`RetryBackoffLayer`), and the witness/prove retry boundaries realized in 12/13/19.
 - **§4.6 logging** → Task 17 (`tracing` JSON to stdout + `log` bridge).
 - **§7 memory model** → Tasks 14 (cgroup parsing), 15 (RSS admission + peak history), 21 (permit sizing), 24 (warn+freeze).
-- **§10 testing** → unit tests in every task; Task 22 integration (parity, prebuild-skip, forced-failure recovery, prune).
+- **§10 testing** → unit tests in every task; Task 22 integration (parity, pre-generate-skip, forced-failure recovery, prune).
 
-**Type-consistency anchors** (used identically across tasks): `WitnessCache::{witness_path, stdin_path, has_stdin, has_witness, save_stdin, load_stdin, save_witness, load_witness, drop_witness, prune_stdin, stdin_age_secs}`; `Estimator::{build_range_witness, execute_range}`; `EstimatorError::{is_transient, classify}`; `split_range_based_on_safe_heads_with_fetcher`; `aggregate_execution_stats`; `WindowPredictor::{next_window, within_lead, advance_to, frontier}`; `requeue_decision` / `RequeueDecision`.
+**Type-consistency anchors** (used identically across tasks): `WitnessCache::{witness_path, stdin_path, has_stdin, has_witness, save_stdin, load_stdin, save_witness, load_witness, drop_witness, prune_stdin, stdin_age_secs}`; `Estimator::{witness_range, prove_range}`; `EstimatorError::{is_transient, classify}`; `split_range_based_on_safe_heads_with_fetcher`; `aggregate_execution_stats`; `WindowPredictor::{next_window, within_lead, advance_to, frontier}`; `requeue_decision` / `RequeueDecision`.
 
 **Known confirm-against-the-pinned-dep points** (flagged inline, consistent with spec §11's "confirm against the pinned kona-host version"): the rkyv 0.8 serializer type aliases (Task 6/12), `RetryBackoffLayer::new` arg order for alloy 1.6.3 (Task 11), the SP1 6.1.0 `execute(...).run()` return shape (Task 13), the `OnlineBlobStore` `Self::Error` constructibility (Task 10), and exact fetcher finalized-block helper names (Tasks 20/21). Each has a concrete fallback written into the step.

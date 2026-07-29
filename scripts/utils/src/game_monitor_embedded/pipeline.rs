@@ -9,22 +9,22 @@ use crate::game_monitor_embedded::admission::Admission;
 
 type WitnessOf<H> = <<H as OPSuccinctHost>::WitnessGenerator as WitnessGenerator>::WitnessData;
 
-/// Build the witness for ONE sub-range — the build workers' unit of work. Waits for
-/// admission, which registers this build's gas (and a concurrency slot) for the duration
-/// via the returned guard, then runs `host.run` + `get_sp1_stdin` (cached by
-/// `build_range_witness`). The sampler observes the resulting footprint out of band.
-/// Concurrency is the caller's concern (the build worker pool).
+/// Generate the witness for ONE sub-range — the witness workers' unit of work. Waits for
+/// admission, which registers this witness task's gas (and a concurrency slot) for the
+/// duration via the returned guard, then runs `host.run` + `get_sp1_stdin` (cached by
+/// `witness_range`). The sampler observes the resulting footprint out of band.
+/// Concurrency is the caller's concern (the witness worker pool).
 ///
 /// Returns a typed `EstimatorError` so the scheduler can classify a failure that blocks a
 /// demanding game (transient vs fatal).
 ///
 /// Runs in a per-range span (spec §4.6) — workers have no `game`/`attempt` context, so
-/// builds are attributed to `range` alone, with the host.run/get_sp1_stdin child spans nested
-/// underneath.
+/// witness tasks are attributed to `range` alone, with the host.run/get_sp1_stdin child spans
+/// nested underneath.
 #[tracing::instrument(
     name = "range",
     skip_all,
-    fields(start = range.start, end = range.end, work = "build")
+    fields(start = range.start, end = range.end, work = "witness")
 )]
 pub async fn pipeline_step<H: OPSuccinctHost>(
     estimator: &Estimator<H>,
@@ -33,7 +33,7 @@ pub async fn pipeline_step<H: OPSuccinctHost>(
     range: &SpanBatchRange,
 ) -> Result<(), EstimatorError>
 where
-    // Mirror Estimator<H>'s impl rkyv bounds so this can call build_range_witness.
+    // Mirror Estimator<H>'s impl rkyv bounds so this can call witness_range.
     WitnessOf<H>: for<'a> rkyv::Serialize<
             rkyv::api::high::HighSerializer<
                 rkyv::util::AlignedVec,
@@ -51,10 +51,10 @@ where
         .map_err(EstimatorError::classify)?;
     let gas: u64 = block_data.iter().map(|b| b.gas_used).sum();
 
-    // Adaptive admission: block until this build fits the memory budget and the concurrency
-    // cap. The guard keeps the build's gas and slot registered until it drops.
-    let _admit = admission.admit(WorkKind::Build, gas).await;
+    // Adaptive admission: block until this witness task fits the memory budget and the
+    // concurrency cap. The guard keeps the witness task's gas and slot registered until it drops.
+    let _admit = admission.admit(WorkKind::Witness, gas).await;
 
-    estimator.build_range_witness(range).await?;
+    estimator.witness_range(range).await?;
     Ok(())
 }

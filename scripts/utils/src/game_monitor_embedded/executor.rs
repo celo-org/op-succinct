@@ -18,26 +18,26 @@ use crate::game_monitor_embedded::{
 
 type WitnessOf<H> = <<H as OPSuccinctHost>::WitnessGenerator as WitnessGenerator>::WitnessData;
 
-/// Execute ONE sub-range: proof-cache hit returns the cached stats; a miss runs the SP1
-/// execute under an admission slot and persists the result. Run by the execute workers —
+/// Prove ONE sub-range: proof-cache hit returns the cached stats; a miss runs the SP1
+/// prove under an admission slot and persists the result. Run by the prove workers —
 /// the caller (worker) has already ensured the range's stdin exists (or put the demand
 /// into the waiting set).
 ///
-/// Runs in a per-range span (spec §4.6) — workers have no `game` context, so executes are
-/// attributed to `range` alone, with the `execute` child span nested underneath.
+/// Runs in a per-range span (spec §4.6) — workers have no `game` context, so proves are
+/// attributed to `range` alone, with the `prove` child span nested underneath.
 #[tracing::instrument(
     name = "range",
     skip_all,
-    fields(start = range.start, end = range.end, work = "execute")
+    fields(start = range.start, end = range.end, work = "prove")
 )]
-pub async fn execute_step<H: OPSuccinctHost>(
+pub async fn prove_step<H: OPSuccinctHost>(
     estimator: &Estimator<H>,
     fetcher: &OPSuccinctDataFetcher,
     admission: &Admission,
     range: &SpanBatchRange,
 ) -> Result<ExecutionStats, EstimatorError>
 where
-    // Mirror Estimator<H>'s impl rkyv bounds so this can call execute_range.
+    // Mirror Estimator<H>'s impl rkyv bounds so this can call prove_range.
     WitnessOf<H>: for<'a> rkyv::Serialize<
             rkyv::api::high::HighSerializer<
                 rkyv::util::AlignedVec,
@@ -48,28 +48,28 @@ where
     <WitnessOf<H> as rkyv::Archive>::Archived: rkyv::Deserialize<WitnessOf<H>, rkyv::api::high::HighDeserializer<RkyvError>>
         + for<'a> rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, RkyvError>>,
 {
-    // Proof-cache hit: the execute already ran (a prior attempt, a speculative execute, or a
+    // Proof-cache hit: the prove already ran (a prior attempt, a speculative prove, or a
     // pre-restart run) — reuse it, no admission slot needed.
     if let Some(stats) = estimator
         .cache
         .load_stats(range.start, range.end)
         .map_err(EstimatorError::Transient)?
     {
-        tracing::debug!("proof cache hit; skipping execute");
+        tracing::debug!("proof cache hit; skipping prove");
         return Ok(stats);
     }
 
     // Gas-weighted RSS projection key: sum the sub-range's L2 block gas. Threaded into
-    // `execute_range`, which reuses it for stats instead of re-fetching.
+    // `prove_range`, which reuses it for stats instead of re-fetching.
     let block_data = fetcher
         .get_l2_block_data_range(range.start, range.end)
         .await
         .map_err(EstimatorError::classify)?;
     let gas: u64 = block_data.iter().map(|b| b.gas_used).sum();
     // Adaptive admission: block until this unit fits the memory budget and the concurrency
-    // cap. The guard keeps the execute's gas and slot registered until it drops.
-    let _admit = admission.admit(WorkKind::Execute, gas).await;
-    let stats = estimator.execute_range(range, &block_data).await?;
+    // cap. The guard keeps the prove's gas and slot registered until it drops.
+    let _admit = admission.admit(WorkKind::Prove, gas).await;
+    let stats = estimator.prove_range(range, &block_data).await?;
 
     // Persist to the proof cache. Best-effort: the result is still returned on a write
     // failure, the range just re-executes if needed again.
@@ -79,23 +79,23 @@ where
     Ok(stats)
 }
 
-/// Execute a game by demanding its sub-ranges from the scheduler and assembling the results
+/// Prove a game by demanding its sub-ranges from the scheduler and assembling the results
 /// from the proof cache.
 ///
 /// The game itself does no heavy work: it splits `[start_block, end_block]` into fixed
-/// `batch_size` sub-ranges (anchored at the game start, matching the speculative build
+/// `batch_size` sub-ranges (anchored at the game start, matching the speculative witness
 /// task so cache keys line up), demands whatever the proof cache is missing, and waits.
 /// Demands go
-/// onto the execute pool's FIFO priority queue — served before all speculative work, in the
-/// order games issued them — and an un-built range promotes a witness demand rather than
-/// building inline. A game whose ranges were all pre-computed completes without executing
-/// anything.
+/// onto the prove pool's FIFO priority queue — served before all speculative work, in the
+/// order games issued them — and a range with no witness yet promotes a witness demand rather
+/// than generating it inline. A game whose ranges were all pre-computed completes without
+/// proving anything.
 ///
 /// A recorded failure of any demanded range fails the whole game (first error wins), feeding
 /// the normal two-tier retry; completed ranges stay in the proof cache, so a retry only
 /// re-runs what actually failed. On success returns the aggregate AND the sub-ranges so the
 /// caller can schedule stdin pruning per range.
-pub async fn execute_game<H: OPSuccinctHost>(
+pub async fn prove_game<H: OPSuccinctHost>(
     estimator: &Estimator<H>,
     scheduler: &Scheduler,
     game: &GameData,
@@ -114,7 +114,7 @@ where
 {
     let sub_ranges = split_range_basic(game.start_block, game.end_block, batch_size);
     let keys: Vec<RangeKey> = sub_ranges.iter().map(|r| (r.start, r.end)).collect();
-    // This game is now the newest known — raise the speculative execute limit.
+    // This game is now the newest known — raise the speculative prove limit.
     scheduler.note_game_end(game.end_block);
 
     loop {
@@ -155,7 +155,7 @@ where
         // (Re-)demand the missing ranges — dedup'd inside the scheduler, so re-demanding an
         // in-flight range is a no-op.
         for key in missing {
-            scheduler.demand_execute(key);
+            scheduler.demand_prove(key);
         }
         // Fallback tick guards against any missed notification wedging the game silently.
         let _ = tokio::time::timeout(crate::game_monitor_embedded::scheduler::IDLE_RECHECK, completed)
