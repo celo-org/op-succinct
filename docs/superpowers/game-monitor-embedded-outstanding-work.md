@@ -21,31 +21,31 @@ branch; line numbers are current as of that branch. Module path:
 |-----|--------|
 | Memory-model persistence created its parent dir (was failing silently every tick) | `053d94b3` |
 | Startup `on_chain_count - 1` underflow + fatal seed-fetch on a fresh chain | `240836aa` |
-| Per-game / per-range / per-attempt tracing spans; `host.run`/`get_sp1_stdin`/`execute` child spans; explicit `tracing-log` bridge | `58564bd8` |
+| Per-game / per-range / per-attempt tracing spans; `host.run`/`get_sp1_stdin`/`prove` child spans; explicit `tracing-log` bridge | `58564bd8` |
 | Log permanent abandonment of aged-out background retries | `d34eb5b2` |
 | `get_l2_block_data_range` no longer panics on a missing block (now a retryable error) | `20d92420` |
-| `execute_range` no longer re-fetches block data — executor threads it in (item #8) | `1e03045f` |
+| `prove_range` no longer re-fetches block data — executor threads it in (item #8) | `1e03045f` |
 | Daemon split with `split_range_basic`; SafeDB dependency removed (item #3) | `7702f04c` |
 | Admission liveness floor: a poisoned `max_cost_per_gas` can no longer wedge admission | `6863f30d` |
-| SP1 executor logs attributed to the `execute` span (entered inside `spawn_blocking`) | `09d4de7a` |
-| Per-kind admission cost model (Build vs Execute), `alpha` removed; readable GiB logs (item #6) | `cec85b11` |
+| SP1 executor logs attributed to the `prove` span (entered inside `spawn_blocking`) | `09d4de7a` |
+| Per-kind admission cost model (Witness vs Prove), `alpha` removed; readable GiB logs (item #6) | `cec85b11` |
 | Admission cost is an EWMA (α=0.1) of per-episode peak bytes/gas, not a running max (item #6) | `c3c40601` |
 | Shared L2+L1 readiness gate extracted to `readiness.rs` (items #3, #10) | `f1a6ba85` |
 | `--delay` renamed `--retry-backoff-delay`; discovery no longer delays, only the retry path does (item #13) | `d034b638` |
-| Per-kind admission concurrency cap so builds don't starve executes (item #29) | `c1baa130` |
-| Concurrent predictive prebuild pipeline, gated by the shared memory admission gate (item #5) | `3e4fd211` |
+| Per-kind admission concurrency cap so witness tasks don't starve proves (item #29) | `c1baa130` |
+| Concurrent predictive witness pipeline, gated by the shared memory admission gate (item #5) | `3e4fd211` |
 | Game-task panics caught and requeued as Transient — no more slot leak / wedge (item #23) | `763a641e` |
 | Error classification typed: `Oom`→`TooMuchMemory`→`Sp1Execute(ExecutionError)` (deterministic ⇒ non-retryable); `MissingTrieNode` reclassified transient | `43084e7b`, `c19d7a24`, `b28799a4` |
 | Stdin pruned immediately on success (grace window + `--stdin-grace-secs` removed); `Fatal` stdin retained for debugging (item #9) | `2c7b2125`, `2fa136ce` |
 | Above-watermark completions persisted (`pending`); restart skips completed games (item #27) | `d18f55f8` |
 | Readiness buffer and host offset unified into one shared `L1_HEAD_BUFFER` constant (item #10) | `7cd3a581`, `d28c38f7` |
-| Post-stdin `drop_witness` made best-effort (no false build failure); short-circuit re-drops leaked blobs (item #12) | this change |
+| Post-stdin `drop_witness` made best-effort (no false witness failure); short-circuit re-drops leaked blobs (item #12) | this change |
 | Admission baseline learned as an EWMA of idle RSS (was a single mis-calibrated startup read), persisted in `CostModel` (item #28) | this change |
 | Stale `--delay` module-doc mention corrected — the flag is `--retry-backoff-delay`, discovery is immediate (item #13) | this change |
 | Admission `cost` mutex hardened — `cost_guard()` recovers the guard on poison instead of `unwrap()` panicking (item #11) | this change |
-| Fast-path test now proves `host.run` is skipped by fault injection (an unbuildable range with pre-seeded stdin) (item #16) | this change |
-| Parity test compares `execute_game` to a serial split→execute→aggregate reference field-for-field (`ExecutionStats: PartialEq`) (item #15) | this change |
-| Cache-fronted scheduling: worker pools, FIFO-priority/LIFO-speculative queues, promoted witness demands, proof cache, lead-capped speculative execute (items #26 + #24) | this change |
+| Fast-path test now proves `host.run` is skipped by fault injection (an unwitnessable range with pre-seeded stdin) (item #16) | this change |
+| Parity test compares `prove_game` to a serial split→prove→aggregate reference field-for-field (`ExecutionStats: PartialEq`) (item #15) | this change |
+| Cache-fronted scheduling: worker pools, FIFO-priority/LIFO-speculative queues, promoted witness demands, proof cache, lead-capped speculative prove (items #26 + #24) | this change |
 
 ---
 
@@ -53,22 +53,22 @@ branch; line numbers are current as of that branch. Module path:
 
 ### Important
 
-#### 23. A panicking game task leaks its concurrency slot → permanent execute deadlock — FIXED (`763a641e`)
+#### 23. A panicking game task leaks its concurrency slot → permanent prove deadlock — FIXED (`763a641e`)
 Was highest severity — observed wedging chaos-testnet for 8+ hours with zero completions. Each game
 runs in a spawned task that reports its outcome exactly once via `tx.send(result)` (`mod.rs:872`),
 and the main loop frees the game's slot only when that result arrives (`running_games.remove`,
-`mod.rs:622`). If `execute_game` **panics** (`mod.rs:833`) instead of returning `Err` — e.g. a hard
-`unwrap` deep in kona during on-demand witness build — the task unwinds before the send, so no
+`mod.rs:622`). If `prove_game` **panics** (`mod.rs:833`) instead of returning `Err` — e.g. a hard
+`unwrap` deep in kona during on-demand witness generation — the task unwinds before the send, so no
 `GameTaskResult` is ever emitted and the slot is never released. There is no `catch_unwind` or
 `JoinSet`/`JoinHandle` tracking. Once `max_concurrent_games` panics accumulate, `running_games` is
 permanently full, the spawn guard (`mod.rs:759`, `running_games.len() < max_concurrent_games`) is
-always false, and no game is scheduled again: `executing=N, active_executes=0`, watermark frozen,
-`pending` unbounded — while the main loop and the *separate* prebuild pipeline keep running, so the
+always false, and no game is scheduled again: `proving=N, active_prove=0`, watermark frozen,
+`pending` unbounded — while the main loop and the *separate* witness pipeline keep running, so the
 pod still looks alive.
 - **Evidence:** 2026-07-09 incident — 5× `thread 'tokio-rt-worker' panicked at
   kona/.../providers-alloy/src/blobs.rs:61: Failed to load genesis time from beacon client:
   Backend("HTTP request failed: error decoding response body")` between 00:23–00:29 UTC leaked all
-  5 slots; last `game executed` 00:28:54 UTC, then wedged 8.7 h with the loop still polling.
+  5 slots; last `game proved` 00:28:54 UTC, then wedged 8.7 h with the loop still polling.
 - **Trigger vs bug:** the beacon-client HTTP flake is transient; the monitor converts it into a
   permanent deadlock via the slot leak. (kona's `unwrap` is upstream under `~/.cargo` — not ours.)
 - **Fix (Option A, `763a641e`):** the spawned body is wrapped in `catch_game_panic`
@@ -88,17 +88,17 @@ A transient L2 RPC returning `Ok(None)` panicked the whole daemon. The `.unwrap(
 found"))?`, so it surfaces as a retryable `EstimatorError::Transient`.
 
 #### 2. No watchdog: log if a process runs for too long — DEFERRED
-Nothing tracks per-execute runtime, so a wedged/frozen execute is never surfaced (spec §7,
+Nothing tracks per-prove runtime, so a wedged/frozen prove is never surfaced (spec §7,
 §11; plan Task 24). The memory gate is silent and won't catch it, and since SP1 execute
 can't be killed (spec §7), a logged alert is what a liveness probe (#4) needs to restart
 the pod.
 - **Evidence:** `mod.rs:44` docstring — "there is no watchdog or freeze". No
   `max_process_duration` anywhere.
-- **Fix:** track each in-flight execute's start time; on overrun emit `tracing::error!`.
+- **Fix:** track each in-flight prove's start time; on overrun emit `tracing::error!`.
   (Don't gate admission — the count cap and memory projection already throttle a stuck
   unit, which keeps holding its slot and gas.)
 - **Deferred:** with the panic slot-leak (#23) and its beacon trigger fixed, the acute wedge this
-  guarded against is gone; revisit if a genuinely frozen/slow execute becomes a problem.
+  guarded against is gone; revisit if a genuinely frozen/slow prove becomes a problem.
 
 #### 3. SafeDB dependency removed from the daemon — FIXED
 The daemon no longer uses safe-head splitting at all. Both the executor and the predictive
@@ -121,22 +121,22 @@ A wedged process is never restarted by k8s.
   probe, or add a tiny health endpoint).
 - **Deferred:** paired with #2 (auto-restart hardening); deferred for the same reason.
 
-#### 5. Predictive pipeline builds sub-ranges serially — FIXED (`3e4fd211`)
-Spec §4.2 step 4 ("Bounded concurrency. Multiple sub-range builds run concurrently") is now
+#### 5. Predictive pipeline generates sub-ranges serially — FIXED (`3e4fd211`)
+Spec §4.2 step 4 ("Bounded concurrency. Multiple sub-range witnesses run concurrently") is now
 implemented, so the prefetch half can keep ahead of the executor under load. The pipeline
-task collects the ready sub-ranges with a sequential cursor walk, then builds them
-concurrently, capped at `max_concurrent_builds` (default `--max-concurrent-units`), with the
+task collects the ready sub-ranges with a sequential cursor walk, then generates them
+concurrently, capped at `--max-concurrent-witness-tasks` (default `--max-concurrent-prove-tasks`), with the
 shared RSS admission gate as the real governor of how many run at once.
 - **Sites:** `mod.rs:561` collects ready ranges (`while let Some(range) =
-  provider.next_range(...)`); `mod.rs:568-569` drives the builds via
-  `for_each_concurrent(max_concurrent_builds, ...)`; fan-out default at `mod.rs:553-554`; each
-  `pipeline_step` still awaits `admission.admit(WorkKind::Build, ..)` (`pipeline.rs:51`).
+  provider.next_range(...)`); `mod.rs:568-569` drives the witnesses via
+  `for_each_concurrent(max_concurrent_witness_tasks, ...)`; fan-out default at `mod.rs:553-554`; each
+  `pipeline_step` still awaits `admission.admit(WorkKind::Witness, ..)` (`pipeline.rs:51`).
 
 #### 6. Single global `max_cost_per_gas`, not per-`WorkKind` — FIXED
-Build and execute footprints differ ~10×; the old single learned coefficient (folded by a
-fixed `alpha`) was learned from memory-heavy builds and then applied undiscounted to
-executes, over-projecting them ~10× and starving them (observed on chaos-testnet). Admission
-now keeps a `CostModel { cost_per_gas_build, cost_per_gas_execute }`, each an **EWMA (α=0.1) of
+Witness and prove footprints differ ~10×; the old single learned coefficient (folded by a
+fixed `alpha`) was learned from memory-heavy witnesses and then applied undiscounted to
+proves, over-projecting them ~10× and starving them (observed on chaos-testnet). Admission
+now keeps a `CostModel { cost_per_gas_witness, cost_per_gas_prove }`, each an **EWMA (α=0.1) of
 per-episode peak** bytes/gas learned only from **pure single-kind** RSS samples (`admission.rs:25-38`,
 folded at `:300-311`; `c3c40601` replaced the original running max, which one outlier pinned
 forever); the projection charges each kind its own
@@ -144,17 +144,17 @@ cost. `alpha` / `--build-gas-weight` is removed (per-kind costs make it unnecess
 kind's cost is learned, admission stays serial for it. Projection logs now render GiB and log
 grants at INFO, waits at DEBUG.
 
-#### 31. Witness build wedges forever on a deterministic hint-fetch error
+#### 31. Witness generation wedges forever on a deterministic hint-fetch error
 kona's `OnlineHostBackend::get_preimage` (kona `bin/host/src/backend/online.rs:135-148`, rev
 `b4ba5c3`) retries a failed `fetch_hint` in an unconditional busy loop — no backoff, no attempt
 cap, no transient-vs-deterministic classification. A hint that fails **deterministically** spins
-forever (~500 errors/s), and the witness build never returns, wedging its game slot and the
+forever (~500 errors/s), and the witness generation never returns, wedging its game slot and the
 admission gas it holds indefinitely. Unlike #23 this is not a panic — the task is alive, so
 `catch_game_panic` and the two-tier retry never see it.
 - **Evidence:** 2026-07-16 Sepolia incident — an `L2StateNode` hint for one missing trie-node
   preimage hit reth's `debug_dbGet` (code-only, 33-byte keys), a deterministic `-32602: Key must
   be 33 bytes, got 32`; >17k `Failed to prefetch hint` errors in minutes, game `29347` stuck in
-  witness build for hours (`executing_games=1 active_witness=1`, watermark frozen), pod healthy.
+  witness generation for hours (`executing_games=1 active_witness=1`, watermark frozen), pod healthy.
 - **Mitigation (this change):** `enable_experimental_witness_endpoint: true` removes that specific
   trigger (complete `debug_executePayload` witness ⇒ no `L2StateNode` fallback), but any future
   deterministic hint failure re-creates the wedge.
@@ -169,11 +169,11 @@ admission gas it holds indefinitely. Unlike #23 this is not a panic — the task
   new kona version we don't need to fork (celo-org/op-succinct#150) — carrying a fork patch just
   for this would be thrown away. Revisit as an upstream (op-labs kona) contribution, or re-judge
   after #150 lands.
-- **Fallback (op-succinct-side, not implemented):** a timeout around `build_range_witness`
-  (`host.run`) failing the build with a typed error. Blind to *why* the build hung, and covers the
+- **Fallback (op-succinct-side, not implemented):** a timeout around `witness_range`
+  (`host.run`) failing the witness with a typed error. Blind to *why* the witness hung, and covers the
   silent variant (hint returns `Ok` but the blocked-on key never appears) that error propagation
   does not; decided against for now.
-- **Relates to:** #2 (watchdog — same detection need; this is the witness-build case), #23 (slot
+- **Relates to:** #2 (watchdog — same detection need; this is the witness-generation case), #23 (slot
   wedge class), #4 (a liveness probe would restart the pod but lose all in-flight work).
 
 ### Minor
@@ -187,11 +187,11 @@ Window prediction was folded into `ReadyRangeProvider` with no cap; the planned
   finalization, so it cannot run away unboundedly; an explicit lead-distance cap adds no
   practical benefit.
 
-#### 8. `execute_range` re-fetches block data on every call — FIXED (`1e03045f`)
-`execute_range` ran `get_l2_block_data_range` for stats on every call, duplicating the fetch
-the executor already does to compute the admission gas key. `execute_range` now takes
+#### 8. `prove_range` re-fetches block data on every call — FIXED (`1e03045f`)
+`prove_range` ran `get_l2_block_data_range` for stats on every call, duplicating the fetch
+the executor already does to compute the admission gas key. `prove_range` now takes
 `block_data: &[BlockInfo]` and the executor (`executor.rs:68`) threads in the slice it
-already fetched, halving L2 RPC round-trips per executed sub-range.
+already fetched, halving L2 RPC round-trips per proved sub-range.
 
 #### 9. Stdin lifecycle on terminal outcomes — RESOLVED (by design)
 The stdin lifecycle was reworked around the terminal outcomes:
@@ -202,7 +202,7 @@ The stdin lifecycle was reworked around the terminal outcomes:
 - **`Fatal`** deliberately **retains** its stdin (`2fa136ce`) so it can be fetched to iterate on
   the execution code locally; the size-cap GC reclaims it under space pressure (oldest-first,
   unprotected). This reversed the short-lived Fatal-prune of `0c9170fc`.
-- **`WrongType`** never builds stdin — the type check precedes any build (`discovery.rs:49`) — so
+- **`WrongType`** never generates stdin — the type check precedes any witness (`discovery.rs:49`) — so
   there is nothing to prune.
 - The old "restart drops the in-memory prune list" leak is gone: pruning is immediate and
   completions are persisted, so there is no deferred list to lose.
@@ -220,7 +220,7 @@ was dropped. A flag was deemed unnecessary (the value must match the host, not b
 #### 11. `Mutex::lock().unwrap()` panic sites in admission — FIXED
 A poisoned `cost` mutex would crash the calling task, and one such panic cascades: every later
 `admit` / `observe` / `persist` `unwrap()`s the `PoisonError` and panics too (silently killing the
-sampler and the prebuild pipeline).
+sampler and the witness pipeline).
 - **Fix:** all four production lock sites (`admit`, `observe`, the sampler `rss sample` log, and
   `persist`) now go through a `cost_guard()` helper that recovers the guard on poison
   (`lock().unwrap_or_else(|e| e.into_inner())`). `CostModel` is a learned heuristic with no fragile
@@ -229,12 +229,12 @@ sampler and the prebuild pipeline).
 - **Relates to:** #30 (a `tracing` panic hook would surface the *root* panic that poisons it — this
   only stops the cascade).
 
-#### 12. `drop_witness` failure leaked the witness blob and faked a build failure — FIXED
-A post-stdin `drop_witness` error made `build_range_witness` return `Transient` even though stdin
-was already durably cached — a false "build failed" (spurious retry) — and the leaked witness blob
+#### 12. `drop_witness` failure leaked the witness blob and faked a witness failure — FIXED
+A post-stdin `drop_witness` error made `witness_range` return `Transient` even though stdin
+was already durably cached — a false "witness failed" (spurious retry) — and the leaked witness blob
 was never reclaimed, because the retry short-circuits at `has_stdin` and never reached the drop.
 - **Fix:** the post-stdin `drop_witness` is now **best-effort** — a failure is logged (`warn`) and
-  the build returns `Ok`, since stdin is the durable product (`estimator.rs`, step 3). The
+  the witness returns `Ok`, since stdin is the durable product (`estimator.rs`, step 3). The
   `has_stdin` short-circuit now also **re-attempts the drop** best-effort, so a re-request of the
   range self-heals a previously-leaked blob; the size-cap GC remains the final backstop. Dropping
   is always safe once stdin exists (the witness is only needed to re-crunch stdin).
@@ -255,7 +255,7 @@ prove tests. Per the scope rule (fix only what the embedded monitor uses), this 
 
 #### 27. Above-watermark completions are not persisted (re-run after restart) — FIXED (`d18f55f8`)
 Out-of-order completions above the watermark lived only in `SequenceTracker`'s in-memory `pending`
-set; `progress.json` stored only `last_contiguous`, so a restart re-discovered and re-executed
+set; `progress.json` stored only `last_contiguous`, so a restart re-discovered and re-proved
 every above-watermark success. With stdin now pruned immediately on success (#9), those reruns
 would be full recomputes — so persisting the set became load-bearing, not just an optimisation.
 - **Fix:** `ProgressState` gained a serde-default `pending: Vec<u64>`; `SequenceTracker` gained
@@ -290,11 +290,11 @@ under-projected at low concurrency (missed the floor → over-admit) and over-pr
 
 #### 15. Parity test checks shape only — FIXED
 The parity test only asserted shape (`batch_end`, `nb_blocks`, `total_instruction_count > 0`).
-- **Fix:** `execute_game_matches_serial_reference` now compares against a **serial reference** —
-  it splits the window with `split_range_basic`, `execute_range`s each sub-range independently, and
-  aggregates, then asserts `execute_game`'s concurrent split-and-aggregate equals it **field-for-
+- **Fix:** `prove_game_matches_serial_reference` now compares against a **serial reference** —
+  it splits the window with `split_range_basic`, `prove_range`s each sub-range independently, and
+  aggregates, then asserts `prove_game`'s concurrent split-and-aggregate equals it **field-for-
   field** (`ExecutionStats` gained `PartialEq`/`Eq`). It also asserts the split matches
-  `split_range_basic` exactly and `batch_start`/`batch_end`/`nb_blocks` bound the window. Execution
+  `split_range_basic` exactly and `batch_start`/`batch_end`/`nb_blocks` bound the window. Proving
   is deterministic and aggregation is an order-independent sum, so the equality is exact.
 - **Not a cross-tool baseline (by design/scope):** `cost_estimator` is not daemon code and is not
   retrofitted to `utils/estimator` (spec §12), and it splits differently (safe-head vs
@@ -302,17 +302,17 @@ The parity test only asserted shape (`batch_end`, `nb_blocks`, `total_instructio
   (`stats.rs`), so the serial reference is the faithful in-scope check.
 
 #### 16. Forced-failure recovery test is degraded — FIXED
-The test used to only assert a second `build_range_witness` returns `Ok` with cached stdin — it
+The test used to only assert a second `witness_range` returns `Ok` with cached stdin — it
 injected no failure and never proved `host.run` was skipped.
-- **Fix:** `second_build_short_circuits_host_run` now proves the skip by fault injection. It builds
-  the real range (caching stdin), then takes a range the host *cannot* build (block numbers far
-  beyond any chain height): without a cached stdin that build **fails** (host path exercised), but
+- **Fix:** `second_witness_short_circuits_host_run` now proves the skip by fault injection. It generates
+  the real range (caching stdin), then takes a range the host *cannot* generate (block numbers far
+  beyond any chain height): without a cached stdin that witness **fails** (host path exercised), but
   with its stdin pre-seeded it returns `Ok` — reachable only via the `has_stdin` short-circuit
   returning before `host.fetch`/`host.run`. Still ENV-gated (needs `OPS_IT_*`), skips cleanly in CI.
 
 #### 17. `estimator.rs` has no unit tests
-No `#[cfg(test)] mod tests` in `utils/estimator/src/estimator.rs`. `build_range_witness` /
-`execute_range` are covered only by the env-gated integration test. (Plan intended
+No `#[cfg(test)] mod tests` in `utils/estimator/src/estimator.rs`. `witness_range` /
+`prove_range` are covered only by the env-gated integration test. (Plan intended
 integration-only coverage — borderline, listed for completeness.)
 
 #### 18. Safe-head splitter has no unit test — WON'T DO (out of scope)
@@ -344,32 +344,32 @@ runs as image default (root).
 
 ### Enhancements
 
-#### 24. Speculative execute for predicted games — SUBSUMED by #26
-The prebuild pipeline already builds witnesses ahead of a game appearing, but the expensive zk
+#### 24. Speculative prove for predicted games — SUBSUMED by #26
+The witness pipeline already generates witnesses ahead of a game appearing, but the expensive zk
 `execute` only runs once the game is discovered on-chain (`pending_games` fed from `gameCount`,
-`mod.rs:695-706`) and passes the readiness gate. `execute_range`'s `ExecutionStats` is a pure
+`mod.rs:695-706`) and passes the readiness gate. `prove_range`'s `ExecutionStats` is a pure
 function of the range, not the game index (`estimator.rs:101-138`, `executor.rs:47`/`68`), so a
-predicted range can be executed ahead of time and reused when its game appears — hiding execute
-latency the way the pipeline hides build latency.
-- **Sketch:** after the pipeline builds a ready range, also `execute_range` it and cache the
+predicted range can be proved ahead of time and reused when its game appears — hiding prove
+latency the way the pipeline hides witness latency.
+- **Sketch:** after the pipeline generates a ready range, also `prove_range` it and cache the
   `ExecutionStats` keyed by `(chain_id, start, end, da)` (mirror `WitnessCache`, persisted). At
   discovery, map the game's range → cached result → attribute and advance the `SequenceTracker`,
   else fall back to on-demand (same best-effort pattern as the witness cache).
 - **Must-haves:** SP1 execute is uncancellable, so speculation must not head-of-line-block real
-  games — reserve execute capacity for discovered games and add a lead cap (item #7's "won't do"
-  reasoning flips here: over-executing is expensive). A misprediction wastes the dominant execute
-  cost, not just a build (bounded by prediction accuracy — the same bet the prebuild makes). Sound
+  games — reserve prove capacity for discovered games and add a lead cap (item #7's "won't do"
+  reasoning flips here: over-proving is expensive). A misprediction wastes the dominant prove
+  cost, not just a witness (bounded by prediction accuracy — the same bet the witness pipeline makes). Sound
   for estimation; reusing a speculative result as a real proof would need the game's committed L1
   anchor to match the witness's baked-in `l1_head`.
-- **Status:** subsumed by #26 — delivered there as the execute pool's speculative LIFO feeder plus
+- **Status:** subsumed by #26 — delivered there as the prove pool's speculative LIFO feeder plus
   the proof cache. The lead-cap must-have is carried into #26 as an explicit requirement; the
   soundness caveat is a non-issue for the monitor (estimation only) and matters only if the proof
   cache ever feeds the live proposer (spec §12).
 
 #### 25. Canoe proof memoization by input-hash
-Witness build produces canoe proofs per range (seen in `host.run`: "canoe witness provider:
+Witness generation produces canoe proofs per range (seen in `host.run`: "canoe witness provider:
 producing N canoe proof(s) for M DA certs"); identical inputs are re-proved across overlapping or
-retried builds. Memoize canoe proofs keyed by a hash of their input so a repeat input reuses the
+retried witnesses. Memoize canoe proofs keyed by a hash of their input so a repeat input reuses the
 cached proof instead of recomputing.
 - **Fix:** locate where the canoe proof is produced in the witness/DA path and wrap it in an
   input-hash-keyed cache (persisted alongside the witness cache); consult before proving.
@@ -379,13 +379,13 @@ cached proof instead of recomputing.
 Reshapes prioritization around two result caches — a **witness cache** and a **proof cache** —
 both fillable ahead of a game landing on-chain (the proposer's ranges and their splits are
 predictable from chain progression). Replaces today's unordered admission poll-race
-(`admission.rs:186-265`), which has no game/kind ordering and lets the prebuild pipeline
-(`max_concurrent_builds` defaults to the whole gate, `mod.rs:553-554`) starve real executes
+(`admission.rs:186-265`), which has no game/kind ordering and lets the witness pipeline
+(`--max-concurrent-witness-tasks` defaults to the whole gate, `mod.rs:553-554`) starve real proves
 (observed `active_witness=6` vs `active_prove=2` at startup).
 
 Model:
-- **Per work type (witness build, proof execute)** a worker pool drains two feeders in strict
-  order: (1) an **on-demand FIFO priority queue** — ranges a currently-executing game needs that
+- **Per work type (witness, prove)** a worker pool drains two feeders in strict
+  order: (1) an **on-demand FIFO priority queue** — ranges a currently-proving game needs that
   are not cached and not already in flight; (2) a **speculative LIFO queue** — fed only by chain
   progression, newest available range pushed to the front. Workers pull from the FIFO priority
   queue first; only when it is empty do they pull from the LIFO speculative queue.
@@ -398,79 +398,79 @@ Why: games LIFO ⇒ newest games start first; FIFO-priority-before-LIFO-speculat
 underway its dependencies leap ahead of all speculative work; the priority queue is **FIFO, not
 LIFO**, so components are served in the order games demanded them — an in-flight game's needs are
 satisfied before a later-started game's, so newer games / new speculative work cannot starve a game
-already executing. Speculative pre-compute only ever consumes spare capacity.
+already proving. Speculative pre-compute only ever consumes spare capacity.
 
 Requirements on the speculative feeders (carried over from #24):
-- **Lead cap on speculative execute.** Window prediction is operator config, not protocol law — a
+- **Lead cap on speculative prove.** Window prediction is operator config, not protocol law — a
   proposal-interval change re-shifts every boundary, a challenged game re-anchors the next window,
   and a stalled proposer lets speculation run arbitrarily far ahead of real games. A wasted
-  speculative *build* costs minutes (#7's "won't do" reasoning); a wasted speculative *execute* is
+  speculative *witness* costs minutes (#7's "won't do" reasoning); a wasted speculative *prove* is
   the dominant cost (~10 min, ~12 GiB, uncancellable), scaling linearly with lead distance — so
-  the execute pool's speculative feeder is bounded to at most N windows ahead of the newest
-  discovered game. Queue ordering alone does not protect capacity: execute slots are
+  the prove pool's speculative feeder is bounded to at most N windows ahead of the newest
+  discovered game. Queue ordering alone does not protect capacity: prove slots are
   uncancellable, so speculation already occupying a slot delays a just-landed game by up to a full
-  execute regardless of priority — the lead cap (plus the FIFO-first draining) is what bounds that.
+  prove regardless of priority — the lead cap (plus the FIFO-first draining) is what bounds that.
 - **Speculative results are estimation-grade.** `ExecutionStats` is a pure function of the range,
   so cache reuse is sound for the monitor. A speculative result cannot be reused as a *real* proof
   (the game's `l1Head` is committed at creation and unpredictable) — only relevant if the proof
   cache ever feeds the live proposer (spec §12); no constraint on this design.
 
 Subsumes/relates to: the prove-priority + depth-first concern (raised against the current gate);
-generalises the prebuild pipeline (#5) and speculative execute (#24) into the two LIFO-speculative
+generalises the witness pipeline (#5) and speculative prove (#24) into the two LIFO-speculative
 feeders; the proof cache is where #24's `ExecutionStats` would live.
 
 Decisions (2026-07-17):
 - **Capacity:** pools share today's single admission gate — one memory budget plus the per-kind
   count caps (#29). The pools change *ordering* only; the gate stays the capacity guard.
-- **Witness→proof dependency:** promoted demand — an execute demand for an un-built range enqueues
-  a witness demand on the build pool's FIFO priority queue and becomes eligible when the witness
-  lands in the cache; execute workers do not build inline.
+- **Witness→proof dependency:** promoted demand — a prove demand for a range with no witness yet enqueues
+  a witness demand on the witness pool's FIFO priority queue and becomes eligible when the witness
+  lands in the cache; prove workers do not generate witnesses inline.
 - **Watermark:** games LIFO (newest first) as designed; the contiguous watermark trails, which is
   acceptable because above-watermark completions are persisted (#27).
-- **Lead cap:** `--max-speculative-lead-windows`, default 1 — the speculative execute feeder runs
+- **Lead cap:** `--max-speculative-lead-windows`, default 1 — the speculative prove feeder runs
   at most that many predicted windows ahead of the newest discovered game.
 - **Status:** implemented (this change). `scheduler.rs` owns the per-type FIFO-priority /
-  LIFO-speculative queues, promoted witness demands (`park_for_witness`/`build_done`), the
-  lead-capped speculative execute feeder, the per-range error map, and the worker pools;
-  `executor.rs` gained `execute_step` (proof-cache hit or admit+execute+persist) and a
-  demand-and-assemble `execute_game`; the proof cache (`ExecutionStats` per range, JSON) lives
+  LIFO-speculative queues, promoted witness demands (`park_for_witness`/`witness_done`), the
+  lead-capped speculative prove feeder, the per-range error map, and the worker pools;
+  `executor.rs` gained `prove_step` (proof-cache hit or admit+prove+persist) and a
+  demand-and-assemble `prove_game`; the proof cache (`ExecutionStats` per range, JSON) lives
   in `WitnessCache::{save,load,has}_stats`. Games were already LIFO (`push_front` discovery).
   Unit-tested (queue order, promotion, park/release, lead cap, error propagation, dedup);
   the env-gated parity test now drives the real scheduler+workers. Architecture doc updated
   (§3, §5, §6, §8, §9, §12–§16).
 
 #### 29. Kind-aware admission gate: separate per-kind count caps — first step done (`c1baa130`)
-The shared `max_concurrent` count cap was kind-blind: a build unit (~2 GiB, ~250 B/gas from the RSS
-data) and an execute unit (~8–12 GiB, ~2000 B/gas envelope) each counted as one slot, so the cheap
-prebuild pipeline could hold slots expensive executes needed (`active_witness=6, active_prove=2`).
+The shared `max_concurrent` count cap was kind-blind: a witness unit (~2 GiB, ~250 B/gas from the RSS
+data) and a prove unit (~8–12 GiB, ~2000 B/gas envelope) each counted as one slot, so the cheap
+witness pipeline could hold slots expensive proves needed (`active_witness=6, active_prove=2`).
 The count caps stay the **primary** concurrency control — memory is too hard to estimate reliably to
 lean on — but they become per-kind and separately sized.
 - **Why the count cap stays primary (not memory-gated):** the memory projection is only a scattered
   EWMA (R²≈0.63) with a mis-calibrated baseline (#28), so leaning on it would over-admit and OOM when
-  it under-projects — and an OOM SIGKILLs an uncancellable execute + restarts the pod. The count cap
+  it under-projects — and an OOM SIGKILLs an uncancellable prove + restarts the pod. The count cap
   is also the CPU/fd/RPC bound the memory model ignores, and cold start has no projection to gate on
   at all. So memory stays a *secondary* safety bound (a unit must pass both the count cap and
   `fits`), never the primary knob.
-- **Plan:** give build and execute **separate, independently tunable caps** (distinct config knobs)
-  instead of both reusing `max_concurrent`. Size each to its real footprint — executes to the
-  memory/CPU ceiling, builds looser (cheap in RAM, already bounded by the pipeline's
-  `max_concurrent_builds` fan-out). The memory projection (`fits`) is retained as-is, as the
+- **Plan:** give witness and prove **separate, independently tunable caps** (distinct config knobs)
+  instead of both reusing `max_concurrent`. Size each to its real footprint — proves to the
+  memory/CPU ceiling, witnesses looser (cheap in RAM, already bounded by the pipeline's
+  `--max-concurrent-witness-tasks` fan-out). The memory projection (`fits`) is retained as-is, as the
   secondary safety bound.
-- **Done (`c1baa130`):** the count cap is now per-kind — build and execute units are each capped
-  independently, so builds no longer consume execute slots; memory still bounds the two jointly.
-  Interim: both kinds still reuse `max_concurrent`. Tested (`builds_do_not_consume_execute_slots`).
-- **Follow-up:** add distinct config for the build vs execute caps (e.g. a gate-side build cap,
-  separate from the pipeline fan-out, plus an execute cap) so each is sized on purpose rather than
+- **Done (`c1baa130`):** the count cap is now per-kind — witness and prove units are each capped
+  independently, so witness tasks no longer consume prove slots; memory still bounds the two jointly.
+  Interim: both kinds still reuse `max_concurrent`. Tested (`witness_tasks_do_not_consume_prove_slots`).
+- **Follow-up:** add distinct config for the witness vs prove caps (e.g. a gate-side witness cap,
+  separate from the pipeline fan-out, plus a prove cap) so each is sized on purpose rather than
   sharing `max_concurrent`. Largely satisfied in practice by #26: the worker pools bound
-  concurrency ahead of the gate with distinct knobs (`--max-concurrent-builds` build workers,
-  `--max-concurrent-units` execute workers); the gate's per-kind count caps remain a backstop
+  concurrency ahead of the gate with distinct knobs (`--max-concurrent-witness-tasks` witness workers,
+  `--max-concurrent-prove-tasks` prove workers); the gate's per-kind count caps remain a backstop
   both still sized by `max_concurrent`.
 - **Relates to:** #6 (per-kind cost), #26 (scheduling sits on this gate), #28 (baseline — sharpens
   the *secondary* memory bound, but the caps stay primary).
 
 #### 30. Panic hook that logs the root panic via `tracing`
 The default panic hook writes only to stderr, so a panic **not** inside a `catch_game_panic` body —
-most importantly one in the detached background sampler (`observe`/`persist`) or the prebuild
+most importantly one in the detached background sampler (`observe`/`persist`) or the witness
 pipeline task — never reaches the structured `tracing` stream: it prints a raw stderr line (captured
 in pod logs but easy to miss), the task dies silently, and any downstream `PoisonError` cascade
 (pre-#11) points at the symptom, not the cause.
@@ -493,7 +493,7 @@ in pod logs but easy to miss), the task dies silently, and any downstream `Poiso
   finalized-pinned — matching the legacy monitor exactly. Only `gameCount` is pinned, in
   both. No regression.
 - **Frontier seeded once, never resynced** — spec §4.2 describes best-effort prediction and
-  does not mandate resync; the executor rebuilds on a miss.
+  does not mandate resync; the executor regenerates on a miss.
 - **`memory_model.json` vs `completion_history.json`** — different filename from the spec's
   prose, but persistence now works; cosmetic.
 - **`resources: {}`** in `values.yaml:55` — intentional; memory limit is set per overlay.
