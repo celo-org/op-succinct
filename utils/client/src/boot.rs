@@ -60,8 +60,8 @@ mod espresso_pin_tests {
     //! `batch_authenticator_address` the espresso-wiring commit stitches onto the rollup config
     //! and carries into derivation.
     //!
-    //! celo-kona is currently pinned to a PR head (rev `e715051`, celo-org/celo-kona#242) that must
-    //! be re-pinned to a release tag before this repo merges. These tests drive
+    //! celo-kona is pinned to `main` at rev `6a80c17` (the merge commit of celo-org/celo-kona#242),
+    //! which should be re-pinned to a release tag once one is cut. These tests drive
     //! `CeloBootInfo::load` with a tiny in-memory preimage oracle and assert the Chaos and
     //! Mainnet Espresso values. If a celo-kona re-pin silently changes the Chaos schedule (or
     //! flips Mainnet on), they fail loudly rather than letting a proof derive against a

@@ -108,13 +108,13 @@ kona-genesis = { git = "https://github.com/ethereum-optimism/optimism", tag = "k
 # celo-kona
 # Pinned to the head of celo-org/celo-kona#242 (kona-client/v1.6.0 bump).
 # TODO: re-pin to the release tag once that PR merges and is tagged.
-celo-driver = { git = "https://github.com/celo-org/celo-kona", rev = "e715051856a81da8057360627c6c9423744bac13" }
-celo-proof = { git = "https://github.com/celo-org/celo-kona", rev = "e715051856a81da8057360627c6c9423744bac13" }
-celo-host = { git = "https://github.com/celo-org/celo-kona", rev = "e715051856a81da8057360627c6c9423744bac13" }
-celo-protocol = { git = "https://github.com/celo-org/celo-kona", rev = "e715051856a81da8057360627c6c9423744bac13", default-features = false }
-celo-genesis = { git = "https://github.com/celo-org/celo-kona", rev = "e715051856a81da8057360627c6c9423744bac13", default-features = false }
-celo-derive = { git = "https://github.com/celo-org/celo-kona", rev = "e715051856a81da8057360627c6c9423744bac13", default-features = false }
-celo-registry = { git = "https://github.com/celo-org/celo-kona", rev = "e715051856a81da8057360627c6c9423744bac13", default-features = false }
+celo-driver = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745" }
+celo-proof = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745" }
+celo-host = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745" }
+celo-protocol = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745", default-features = false }
+celo-genesis = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745", default-features = false }
+celo-derive = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745", default-features = false }
+celo-registry = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745", default-features = false }
 
 # hana
 hana-blobstream = { git = "https://github.com/celestiaorg/hana", tag = "v1.9.1-mocha" }
@@ -211,10 +211,10 @@ op-alloy-rpc-types-engine = { git = "https://github.com/ethereum-optimism/optimi
 op-alloy-network = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.6.0", default-features = false }
 
 # Celo Alloy
-celo-alloy-consensus = { git = "https://github.com/celo-org/celo-kona", rev = "e715051856a81da8057360627c6c9423744bac13", default-features = false }
-celo-alloy-rpc-types = { git = "https://github.com/celo-org/celo-kona", rev = "e715051856a81da8057360627c6c9423744bac13", default-features = false }
-celo-alloy-rpc-types-engine = { git = "https://github.com/celo-org/celo-kona", rev = "e715051856a81da8057360627c6c9423744bac13", default-features = false }
-celo-alloy-network = { git = "https://github.com/celo-org/celo-kona", rev = "e715051856a81da8057360627c6c9423744bac13", default-features = false }
+celo-alloy-consensus = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745", default-features = false }
+celo-alloy-rpc-types = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745", default-features = false }
+celo-alloy-rpc-types-engine = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745", default-features = false }
+celo-alloy-network = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745", default-features = false }
 
 # Execution
 alloy-evm = { version = "0.34.0", default-features = false }
@@ -231,7 +231,7 @@ revm-precompile = { version = "34.0.0", default-features = false }
 op-revm = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.6.0", default-features = false }
 
 # Celo Execution
-alloy-celo-evm = { git = "https://github.com/celo-org/celo-kona", rev = "e715051856a81da8057360627c6c9423744bac13", default-features = false }
+alloy-celo-evm = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745", default-features = false }
 
 # SP1 v6.2.4 (Hypercube)
 sp1-sdk = { version = "=6.2.4", features = ["network", "blocking", "profiling"] }
