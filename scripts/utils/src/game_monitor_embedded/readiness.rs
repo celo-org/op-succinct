@@ -9,7 +9,7 @@
 //!     host's full `+ 20` read-ahead slack. Derivation can need L1 blocks beyond the
 //!     batch-posting block (the reason for the `+ 20` is unexplained; see the FIXME in
 //!     `utils/ethereum/host/src/host.rs`) and cannot walk past the baked-in `l1_head`, so a
-//!     capped head risks a failed `host.run` near the finality frontier. A minor bonus: the
+//!     capped head risks a failed `host.run` near the finalized head. A minor bonus: the
 //!     baked-in head no longer depends on when the witness is built, so an evicted blob
 //!     rebuilds identically.
 //!

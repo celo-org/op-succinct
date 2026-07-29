@@ -124,7 +124,7 @@ pub struct AdmissionConfig {
 /// execute_gas` and admits only if that plus a margin fits.
 ///
 /// Cold start / liveness floor: with nothing in flight a unit is always admitted, so a
-/// pessimistic model can never wedge the daemon; that single unit's memory is bounded by
+/// pessimistic model can never block the daemon entirely; that single unit's memory is bounded by
 /// reality and yields a clean pure sample. Until a kind's cost is learned, admission stays
 /// serial for it (an unknown cost is not trusted to project concurrency).
 ///
@@ -718,11 +718,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn liveness_floor_admits_one_unit_when_model_is_poisoned() {
+    async fn liveness_floor_admits_one_unit_when_model_is_mislearned() {
         let dir = tempfile::tempdir().unwrap();
         // Tiny budget + an absurd learned cost for both kinds: the projection can never fit,
         // even for a single unit. The floor must still admit one unit when the registry is
-        // empty so a poisoned model can't wedge the daemon — but it must NOT admit a second.
+        // empty so a mis-learned model can't block the daemon entirely — but it must NOT
+        // admit a second.
         let adm = test_admission(Some(1_000_000), 64, dir.path().join("model.json"));
         {
             let mut m = adm.cost.lock().unwrap();

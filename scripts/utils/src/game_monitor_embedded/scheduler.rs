@@ -1,24 +1,24 @@
 //! Cache-fronted scheduling.
 //!
-//! Two worker pools — witness **build** and proof **execute** — each drain two feeders in
+//! Two worker pools — witness **build** and proof **execute** — each drain two queues in
 //! strict order: first a FIFO **priority** queue of on-demand work (ranges a discovered game
-//! needs), then a LIFO **speculative** queue fed by chain progression (newest range first).
-//! Because the priority queue is FIFO, an in-flight game's demands are served in the order
-//! games issued them, so newer games or speculative work can never starve a game already
-//! executing; speculative pre-compute only ever consumes spare capacity.
+//! needs), then a LIFO **speculative** queue filled by chain progression (newest range
+//! first). Because the priority queue is FIFO, an in-flight game's demands are served in the
+//! order games issued them, so newer games or speculative work can never starve a game
+//! already executing; speculative pre-compute only ever uses spare capacity.
 //!
 //! Games assemble their results from two on-disk caches: the stdin (witness) cache and the
 //! proof cache (`ExecutionStats` keyed by range). A game whose ranges are all cached
 //! completes without executing anything. An execute demand for an un-built range does not
-//! build inline — it **promotes a witness demand** onto the build priority queue and parks
-//! until the witness lands (`exec_waiting`).
+//! build inline — it **promotes a witness demand** onto the build priority queue and waits
+//! until the witness is built (`exec_waiting`).
 //!
-//! The speculative execute feeder is bounded by a **lead cap**: at most
+//! Speculative execution is bounded by a **lead cap**: at most
 //! `--max-speculative-lead-windows` predicted windows past the newest discovered game's end
 //! block. Window prediction is operator config, not protocol law (a proposal-interval change
 //! or a re-anchored game shifts every boundary), and a wasted speculative execute is the
 //! dominant cost (~10 min, ~12 GiB, uncancellable) — the cap bounds that waste. Speculative
-//! *builds* stay uncapped (cheap; finalization-bounded).
+//! *builds* have no lead cap (they are cheap and bounded by finalization anyway).
 //!
 //! Workers still pass every unit through the shared memory-admission gate; the pools decide
 //! only *ordering*. Failures of demanded units are recorded per range and consumed by the
@@ -77,11 +77,11 @@ struct Queues {
     build_spec: VecDeque<RangeKey>,     // LIFO: push_front / pop_front
     exec_priority: VecDeque<RangeKey>,  // FIFO
     exec_spec: VecDeque<RangeKey>,      // LIFO
-    /// Execute demands parked until their witness (stdin) is built.
+    /// Execute demands waiting until their witness (stdin) is built.
     exec_waiting: HashSet<RangeKey>,
     /// Every build queued or in flight (dedup).
     build_tracked: HashSet<RangeKey>,
-    /// Every execute queued, parked, or in flight (dedup).
+    /// Every execute queued, waiting, or in flight (dedup).
     exec_tracked: HashSet<RangeKey>,
     /// Failures of demanded units, keyed by range, awaiting `take_error`.
     errors: HashMap<RangeKey, DemandError>,
@@ -94,7 +94,8 @@ pub struct Scheduler {
     /// Notified when a unit finishes (success or recorded failure); game tasks register on
     /// this (`completed_notified`) and re-check the proof cache / error map.
     completed: Notify,
-    /// End block of the newest discovered game — the speculative execute horizon anchor.
+    /// End block of the newest discovered game. Speculative executes may run at most
+    /// `lead_blocks` past this.
     latest_game_end: AtomicU64,
     /// Speculative executes may run at most this many blocks past `latest_game_end`
     /// (`--max-speculative-lead-windows * --proposal-interval`; 0 disables them).
@@ -102,9 +103,9 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    /// `latest_game_end_seed` anchors the speculative-execute horizon until discovery
-    /// observes a game (the pipeline seed — the latest on-chain game's end block — or 0,
-    /// which keeps speculation off until the first game raises it).
+    /// `latest_game_end_seed` provides the initial `latest_game_end` before discovery has
+    /// observed a game (the latest on-chain game's end block, or 0 — which keeps
+    /// speculative execution off until the first discovered game raises it).
     pub fn new(latest_game_end_seed: u64, lead_blocks: u64) -> Self {
         Self {
             q: Mutex::new(Queues::default()),
@@ -121,14 +122,14 @@ impl Scheduler {
         self.q.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Raise the speculative-execute horizon to the newest discovered game's end block.
+    /// Record the newest discovered game's end block, raising the speculative execute limit.
     pub fn note_game_end(&self, end_block: u64) {
         self.latest_game_end.fetch_max(end_block, Ordering::Relaxed);
-        // Previously over-horizon speculative executes may have become eligible.
+        // Speculative executes previously past the limit may now be eligible.
         self.exec_wake.notify_waiters();
     }
 
-    /// A game demands a range's execution. Dedups against queued/parked/in-flight work and
+    /// A game demands a range's execution. Dedups against queued/waiting/in-flight work and
     /// promotes an already-queued speculative execute to the priority queue.
     pub fn demand_execute(&self, key: RangeKey) {
         let mut q = self.queues();
@@ -139,7 +140,7 @@ impl Scheduler {
                 drop(q);
                 self.exec_wake.notify_waiters();
             }
-            return; // already queued (priority/parked) or in flight
+            return; // already queued (priority/waiting) or in flight
         }
         q.exec_tracked.insert(key);
         q.errors.remove(&key); // stale error from an older attempt
@@ -148,7 +149,7 @@ impl Scheduler {
         self.exec_wake.notify_waiters();
     }
 
-    /// The predictive feeder offers a range for speculative witness build.
+    /// The speculative build task offers a range for speculative witness build.
     pub fn push_speculative_build(&self, key: RangeKey) {
         let mut q = self.queues();
         if q.build_tracked.contains(&key) {
@@ -170,21 +171,22 @@ impl Scheduler {
         q.build_spec.pop_front().map(|k| (k, Class::Speculative))
     }
 
-    /// Next execute job: priority FIFO first, else the newest **lead-eligible** speculative
-    /// range (entries past the horizon stay queued until `note_game_end` raises it).
+    /// Next execute job: priority FIFO first, else the newest speculative range within the
+    /// lead cap (entries past the limit stay queued until `note_game_end` raises it).
     pub fn next_execute(&self) -> Option<(RangeKey, Class)> {
         let mut q = self.queues();
         if let Some(k) = q.exec_priority.pop_front() {
             return Some((k, Class::Demand));
         }
-        let horizon = self.latest_game_end.load(Ordering::Relaxed).saturating_add(self.lead_blocks);
-        let pos = q.exec_spec.iter().position(|k| k.1 <= horizon)?;
+        let limit = self.latest_game_end.load(Ordering::Relaxed).saturating_add(self.lead_blocks);
+        let pos = q.exec_spec.iter().position(|k| k.1 <= limit)?;
         Some((q.exec_spec.remove(pos).expect("position exists"), Class::Speculative))
     }
 
     /// An execute demand found no witness: promote a witness demand onto the build priority
-    /// queue (or promote a queued speculative build) and park the execute until it lands.
-    pub fn park_for_witness(&self, key: RangeKey) {
+    /// queue (or promote a queued speculative build) and hold the execute demand in
+    /// `exec_waiting` until the build completes.
+    pub fn wait_for_witness(&self, key: RangeKey) {
         let mut q = self.queues();
         q.exec_waiting.insert(key); // stays exec_tracked
         if let Some(pos) = q.build_spec.iter().position(|k| *k == key) {
@@ -198,8 +200,8 @@ impl Scheduler {
         self.build_wake.notify_waiters();
     }
 
-    /// A build finished: release any parked execute demand for the range; a speculative
-    /// build additionally feeds the speculative execute queue.
+    /// A build finished: release any waiting execute demand for the range; a speculative
+    /// build is additionally queued for speculative execution.
     pub fn build_done(&self, key: RangeKey, class: Class) {
         let mut q = self.queues();
         q.build_tracked.remove(&key);
@@ -219,7 +221,7 @@ impl Scheduler {
         }
     }
 
-    /// A build failed. A failure that blocks a parked execute demand is recorded for the
+    /// A build failed. A failure that blocks a waiting execute demand is recorded for the
     /// demanding game; a purely speculative failure is dropped (rebuilt on demand later).
     pub fn build_failed(&self, key: RangeKey, transient: bool, message: String) {
         let mut q = self.queues();
@@ -285,8 +287,8 @@ impl Scheduler {
 
 type WitnessOf<H> = <<H as OPSuccinctHost>::WitnessGenerator as WitnessGenerator>::WitnessData;
 
-/// Fallback wake period for idle workers/waiters — belt-and-braces against a missed
-/// notification wedging a queue (cheap: one queue re-check per period).
+/// Fallback wake period for idle workers/waiters — guards against a missed notification
+/// leaving a queue permanently stalled (cheap: one queue re-check per period).
 pub(crate) const IDLE_RECHECK: Duration = Duration::from_secs(60);
 
 /// Spawn the build and execute worker pools. Workers run for the process lifetime; every
@@ -390,14 +392,14 @@ async fn execute_worker<H: OPSuccinctHost>(
             let _ = tokio::time::timeout(IDLE_RECHECK, wake).await;
             continue;
         };
-        // Promoted-demand decision point: an un-built demand parks behind a witness demand
-        // instead of building inline; a speculative range whose stdin vanished (evicted) is
-        // dropped — a game that needs it will re-demand.
+        // Promoted-demand decision point: an un-built demand is held waiting behind a
+        // witness demand instead of building inline; a speculative range whose stdin
+        // vanished (evicted) is dropped — a game that needs it will re-demand.
         if !estimator.cache.has_stdin(key.0, key.1) &&
             !estimator.cache.has_stats(key.0, key.1)
         {
             match class {
-                Class::Demand => scheduler.park_for_witness(key),
+                Class::Demand => scheduler.wait_for_witness(key),
                 Class::Speculative => scheduler.execute_dropped(key),
             }
             continue;
@@ -429,7 +431,7 @@ mod tests {
         s.push_speculative_build((10, 20));
         s.push_speculative_build((20, 30)); // newest — LIFO front
         s.demand_execute((0, 10));
-        s.park_for_witness((0, 10)); // execute demand promotes a build demand
+        s.wait_for_witness((0, 10)); // execute demand promotes a build demand
         assert_eq!(s.next_build(), Some(((0, 10), Class::Demand)));
         assert_eq!(s.next_build(), Some(((20, 30), Class::Speculative)));
         assert_eq!(s.next_build(), Some(((10, 20), Class::Speculative)));
@@ -437,25 +439,25 @@ mod tests {
     }
 
     #[test]
-    fn park_promotes_a_queued_speculative_build_to_priority() {
+    fn wait_for_witness_promotes_a_queued_speculative_build_to_priority() {
         let s = Scheduler::new(0, 0);
         s.push_speculative_build((10, 20));
         s.push_speculative_build((20, 30));
         s.demand_execute((10, 20));
-        s.park_for_witness((10, 20));
-        // (10,20) jumps the speculative queue; no duplicate entry remains.
+        s.wait_for_witness((10, 20));
+        // (10,20) is moved ahead of the speculative queue; no duplicate entry remains.
         assert_eq!(s.next_build(), Some(((10, 20), Class::Demand)));
         assert_eq!(s.next_build(), Some(((20, 30), Class::Speculative)));
         assert_eq!(s.next_build(), None);
     }
 
     #[test]
-    fn build_done_releases_parked_execute_demand() {
+    fn build_done_releases_waiting_execute_demand() {
         let s = Scheduler::new(0, 0);
         s.demand_execute((10, 20));
         assert_eq!(s.next_execute(), Some(((10, 20), Class::Demand)));
-        s.park_for_witness((10, 20));
-        assert_eq!(s.next_execute(), None); // parked, not queued
+        s.wait_for_witness((10, 20));
+        assert_eq!(s.next_execute(), None); // waiting, not queued
         assert_eq!(s.next_build(), Some(((10, 20), Class::Demand)));
         s.build_done((10, 20), Class::Demand);
         assert_eq!(s.next_execute(), Some(((10, 20), Class::Demand)));
@@ -463,7 +465,7 @@ mod tests {
 
     #[test]
     fn speculative_build_feeds_execute_within_lead_cap_only() {
-        // Horizon: latest game end 1000 + lead 100 => 1100.
+        // Speculative execute limit: latest game end 1000 + lead 100 => 1100.
         let s = Scheduler::new(1000, 100);
         s.push_speculative_build((1000, 1100));
         s.push_speculative_build((1100, 1200));
@@ -471,10 +473,10 @@ mod tests {
         let (k2, _) = s.next_build().unwrap();
         s.build_done(k1, Class::Speculative);
         s.build_done(k2, Class::Speculative);
-        // Only (1000,1100) is lead-eligible; (1100,1200) waits for the horizon.
+        // Only (1000,1100) is within the limit; (1100,1200) waits for it to rise.
         assert_eq!(s.next_execute(), Some(((1000, 1100), Class::Speculative)));
         assert_eq!(s.next_execute(), None);
-        s.note_game_end(1100); // horizon now 1200
+        s.note_game_end(1100); // limit now 1200
         assert_eq!(s.next_execute(), Some(((1100, 1200), Class::Speculative)));
     }
 
@@ -484,17 +486,17 @@ mod tests {
         s.push_speculative_build((1000, 1100));
         let (k, _) = s.next_build().unwrap();
         s.build_done(k, Class::Speculative);
-        assert_eq!(s.next_execute(), None); // 1100 > horizon 1000, forever
+        assert_eq!(s.next_execute(), None); // 1100 > limit 1000, forever
     }
 
     #[test]
-    fn demand_promotes_queued_speculative_execute_past_the_horizon() {
+    fn demand_promotes_queued_speculative_execute_past_the_limit() {
         let s = Scheduler::new(1000, 0); // speculation disabled
         s.push_speculative_build((1100, 1200));
         let (k, _) = s.next_build().unwrap();
         s.build_done(k, Class::Speculative);
         assert_eq!(s.next_execute(), None);
-        s.demand_execute((1100, 1200)); // a real game needs it: horizon no longer applies
+        s.demand_execute((1100, 1200)); // a real game needs it: the limit no longer applies
         assert_eq!(s.next_execute(), Some(((1100, 1200), Class::Demand)));
     }
 
@@ -513,16 +515,16 @@ mod tests {
     }
 
     #[test]
-    fn build_failure_reaches_the_parked_demand() {
+    fn build_failure_reaches_the_waiting_demand() {
         let s = Scheduler::new(0, 0);
         s.demand_execute((10, 20));
         s.next_execute();
-        s.park_for_witness((10, 20));
+        s.wait_for_witness((10, 20));
         s.next_build();
         s.build_failed((10, 20), false, "unbuildable".into());
         let err = s.take_error(&[(10, 20)]).expect("build failure recorded");
         assert!(!err.transient);
-        // The parked demand was cleared; the range can be demanded again.
+        // The waiting demand was cleared; the range can be demanded again.
         s.demand_execute((10, 20));
         assert_eq!(s.next_execute(), Some(((10, 20), Class::Demand)));
     }
@@ -539,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn demand_dedups_against_queued_parked_and_inflight() {
+    fn demand_dedups_against_queued_waiting_and_inflight() {
         let s = Scheduler::new(0, 0);
         s.demand_execute((10, 20));
         s.demand_execute((10, 20)); // queued dup
@@ -557,7 +559,7 @@ mod tests {
         s.push_speculative_build((10, 20));
         s.demand_execute((0, 10));
         assert_eq!(s.next_execute(), Some(((0, 10), Class::Demand))); // worker pops...
-        s.park_for_witness((0, 10)); // ...finds no stdin, parks behind a build demand
+        s.wait_for_witness((0, 10)); // ...finds no stdin, waits behind a build demand
         let d = s.depths();
         assert_eq!(d.queued_witness, 2); // spec + promoted demand
         assert_eq!(d.queued_prove, 0);
