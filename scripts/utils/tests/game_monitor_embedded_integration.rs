@@ -120,7 +120,7 @@ async fn prove_game_matches_serial_reference() {
         eprintln!("skipping: OPS_IT_START/OPS_IT_END unset or invalid");
         return;
     };
-    let batch_size = env_u64("OPS_IT_BATCH", 100);
+    let range_size = env_u64("OPS_IT_BATCH", 100);
 
     build_estimator!(estimator, fetcher, _cache, _dir);
 
@@ -137,11 +137,11 @@ async fn prove_game_matches_serial_reference() {
     let admission = test_admission(_dir.path().join("memory_model.json"));
     let sched = Arc::new(Scheduler::new(0, 0));
     spawn_workers(sched.clone(), estimator.clone(), fetcher.clone(), admission, 2, 4);
-    let (game_stats, ranges) = prove_game(&estimator, &sched, &game, batch_size).await.unwrap();
+    let (game_stats, ranges) = prove_game(&estimator, &sched, &game, range_size).await.unwrap();
 
     // The daemon's split must be exactly `split_range_basic` over the window, covering every
     // block once (no gaps or overlap).
-    let expected_ranges = split_range_basic(start, end, batch_size);
+    let expected_ranges = split_range_basic(start, end, range_size);
     assert_eq!(ranges.len(), expected_ranges.len(), "sub-range count");
     for (got, want) in ranges.iter().zip(&expected_ranges) {
         assert_eq!((got.start, got.end), (want.start, want.end), "sub-range boundary");
@@ -257,7 +257,7 @@ async fn pipeline_window_aligned_to_game_boundary_hits_cache() {
         eprintln!("skipping: OPS_IT_START/OPS_IT_END unset or invalid");
         return;
     };
-    let batch_size = env_u64("OPS_IT_BATCH", 100);
+    let range_size = env_u64("OPS_IT_BATCH", 100);
 
     build_estimator!(estimator, fetcher, cache, _dir);
 
@@ -282,7 +282,7 @@ async fn pipeline_window_aligned_to_game_boundary_hits_cache() {
     let admission = test_admission(_dir.path().join("memory_model.json"));
     let sched = Arc::new(Scheduler::new(0, 0));
     spawn_workers(sched.clone(), estimator.clone(), fetcher.clone(), admission, 2, 4);
-    let (stats, ranges) = prove_game(&estimator, &sched, &game, batch_size).await.unwrap();
+    let (stats, ranges) = prove_game(&estimator, &sched, &game, range_size).await.unwrap();
 
     // prove_game succeeds and produces real stats over the aligned range.
     assert_eq!(stats.batch_end, end);
