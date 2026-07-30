@@ -158,13 +158,19 @@ pub struct EmbeddedArgs {
     /// projects), as does the SP1 guest's touched memory — the guest is 64-bit and bounded
     /// only by SP1's soft `MEMORY_LIMIT` budget (default 24 GiB, env-overridable), not by
     /// address space. Larger ranges also coarsen retry/cache/speculation granularity: the
-    /// proof cache, requeues, and the prebuild pipeline all work per range.
+    /// proof cache, requeues, and the witness pipeline all work per range.
     #[arg(long, default_value = "200")]
     pub batch_size: u64,
-    /// Maximum number of games executed concurrently (replaces the legacy
-    /// `--max-concurrent`). Per-range memory is bounded separately by RSS admission;
-    /// this caps game-task fan-out and the games' concurrent on-chain reads.
-    #[arg(long, default_value = "5")]
+    /// Maximum number of game tasks run concurrently (replaces the legacy
+    /// `--max-concurrent`). This is an orchestration-layer cap, distinct from the heavy-work
+    /// caps: a game task does no heavy work itself — it splits its window into sub-ranges,
+    /// demands them, and waits. The actual witness/prove units are bounded by
+    /// `--max-concurrent-witness-tasks` / `--max-concurrent-prove-tasks` and the shared RSS
+    /// admission gate. So this only overlaps those caps when a game is a single sub-range
+    /// (`batch_size` >= `--proposal-interval`); otherwise it is coarse backpressure on the
+    /// number of concurrently-orchestrated games (bounding queue/dedup state and the games'
+    /// concurrent on-chain reads). Games are cheap, so the default is generous.
+    #[arg(long, default_value = "20")]
     pub max_concurrent_games: usize,
     /// Primary-retry budget before a game moves to the background queue.
     #[arg(long, default_value = "1")]
@@ -804,8 +810,8 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
             let game_span = tracing::info_span!("game", index = pg.game_index, attempt = ?pg.kind);
             tokio::spawn(
                 async move {
-                    // Recover a panic anywhere in the task body (fetch / readiness / execute /
-                    // on-demand build, incl. panics deep in kona/sp1) into a `Transient` result so
+                    // Recover a panic anywhere in the task body (fetch / readiness / prove /
+                    // on-demand witness generation, incl. panics deep in kona/sp1) into a `Transient` result so
                     // the main loop's slot release still runs; without this a
                     // panicking task sends no result and permanently leaks its
                     // concurrency slot.
@@ -935,7 +941,7 @@ mod tests {
         assert_eq!(args.proposal_interval, 1800);
         assert_eq!(args.retry_backoff_delay, Duration::from_secs(600)); // default 10m
         assert_eq!(args.batch_size, 200);
-        assert_eq!(args.max_concurrent_games, 5);
+        assert_eq!(args.max_concurrent_games, 20);
         assert_eq!(args.max_concurrent_prove_tasks, 8);
         assert_eq!(args.max_speculative_lead_windows, 1); // one window of speculative prove
         assert_eq!(args.max_cache_size, 0); // cap disabled by default
