@@ -136,11 +136,45 @@ use crate::game_monitor_embedded::{
 /// pipeline/cache/memory knobs.
 #[derive(Debug, Clone, Parser)]
 pub struct EmbeddedArgs {
+    // ── Startup ────────────────────────────────────────────────────────────
+    /// Path to the `.env` file loaded at startup for connection details and secrets.
     #[arg(long, default_value = ".env")]
     pub env_file: PathBuf,
+
+    // ── Chain / proposal window ──────────────────────────────────────────────
+    /// Proposer's PROPOSAL_INTERVAL (L2 blocks per proposal window) — drives window
+    /// prediction. Required; must match the proposer's `intervals.proposal` for this chain.
+    #[arg(long)]
+    pub proposal_interval: u64,
+    /// How many ranges each proposal window is split into — mirror the proposer's
+    /// `range_split_count` so the daemon's sub-range boundaries (and hence cache keys) line up
+    /// with what it proves. `1` (the default) means one range per window.
+    ///
+    /// The derived per-range block size (`proposal_interval / range_split_count`, rounded up)
+    /// scales the memory footprint of each unit: host RSS per witness/prove grows roughly
+    /// linearly with the range's gas (what the admission model projects), as does the SP1
+    /// guest's touched memory — the guest is 64-bit and bounded only by SP1's soft
+    /// `MEMORY_LIMIT` budget (default 24 GiB, env-overridable), not by address space. More
+    /// splits also refine retry/cache/speculation granularity: the proof cache, requeues, and
+    /// the witness pipeline all work per range.
+    #[arg(long, default_value = "1")]
+    pub range_split_count: u64,
+
+    // ── Discovery / main loop ────────────────────────────────────────────────
     /// Main loop polling interval (seconds).
     #[arg(long, default_value = "30")]
     pub poll_interval: u64,
+    /// Explicit start index (else resume from progress, else latest on-chain).
+    #[arg(long)]
+    pub start_index: Option<u64>,
+    /// Per-network-call timeout (seconds).
+    #[arg(long, default_value = "120")]
+    pub network_call_timeout_secs: u64,
+
+    // ── Retry policy ─────────────────────────────────────────────────────────
+    /// Primary-retry budget before a game moves to the background queue.
+    #[arg(long, default_value = "1")]
+    pub max_retries: u32,
     /// Base delay for the two-tier retry backoff, as a human duration (`10s`, `3m`, `5h`).
     ///
     /// Applied ONLY to retries of *failed* games — first execution is not delayed (readiness is
@@ -153,46 +187,22 @@ pub struct EmbeddedArgs {
     ///   `--background-retry-max-age-secs`.
     #[arg(long, value_parser = parse_duration, default_value = "10m")]
     pub retry_backoff_delay: Duration,
-    /// Blocks per range. Scales the memory footprint of each unit: host RSS per
-    /// build/execute grows roughly linearly with the range's gas (what the admission model
-    /// projects), as does the SP1 guest's touched memory — the guest is 64-bit and bounded
-    /// only by SP1's soft `MEMORY_LIMIT` budget (default 24 GiB, env-overridable), not by
-    /// address space. Larger ranges also coarsen retry/cache/speculation granularity: the
-    /// proof cache, requeues, and the witness pipeline all work per range.
-    #[arg(long, default_value = "200")]
-    pub batch_size: u64,
+    /// Background-retry max age (seconds). Default 3.5 days.
+    #[arg(long, default_value = "302400")]
+    pub background_retry_max_age_secs: u64,
+
+    // ── Concurrency ──────────────────────────────────────────────────────────
     /// Maximum number of game tasks run concurrently (replaces the legacy
     /// `--max-concurrent`). This is an orchestration-layer cap, distinct from the heavy-work
     /// caps: a game task does no heavy work itself — it splits its window into sub-ranges,
     /// demands them, and waits. The actual witness/prove units are bounded by
     /// `--max-concurrent-witness-tasks` / `--max-concurrent-prove-tasks` and the shared RSS
     /// admission gate. So this only overlaps those caps when a game is a single sub-range
-    /// (`batch_size` >= `--proposal-interval`); otherwise it is coarse backpressure on the
-    /// number of concurrently-orchestrated games (bounding queue/dedup state and the games'
-    /// concurrent on-chain reads). Games are cheap, so the default is generous.
+    /// (`--range-split-count` = 1); otherwise it is coarse backpressure on the number of
+    /// concurrently-orchestrated games (bounding queue/dedup state and the games' concurrent
+    /// on-chain reads). Games are cheap, so the default is generous.
     #[arg(long, default_value = "20")]
     pub max_concurrent_games: usize,
-    /// Primary-retry budget before a game moves to the background queue.
-    #[arg(long, default_value = "1")]
-    pub max_retries: u32,
-    /// Background-retry max age (seconds). Default 3.5 days.
-    #[arg(long, default_value = "302400")]
-    pub background_retry_max_age_secs: u64,
-    /// Explicit start index (else resume from progress, else latest on-chain).
-    #[arg(long)]
-    pub start_index: Option<u64>,
-    /// Progress file for restart resume.
-    #[arg(long)]
-    pub progress_file: Option<PathBuf>,
-    /// Absolute base dir for the witness/stdin cache.
-    #[arg(long, default_value = "/data/op-succinct/cache")]
-    pub cache_dir: PathBuf,
-    /// Proposer's PROPOSAL_INTERVAL (L2 blocks) — drives window prediction.
-    #[arg(long)]
-    pub proposal_interval: u64,
-    /// RSS admission safety margin (MiB).
-    #[arg(long, default_value = "20480")]
-    pub rss_margin_mb: u64,
     /// Hard cap on concurrently in-flight prove units, and the number of prove workers.
     /// Bounds file descriptors, RPC fan-out, and CPU — the resources the memory model does
     /// not constrain — and is the only cap when the budget is unlimited or the model has no
@@ -212,19 +222,48 @@ pub struct EmbeddedArgs {
     /// unaffected; it stays finalization-bounded).
     #[arg(long, default_value = "1")]
     pub max_speculative_lead_windows: u64,
-    /// Resident-memory sampling source: `auto` (per-process on Linux), `proc`
-    /// (`/proc/self/status`), or `cgroup` (`memory.current`).
+
+    // ── Memory admission (RSS) ───────────────────────────────────────────────
+    // The daemon runs many witness/prove units in one process, so it must not start more work
+    // than fits in RAM. It gates admission on RSS ("resident set size" — the amount of physical
+    // memory the process actually holds, in bytes; the number `top`/`ps` report as RES/RSS). A
+    // background sampler polls RSS, learns how many bytes of RSS each unit costs per unit of gas,
+    // and only admits new work when the projected total (plus a safety margin) fits the cgroup
+    // memory limit. The flags below tune where RSS is read from, how much headroom to keep, how
+    // often to sample, and how often to persist what it has learned.
+    /// Where to read the process's resident memory (RSS) from each sample:
+    /// - `auto` (default): per-process on Linux (`/proc/self/status`), disabled elsewhere
+    ///   (e.g. macOS dev — the sampler then records nothing and admission falls back to the
+    ///   count cap only).
+    /// - `proc`: force `/proc/self/status` (`VmRSS`), this process only.
+    /// - `cgroup`: read the whole cgroup's usage (`memory.current`) — includes child processes
+    ///   and page cache, so it reads higher than `proc`.
     #[arg(long, value_enum, default_value_t = RssSourceKind::Auto)]
     pub rss_source: RssSourceKind,
-    /// Memory sampler tick period (milliseconds).
+    /// Safety headroom kept below the cgroup memory limit, in MiB (default 20480 = 20 GiB).
+    /// Admission only starts a unit if the projected RSS afterwards, PLUS this margin, still
+    /// fits the limit — so a larger margin admits less concurrency but leaves more slack for
+    /// spikes and the always-uncancellable in-flight prove. Ignored when there is no cgroup
+    /// memory limit (unlimited budget).
+    #[arg(long, default_value = "20480")]
+    pub rss_margin_mb: u64,
+    /// How often the background sampler reads RSS, in milliseconds (default 100). Shorter =
+    /// the learned per-gas cost reacts faster to a unit's peak, at a little more overhead.
     #[arg(long, default_value = "100")]
     pub sample_period_ms: u64,
-    /// Persist the learned memory model every N sampler ticks.
+    /// Persist the learned memory model to disk every N sampler ticks (default 300). The model
+    /// (bytes-of-RSS-per-gas, per kind) is reloaded on restart so a fresh process does not have
+    /// to relearn from cold; a larger N writes less often but loses more learning on a crash.
     #[arg(long, default_value = "300")]
     pub persist_every_ticks: u32,
-    /// Per-network-call timeout (seconds).
-    #[arg(long, default_value = "120")]
-    pub network_call_timeout_secs: u64,
+
+    // ── Cache / persistence ──────────────────────────────────────────────────
+    /// Absolute base dir for the witness/stdin cache.
+    #[arg(long, default_value = "/data/op-succinct/cache")]
+    pub cache_dir: PathBuf,
+    /// Progress file for restart resume.
+    #[arg(long)]
+    pub progress_file: Option<PathBuf>,
     /// Max total size for the on-disk witness/stdin cache, as a human-readable size
     /// (e.g. `40GB`, `40GiB`). When the cache exceeds this after a poll, blobs are evicted
     /// oldest-first until it fits, skipping the ranges of games still awaiting a background
@@ -578,6 +617,11 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
     // (0 keeps speculative proving off until discovery observes a game).
     let poll = Duration::from_secs(args.poll_interval);
     let lead_blocks = args.proposal_interval.saturating_mul(args.max_speculative_lead_windows);
+    // Per-range block size derived from the proposer's split policy: split each proposal
+    // window into `range_split_count` ranges (rounding up so the whole window is covered).
+    // This is the `max_range_size` fed to `split_range_basic`, so the daemon's sub-range
+    // boundaries match the proposer's and the cache keys line up.
+    let range_size = args.proposal_interval.div_ceil(args.range_split_count.max(1));
     let sched = Arc::new(Scheduler::new(pipeline_seed.unwrap_or(0), lead_blocks));
     let witness_workers =
         args.max_concurrent_witness_tasks.unwrap_or(args.max_concurrent_prove_tasks).max(1);
@@ -599,9 +643,8 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
         let fetcher = fetcher.clone();
         let sched = sched.clone();
         let proposal_interval = args.proposal_interval;
-        let batch_size = args.batch_size;
         tokio::spawn(async move {
-            let mut provider = ReadyRangeProvider::new(seed, proposal_interval, batch_size);
+            let mut provider = ReadyRangeProvider::new(seed, proposal_interval, range_size);
             loop {
                 while let Some(range) = provider.next_range(&fetcher).await {
                     // Witness already generated (e.g. a restart re-walk): skip the queue — the
@@ -682,7 +725,7 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
             let protected: HashSet<(u64, u64)> = background_retries
                 .iter()
                 .flat_map(|bg| {
-                    split_range_basic(bg.start_block, bg.end_block, args.batch_size)
+                    split_range_basic(bg.start_block, bg.end_block, range_size)
                         .into_iter()
                         .map(|r| (r.start, r.end))
                 })
@@ -802,7 +845,6 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
             let factory = factory.clone();
             let l1_provider = l1_provider.clone();
             let timeout_secs = args.network_call_timeout_secs;
-            let batch_size = args.batch_size;
             // One span per unit of work (spec §4.6): every log line emitted while this game
             // runs — including bridged `log::` lines from host.run/execute deep in the
             // libraries — carries `game` + `attempt`, and the per-range child spans add
@@ -863,7 +905,7 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
                                         GameTaskResult::Defer { pg }
                                     }
                                     Ok(true) => match prove_game(
-                                        &estimator, &sched, &game, batch_size,
+                                        &estimator, &sched, &game, range_size,
                                     )
                                     .await
                                     {
@@ -940,7 +982,7 @@ mod tests {
             EmbeddedArgs::parse_from(["game-monitor-embedded", "--proposal-interval", "1800"]);
         assert_eq!(args.proposal_interval, 1800);
         assert_eq!(args.retry_backoff_delay, Duration::from_secs(600)); // default 10m
-        assert_eq!(args.batch_size, 200);
+        assert_eq!(args.range_split_count, 1); // one range per proposal window
         assert_eq!(args.max_concurrent_games, 20);
         assert_eq!(args.max_concurrent_prove_tasks, 8);
         assert_eq!(args.max_speculative_lead_windows, 1); // one window of speculative prove

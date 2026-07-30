@@ -13,7 +13,7 @@ use crate::game_monitor_embedded::readiness::range_ready;
 /// (build a witness, estimate, prove, …):
 ///   * predicts game windows from the proposal cadence (`[window_start, window_start +
 ///     interval]`, which equals the next game's `[start, end]`),
-///   * splits each window into fixed-size (`batch_size`) sub-ranges **anchored at the window
+///   * splits each window into fixed-size (`range_size`-block) sub-ranges **anchored at the window
 ///     start**, so the boundaries match the executor's split of the real game (cache keys line up),
 ///   * hands them out one at a time as each becomes soundly ready: its end is L2-finalized AND L1
 ///     has finalized past its `l1_head + buffer`.
@@ -22,7 +22,7 @@ use crate::game_monitor_embedded::readiness::range_ready;
 /// the provider never needs completion feedback.
 pub struct ReadyRangeProvider {
     proposal_interval: u64,
-    batch_size: u64,
+    range_size: u64,
     /// Start of the current game window (a proposal boundary).
     window_start: u64,
     /// Next sub-range start to hand out (`window_start <= cursor <= window_start + interval`).
@@ -32,9 +32,9 @@ pub struct ReadyRangeProvider {
 impl ReadyRangeProvider {
     /// `seed` must be a real proposal boundary (the latest on-chain game's `end_block`) so the
     /// predicted windows align with future games — see `latest_game_end_block` in the daemon.
-    pub fn new(seed: u64, proposal_interval: u64, batch_size: u64) -> Self {
+    pub fn new(seed: u64, proposal_interval: u64, range_size: u64) -> Self {
         assert!(proposal_interval > 0, "proposal_interval must be > 0");
-        Self { proposal_interval, batch_size, window_start: seed, cursor: seed }
+        Self { proposal_interval, range_size, window_start: seed, cursor: seed }
     }
 
     /// The next sub-range ready to build, or `None` if nothing is ready right now (the caller
@@ -69,8 +69,8 @@ impl ReadyRangeProvider {
 
         // Fixed-size split (no SafeDB) anchored at the window start so boundaries match the
         // executor's split of the real game `[window_start, window_end]` — both anchor at the
-        // same start with the same `batch_size`, so the cache keys line up.
-        let sub_ranges = split_range_basic(self.window_start, split_end, self.batch_size);
+        // same start with the same `range_size`, so the cache keys line up.
+        let sub_ranges = split_range_basic(self.window_start, split_end, self.range_size);
 
         // Locate the sub-range starting at the cursor (a real boundary from a prior hand-out,
         // stable because boundaries below the finalized head don't move).
@@ -115,6 +115,6 @@ mod tests {
         assert_eq!(s.window_start, 1000);
         assert_eq!(s.cursor, 1000);
         assert_eq!(s.proposal_interval, 200);
-        assert_eq!(s.batch_size, 50);
+        assert_eq!(s.range_size, 50);
     }
 }
