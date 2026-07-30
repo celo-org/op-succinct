@@ -1,8 +1,9 @@
 # Game Monitor (embedded) — outstanding work
 
-Status of the `game-monitor-embedded` daemon against its spec
-(`docs/superpowers/specs/2026-06-10-game-monitor-contained-design.md`) and plan
-(`docs/superpowers/plans/2026-06-10-contained-game-monitor.md`).
+Tracks what is done vs. outstanding for the `game-monitor-embedded` daemon. The current
+structure-and-operation reference is `game-monitor-embedded-architecture.md` (workspace root);
+the original design spec and implementation plan have been removed now that the code is the
+source of truth (references to "the spec" / "the plan" below are historical).
 
 Every item below was verified against the source on the `piersy/game-monitor-rebuild`
 branch; line numbers are current as of that branch. Module path:
