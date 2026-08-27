@@ -1,0 +1,758 @@
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex, MutexGuard},
+    time::Duration,
+};
+
+use op_succinct_estimator::memory::WorkKind;
+use serde::{Deserialize, Serialize};
+
+use crate::game_monitor_embedded::{
+    registry::{AdmitGuard, WorkloadRegistry},
+    rss_source::RssSource,
+};
+
+/// Minimum in-flight gas (of the kind being attributed) for a sample to be folded in: below
+/// this the cost-per-gas ratio is dominated by baseline noise. Effectively "that kind is in
+/// flight".
+const MIN_SAMPLE_GAS: f64 = 1.0;
+
+/// EWMA weight applied to each completed episode's peak cost. Small, so a single outlier
+/// episode shifts the estimate by a bounded fraction and then decays over subsequent
+/// episodes — the property the old running max lacked (one outlier pinned it forever). The
+/// fixed `--rss-margin-mb` headroom, not this estimator, carries the safety tail, so tracking
+/// the typical peak (rather than a high quantile) is sufficient.
+const EWMA_ALPHA: f64 = 0.1;
+
+const BYTES_PER_GIB: f64 = (1u64 << 30) as f64;
+
+/// Fold a completed episode's peak cost into the running EWMA. The first sample seeds the
+/// estimate directly (so cold start reaches a real value immediately instead of `α·peak`);
+/// thereafter each peak moves it by `EWMA_ALPHA`.
+fn fold_ewma(current: f64, peak: f64) -> f64 {
+    if current <= 0.0 {
+        peak
+    } else {
+        (1.0 - EWMA_ALPHA) * current + EWMA_ALPHA * peak
+    }
+}
+
+/// Bytes rendered as GiB, for human-readable logs.
+fn gib(bytes: u64) -> f64 {
+    bytes as f64 / BYTES_PER_GIB
+}
+
+/// Learned memory cost in bytes of RSS per unit of EVM gas, tracked SEPARATELY per work
+/// kind. A witness task's footprint per gas differs from a prove's, so a single shared
+/// coefficient mis-projects whichever kind it was not learned from. Each kind's cost is an
+/// EWMA of per-episode PEAK cost: while only that kind is in flight (a pure "episode") the
+/// peak instantaneous `(rss - baseline)/gas` is accumulated, and when the episode ends it is
+/// blended into the EWMA. This decays outliers instead of pinning them (the old running max
+/// let one bad sample — e.g. sticky RSS charged to a small unit — lock the coefficient high
+/// forever, forcing serial execution). The costs and sample counts persist across restarts;
+/// the in-progress episode peaks are transient (`serde(skip)`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+struct CostModel {
+    /// EWMA of idle resident memory in bytes — the fixed floor present with nothing in flight
+    /// (allocator high-water, resident buffers). Learned from idle samples rather than measured
+    /// once at startup (which caught only the ~50 MB cold process, not the real multi-GiB
+    /// steady-state floor), and subtracted from every sample so the per-kind costs below are the
+    /// true marginal bytes/gas. `serde(default)` so a model written before this field still loads
+    /// (its baseline is then re-seeded from the current idle RSS).
+    #[serde(default)]
+    baseline_bytes: f64,
+    /// EWMA of per-episode peak bytes/gas, learned while only witness tasks were in flight.
+    cost_per_gas_witness: f64,
+    /// EWMA of per-episode peak bytes/gas, learned while only proves were in flight.
+    cost_per_gas_prove: f64,
+    /// Episodes folded per kind (diagnostic).
+    samples_witness: u64,
+    samples_prove: u64,
+    /// Peak cost of the witness episode currently in flight (0 = none). Transient.
+    #[serde(skip)]
+    episode_peak_witness: f64,
+    /// Peak cost of the prove episode currently in flight (0 = none). Transient.
+    #[serde(skip)]
+    episode_peak_prove: f64,
+}
+
+impl CostModel {
+    /// The learned cost for `kind` (bytes of RSS per gas).
+    fn cost(&self, kind: WorkKind) -> f64 {
+        match kind {
+            WorkKind::Witness => self.cost_per_gas_witness,
+            WorkKind::Prove => self.cost_per_gas_prove,
+        }
+    }
+
+    /// Whether both kinds present in `(witness_gas, prove_gas)` have a learned (non-zero)
+    /// cost. A zero (unknown) cost would under-project, so admission stays serial for a kind
+    /// until at least one pure sample of it has been observed.
+    fn known_for(&self, witness_gas: u64, prove_gas: u64) -> bool {
+        (witness_gas == 0 || self.cost_per_gas_witness > 0.0) &&
+            (prove_gas == 0 || self.cost_per_gas_prove > 0.0)
+    }
+}
+
+/// Construction parameters for [`Admission`].
+pub struct AdmissionConfig {
+    /// cgroup memory budget; `None` = unlimited (admission never blocks on memory).
+    pub budget_bytes: Option<u64>,
+    /// Safety headroom kept below the budget.
+    pub margin_bytes: u64,
+    /// Hard cap on in-flight units (witness + prove). Bounds non-memory resources —
+    /// file descriptors, RPC fan-out, CPU — that the memory model does not constrain, and
+    /// is the only cap when the budget is unlimited or the model has no signal.
+    pub max_concurrent: usize,
+    /// Back-off between failed admit attempts.
+    pub admit_poll: Duration,
+    /// Sampler tick period.
+    pub sample_period: Duration,
+    /// Persist the model every N sampler ticks.
+    pub persist_every: u32,
+    /// Where the learned model is persisted.
+    pub persist_path: PathBuf,
+}
+
+/// Memory admission via per-kind learned coefficients.
+///
+/// A background sampler (see [`Admission::spawn_sampler`]) polls resident memory. When only
+/// one kind is in flight it tracks the peak `(rss - baseline) / gas_of_that_kind` over that
+/// episode and, when the episode ends, folds the peak into that kind's EWMA (mixed-kind
+/// readings can't be attributed and are skipped). Admission projects the footprint of the
+/// in-flight set plus one more unit as `baseline + cost_witness * witness_gas + cost_prove *
+/// prove_gas` and admits only if that plus a margin fits.
+///
+/// Cold start / liveness floor: with nothing in flight a unit is always admitted, so a
+/// pessimistic model can never block the daemon entirely; that single unit's memory is bounded by
+/// reality and yields a clean pure sample. Until a kind's cost is learned, admission stays
+/// serial for it (an unknown cost is not trusted to project concurrency).
+///
+/// Independently of memory, a hard `max_concurrent` count caps in-flight units **per kind**
+/// (witness and prove each get their own budget) to bound file descriptors, RPC fan-out,
+/// and CPU — the resources the memory model ignores — so a cheap witness task can't consume
+/// the slot an expensive prove needs.
+pub struct Admission {
+    budget_bytes: Option<u64>,
+    margin_bytes: u64,
+    max_concurrent: u64,
+    /// Per-kind learned costs plus the learned idle baseline; shared with the sampler.
+    cost: Mutex<CostModel>,
+    registry: Arc<WorkloadRegistry>,
+    rss_source: Box<dyn RssSource>,
+    admit_poll: Duration,
+    sample_period: Duration,
+    persist_every: u32,
+    persist_path: PathBuf,
+    /// Serialises the admit decision so check + register is atomic across concurrent admits.
+    admit_lock: tokio::sync::Mutex<()>,
+}
+
+impl Admission {
+    /// Load the persisted per-kind model (if any), measure the idle baseline from
+    /// `rss_source`, and build the admission gate.
+    pub fn load(config: AdmissionConfig, rss_source: Box<dyn RssSource>) -> Arc<Self> {
+        let mut model: CostModel = std::fs::read_to_string(&config.persist_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+
+        // Seed the learned baseline from the current idle RSS only if the persisted model has
+        // none (a fresh model, or one written before the baseline was learned). A persisted
+        // baseline is kept and keeps evolving from idle samples in `observe`. The startup read is
+        // only a seed — the true steady-state floor accrues after warm-up and is learned there.
+        if model.baseline_bytes <= 0.0 {
+            model.baseline_bytes = rss_source.read().unwrap_or(0) as f64;
+        }
+
+        tracing::info!(
+            baseline_gib = %format!("{:.1}", gib(model.baseline_bytes as u64)),
+            cost_per_gas_witness = %format!("{:.0}", model.cost_per_gas_witness),
+            cost_per_gas_prove = %format!("{:.0}", model.cost_per_gas_prove),
+            samples_witness = model.samples_witness,
+            samples_prove = model.samples_prove,
+            "memory admission loaded"
+        );
+
+        Arc::new(Self {
+            budget_bytes: config.budget_bytes,
+            margin_bytes: config.margin_bytes,
+            max_concurrent: (config.max_concurrent.max(1)) as u64,
+            cost: Mutex::new(model),
+            registry: Arc::new(WorkloadRegistry::default()),
+            rss_source,
+            admit_poll: config.admit_poll,
+            sample_period: config.sample_period,
+            persist_every: config.persist_every.max(1),
+            persist_path: config.persist_path,
+            admit_lock: tokio::sync::Mutex::new(()),
+        })
+    }
+
+    /// Block until a unit of `kind`/`gas` is admitted, then return a guard that holds the
+    /// reservation until dropped. Two predicates, both required: the in-flight count must be
+    /// below `max_concurrent` (hard cap), and memory must be OK — the projection fits, or the
+    /// registry is empty (liveness floor), or the budget is unlimited.
+    pub async fn admit(&self, kind: WorkKind, gas: u64) -> AdmitGuard {
+        loop {
+            {
+                let _decision = self.admit_lock.lock().await;
+                let (sb, se) = self.registry.snapshot();
+                let registry_empty = sb == 0 && se == 0;
+                // Count cap is per kind: a cheap witness task must not consume a slot an
+                // expensive prove needs (witness tasks are ~10-20x lighter in RAM — see the RSS
+                // characterisation). The `fits` projection below still bounds the two jointly.
+                let (witness_units, prove_units) = self.registry.units();
+                let within_count = match kind {
+                    WorkKind::Witness => witness_units < self.max_concurrent,
+                    WorkKind::Prove => prove_units < self.max_concurrent,
+                };
+
+                let model = *self.cost_guard();
+                // Gas of each kind in flight AFTER admitting this unit.
+                let (witness_gas, prove_gas) = match kind {
+                    WorkKind::Witness => (sb + gas, se),
+                    WorkKind::Prove => (sb, se + gas),
+                };
+                let projected = self.project(&model, witness_gas, prove_gas);
+                let fits = self.fits(projected);
+                let costs_known = model.known_for(witness_gas, prove_gas);
+
+                let memory_ok = match self.budget_bytes {
+                    None => true, // unlimited budget: never gate on memory
+                    // Floor: always admit one when nothing is in flight. Otherwise the
+                    // projection must fit AND every kind's cost must be known.
+                    Some(_) => registry_empty || (costs_known && fits),
+                };
+                let admitted = within_count && memory_ok;
+
+                let reason = if !within_count {
+                    "concurrency cap"
+                } else if registry_empty {
+                    "serial floor"
+                } else if !costs_known {
+                    "cost unlearned"
+                } else if fits {
+                    "fits"
+                } else {
+                    "over budget"
+                };
+                let projected_gib = format!("{:.1}", gib(projected));
+                let limit_gib = match self.budget_bytes {
+                    Some(b) => format!("{:.1}GiB", gib(b.saturating_sub(self.margin_bytes))),
+                    None => "unlimited".to_string(),
+                };
+                let cost_per_gas = format!("{:.0}", model.cost(kind));
+
+                // Grants log at INFO; waits at DEBUG. A wait repeats every poll for every
+                // queued unit, so keeping waits off the default INFO stream avoids drowning it.
+                if admitted {
+                    tracing::info!(
+                        kind = ?kind,
+                        gas,
+                        cost_per_gas = %cost_per_gas,
+                        projected_gib = %projected_gib,
+                        limit_gib = %limit_gib,
+                        in_flight_witness_gas = sb,
+                        in_flight_prove_gas = se,
+                        "admission admit ({reason})"
+                    );
+                    return AdmitGuard::new(self.registry.clone(), kind, gas);
+                }
+                tracing::debug!(
+                    kind = ?kind,
+                    gas,
+                    cost_per_gas = %cost_per_gas,
+                    projected_gib = %projected_gib,
+                    limit_gib = %limit_gib,
+                    in_flight_witness_gas = sb,
+                    in_flight_prove_gas = se,
+                    "admission wait ({reason})"
+                );
+            }
+            tokio::time::sleep(self.admit_poll).await;
+        }
+    }
+
+    /// Lock the cost model, recovering the guard if the mutex was poisoned. `CostModel` is a
+    /// learned heuristic with no fragile invariant, so proceeding on a possibly half-written
+    /// value is acceptable — and far better than turning one panic into a `PoisonError` panic
+    /// on every subsequent `admit` / `observe` / `persist` (which would silently kill the
+    /// sampler and the witness pipeline).
+    fn cost_guard(&self) -> MutexGuard<'_, CostModel> {
+        self.cost.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Project total resident memory for the in-flight set `(witness_gas, prove_gas)` (which
+    /// already includes the unit under consideration), charging each kind its own cost.
+    fn project(&self, model: &CostModel, witness_gas: u64, prove_gas: u64) -> u64 {
+        (model.baseline_bytes +
+            model.cost_per_gas_witness * witness_gas as f64 +
+            model.cost_per_gas_prove * prove_gas as f64) as u64
+    }
+
+    /// Whether `projected` plus the margin fits the budget. Unlimited budget always fits.
+    fn fits(&self, projected: u64) -> bool {
+        match self.budget_bytes {
+            None => true,
+            Some(budget) => projected.saturating_add(self.margin_bytes) <= budget,
+        }
+    }
+
+    /// Fold one resident-memory reading into the model. Called by the sampler. Only pure
+    /// single-kind readings are attributed: with both kinds in flight a single RSS scalar
+    /// can't be split between them, so mixed (and empty) readings are skipped.
+    ///
+    /// Per kind, the peak cost is accumulated while that kind is purely in flight (an
+    /// "episode"); the moment the episode ends — the other kind appears, or the registry
+    /// empties — the episode's peak is folded into the kind's EWMA. So the estimate tracks
+    /// the typical per-episode peak and a lone outlier decays out over subsequent episodes.
+    pub fn observe(&self, rss: u64) {
+        let (sb, se) = self.registry.snapshot();
+        let mut model = self.cost_guard();
+        let net = (rss as f64 - model.baseline_bytes).max(0.0);
+        // Captured before the close logic below resets the peaks: true iff an episode is folding
+        // this tick, i.e. the registry is emptying now and RSS still carries the just-finished
+        // work — so this transitional tick must not be folded into the idle baseline.
+        let episode_closing = model.episode_peak_witness > 0.0 || model.episode_peak_prove > 0.0;
+
+        // Witness episode: accumulate its peak while only witness tasks are in flight; fold on end.
+        if se == 0 && sb as f64 >= MIN_SAMPLE_GAS {
+            model.episode_peak_witness = model.episode_peak_witness.max(net / sb as f64);
+        } else if model.episode_peak_witness > 0.0 {
+            model.cost_per_gas_witness =
+                fold_ewma(model.cost_per_gas_witness, model.episode_peak_witness);
+            model.samples_witness += 1;
+            model.episode_peak_witness = 0.0;
+        }
+
+        // Prove episode: symmetric.
+        if sb == 0 && se as f64 >= MIN_SAMPLE_GAS {
+            model.episode_peak_prove = model.episode_peak_prove.max(net / se as f64);
+        } else if model.episode_peak_prove > 0.0 {
+            model.cost_per_gas_prove =
+                fold_ewma(model.cost_per_gas_prove, model.episode_peak_prove);
+            model.samples_prove += 1;
+            model.episode_peak_prove = 0.0;
+        }
+
+        // Idle baseline: with nothing in flight and no episode folding this tick, resident memory
+        // IS the floor — fold it into the learned baseline (EWMA, so a reading that hasn't fully
+        // decayed can neither crater nor spike it). This replaces the single mis-calibrated
+        // startup read; idle ticks never attribute a cost, so it slots beside the episode logic.
+        if sb == 0 && se == 0 && !episode_closing {
+            model.baseline_bytes = fold_ewma(model.baseline_bytes, rss as f64);
+        }
+    }
+
+    /// Spawn the background RSS sampler. Ticks every `sample_period`, folding each reading
+    /// into the per-kind costs, and persists every `persist_every` ticks. Detached: runs for
+    /// the process lifetime (periodic persistence means a kill loses at most one interval of
+    /// learning).
+    pub fn spawn_sampler(self: Arc<Self>) {
+        // Emit a raw RSS-vs-in-flight-gas sample ~once per second while any work is in
+        // flight, to plot whether total RSS grows linearly with total in-flight gas or bends
+        // sub-linearly (the concurrency memory-model question). TRACE so it is silent by
+        // default; enable with `RUST_LOG=...,op_succinct_scripts::game_monitor_embedded::admission=trace`
+        // and filter with `admission rss sample`.
+        let log_every = (1000u128 / self.sample_period.as_millis().max(1)).max(1) as u32;
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(self.sample_period);
+            let mut since_persist: u32 = 0;
+            let mut since_sample_log: u32 = 0;
+            loop {
+                ticker.tick().await;
+                if let Some(rss) = self.rss_source.read() {
+                    self.observe(rss);
+                    since_sample_log += 1;
+                    if since_sample_log >= log_every {
+                        since_sample_log = 0;
+                        let (witness_gas, prove_gas) = self.registry.snapshot();
+                        if witness_gas + prove_gas > 0 {
+                            let baseline = self.cost_guard().baseline_bytes;
+                            tracing::trace!(
+                                rss_gib = %format!("{:.2}", gib(rss)),
+                                net_gib = %format!("{:.2}", gib((rss as f64 - baseline).max(0.0) as u64)),
+                                witness_gas,
+                                prove_gas,
+                                total_gas = witness_gas + prove_gas,
+                                "admission rss sample"
+                            );
+                        }
+                    }
+                }
+                since_persist += 1;
+                if since_persist >= self.persist_every {
+                    self.persist();
+                    since_persist = 0;
+                }
+            }
+        });
+    }
+
+    /// `(witness_units, prove_units)` currently in flight — the heavy sub-range work the
+    /// admission gate is tracking. Surfaced so the main loop can fold it into its periodic
+    /// orchestrator status line.
+    pub fn in_flight_units(&self) -> (u64, u64) {
+        self.registry.units()
+    }
+
+    /// Persist the learned model. Best-effort, atomic-rename; never holds the lock across the
+    /// file write. Creates the parent directory if it does not yet exist — the cache dir is
+    /// otherwise created lazily on the first witness save, so without this the very first
+    /// persist (before any game completes) would fail.
+    pub fn persist(&self) {
+        let model = *self.cost_guard();
+        let json = match serde_json::to_string(&model) {
+            Ok(json) => json,
+            Err(error) => {
+                tracing::warn!(%error, "failed to serialize memory model");
+                return;
+            }
+        };
+        let tmp = self.persist_path.with_extension("json.tmp");
+        let result = self
+            .persist_path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|_| std::fs::write(&tmp, &json))
+            .and_then(|_| std::fs::rename(&tmp, &self.persist_path));
+        if let Err(error) = result {
+            tracing::warn!(
+                %error,
+                path = %self.persist_path.display(),
+                "failed to persist memory model"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game_monitor_embedded::rss_source::Unsupported;
+
+    fn test_admission(
+        budget: Option<u64>,
+        max_concurrent: usize,
+        persist_path: PathBuf,
+    ) -> Arc<Admission> {
+        Admission::load(
+            AdmissionConfig {
+                budget_bytes: budget,
+                margin_bytes: 0,
+                max_concurrent,
+                admit_poll: Duration::from_millis(5),
+                sample_period: Duration::from_millis(5),
+                persist_every: 1,
+                persist_path,
+            },
+            Box::new(Unsupported),
+        )
+    }
+
+    #[tokio::test]
+    async fn cold_start_is_serial_until_cost_learned() {
+        let dir = tempfile::tempdir().unwrap();
+        // Finite budget + fresh model (both costs 0). Until a kind's cost is learned its
+        // projection isn't trusted, so admission stays serial via the floor.
+        let adm = test_admission(Some(1_000_000_000), 64, dir.path().join("model.json"));
+
+        // Registry empty → floor admits the first unit.
+        let g1 = adm.admit(WorkKind::Witness, 1_000).await;
+        assert_eq!(adm.registry.snapshot(), (1_000, 0));
+
+        // A second concurrent admit must block: witness cost is still unlearned, so the
+        // projection can't be trusted and the floor doesn't apply (registry non-empty).
+        let blocked = adm.admit(WorkKind::Prove, 5_000);
+        tokio::pin!(blocked);
+        tokio::select! {
+            _ = &mut blocked => panic!("second admit should block until a cost is learned"),
+            _ = tokio::time::sleep(Duration::from_millis(30)) => {}
+        }
+
+        // Release the first; now the blocked admit proceeds (registry drained → floor).
+        drop(g1);
+        let g2 = tokio::time::timeout(Duration::from_millis(200), &mut blocked)
+            .await
+            .expect("admit should proceed once the registry drains");
+        assert_eq!(adm.registry.snapshot(), (0, 5_000));
+        drop(g2);
+    }
+
+    #[test]
+    fn observe_attributes_pure_episode_peaks_per_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let adm = test_admission(None, 64, dir.path().join("model.json"));
+
+        // Empty registry → no cost is attributed (an idle reading only informs the baseline,
+        // covered by `observe_learns_idle_baseline`). Then pin the baseline back to 0 so the
+        // episode arithmetic below is `net == rss`.
+        adm.observe(10_000);
+        {
+            let m = adm.cost.lock().unwrap();
+            assert_eq!(m.cost_per_gas_witness, 0.0);
+            assert_eq!(m.cost_per_gas_prove, 0.0);
+        }
+        adm.cost.lock().unwrap().baseline_bytes = 0.0;
+
+        // Witness episode: the peak is accumulated (max) while in flight, but NOT folded until
+        // the episode ends. Baseline is 0.
+        {
+            let _b = AdmitGuard::new(adm.registry.clone(), WorkKind::Witness, 1_000);
+            adm.observe(10_000); // peak = 10_000 / 1_000 = 10
+            adm.observe(5_000); // lower ratio doesn't lower the peak
+                                // Episode still open → EWMA not updated yet.
+            assert_eq!(adm.cost.lock().unwrap().cost_per_gas_witness, 0.0);
+        }
+        // Episode ended (registry empty) → fold the peak; first sample seeds the EWMA at 10.
+        adm.observe(0);
+        assert_eq!(adm.cost.lock().unwrap().cost_per_gas_witness, 10.0);
+        assert_eq!(adm.cost.lock().unwrap().samples_witness, 1);
+        // Prove cost is untouched by witness episodes.
+        assert_eq!(adm.cost.lock().unwrap().cost_per_gas_prove, 0.0);
+
+        // Prove episode → attributed to prove, folded when it ends.
+        {
+            let _e = AdmitGuard::new(adm.registry.clone(), WorkKind::Prove, 2_000);
+            adm.observe(10_000); // peak = 10_000 / 2_000 = 5
+        }
+        adm.observe(0);
+        assert_eq!(adm.cost.lock().unwrap().cost_per_gas_prove, 5.0);
+
+        // Mixed kinds in flight → not attributable, no episode accumulates and nothing folds.
+        let before = *adm.cost.lock().unwrap();
+        {
+            let _b = AdmitGuard::new(adm.registry.clone(), WorkKind::Witness, 1_000);
+            let _e = AdmitGuard::new(adm.registry.clone(), WorkKind::Prove, 1_000);
+            adm.observe(999_999);
+        }
+        adm.observe(0);
+        assert_eq!(adm.cost.lock().unwrap().cost_per_gas_witness, before.cost_per_gas_witness);
+        assert_eq!(adm.cost.lock().unwrap().cost_per_gas_prove, before.cost_per_gas_prove);
+    }
+
+    #[test]
+    fn observe_learns_idle_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let adm = test_admission(None, 64, dir.path().join("model.json"));
+        // Unsupported RSS source → seeded baseline is 0.
+        assert_eq!(adm.cost.lock().unwrap().baseline_bytes, 0.0);
+
+        // First idle reading (empty registry, no episode closing) seeds the baseline directly.
+        adm.observe(4_000_000_000);
+        assert_eq!(adm.cost.lock().unwrap().baseline_bytes, 4_000_000_000.0);
+
+        // Subsequent idle readings move it by EWMA (α=0.1), not a jump: 0.9*4e9 + 0.1*5e9.
+        adm.observe(5_000_000_000);
+        let b = adm.cost.lock().unwrap().baseline_bytes;
+        assert!((b - 4_100_000_000.0).abs() < 1.0, "got {b}");
+
+        // A tick that closes an episode must NOT fold the still-elevated RSS into the baseline.
+        {
+            let _g = AdmitGuard::new(adm.registry.clone(), WorkKind::Witness, 1_000);
+            adm.observe(9_000_000_000); // accumulates a witness peak; registry non-empty
+        }
+        let before = adm.cost.lock().unwrap().baseline_bytes;
+        adm.observe(9_000_000_000); // registry just emptied → close tick → baseline untouched
+        assert_eq!(adm.cost.lock().unwrap().baseline_bytes, before);
+
+        // The next settled-idle tick resumes learning (pulls the baseline back down).
+        adm.observe(4_000_000_000);
+        assert!(adm.cost.lock().unwrap().baseline_bytes < before);
+    }
+
+    #[test]
+    fn ewma_of_peaks_decays_outliers_instead_of_pinning() {
+        let dir = tempfile::tempdir().unwrap();
+        let adm = test_admission(None, 64, dir.path().join("model.json"));
+
+        // Run one witness episode with the given net RSS peak, then close it so it folds.
+        let episode = |net: u64| {
+            {
+                let _b = AdmitGuard::new(adm.registry.clone(), WorkKind::Witness, 1_000);
+                adm.observe(net);
+            }
+            adm.observe(0); // registry empty → episode ends → fold
+        };
+
+        episode(10_000); // seed EWMA at peak 10
+        assert_eq!(adm.cost.lock().unwrap().cost_per_gas_witness, 10.0);
+
+        // A 10x outlier episode must NOT pin the estimate at 100 (the old running-max bug).
+        // With alpha=0.1: 0.9*10 + 0.1*100 = 19.
+        episode(100_000);
+        let after_outlier = adm.cost.lock().unwrap().cost_per_gas_witness;
+        assert!(
+            (after_outlier - 19.0).abs() < 1e-9,
+            "outlier should move it boundedly, got {after_outlier}"
+        );
+
+        // Subsequent normal episodes decay the outlier back down toward 10.
+        for _ in 0..5 {
+            episode(10_000);
+        }
+        let decayed = adm.cost.lock().unwrap().cost_per_gas_witness;
+        assert!(decayed < after_outlier, "estimate must decay after the outlier");
+        assert!(decayed > 10.0, "still converging toward the true peak");
+    }
+
+    #[test]
+    fn project_sums_each_kind_cost() {
+        let dir = tempfile::tempdir().unwrap();
+        let adm = test_admission(Some(1_000_000), 64, dir.path().join("model.json"));
+        // baseline 0 (Unsupported); witness 2 B/gas, prove 3 B/gas.
+        let model = CostModel {
+            cost_per_gas_witness: 2.0,
+            cost_per_gas_prove: 3.0,
+            ..CostModel::default()
+        };
+        assert_eq!(adm.project(&model, 1_000, 0), 2_000);
+        assert_eq!(adm.project(&model, 0, 1_000), 3_000);
+        assert_eq!(adm.project(&model, 1_000, 1_000), 5_000);
+    }
+
+    #[test]
+    fn persist_round_trips_per_kind_costs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("model.json");
+
+        let adm = test_admission(None, 64, path.clone());
+        {
+            let _b = AdmitGuard::new(adm.registry.clone(), WorkKind::Witness, 1_000);
+            adm.observe(7_000); // witness episode peak = 7
+        }
+        adm.observe(0); // close episode → fold (seeds witness cost = 7)
+        {
+            let _e = AdmitGuard::new(adm.registry.clone(), WorkKind::Prove, 1_000);
+            adm.observe(3_000); // prove episode peak = 3
+        }
+        adm.observe(0); // close episode → fold (seeds prove cost = 3)
+        adm.observe(2_000_000_000); // idle tick → seeds the learned baseline
+        adm.persist();
+
+        let reloaded = test_admission(None, 64, path);
+        let model = *reloaded.cost.lock().unwrap();
+        assert_eq!(model.cost_per_gas_witness, 7.0);
+        assert_eq!(model.cost_per_gas_prove, 3.0);
+        assert_eq!(model.baseline_bytes, 2_000_000_000.0); // baseline round-trips too
+    }
+
+    #[test]
+    fn persist_creates_missing_parent_dir() {
+        // Regression: the cache dir is created lazily on the first witness save, so the
+        // first persist (before any game completes) must create its own parent or it
+        // silently fails forever.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent").join("nested").join("model.json");
+        assert!(!path.parent().unwrap().exists());
+
+        let adm = test_admission(None, 64, path.clone());
+        {
+            let _b = AdmitGuard::new(adm.registry.clone(), WorkKind::Witness, 1_000);
+            adm.observe(7_000); // witness episode peak = 7
+        }
+        adm.observe(0); // close episode → fold (seeds witness cost = 7)
+        adm.persist();
+
+        assert!(path.exists(), "persist must create the file under a missing parent dir");
+        let reloaded = test_admission(None, 64, path);
+        assert_eq!(reloaded.cost.lock().unwrap().cost_per_gas_witness, 7.0);
+    }
+
+    #[tokio::test]
+    async fn count_cap_bounds_concurrency_per_kind_even_when_memory_fits() {
+        let dir = tempfile::tempdir().unwrap();
+        // Unlimited budget → memory never gates. Only the per-kind count cap (2) bounds it.
+        let adm = test_admission(None, 2, dir.path().join("model.json"));
+
+        let g1 = adm.admit(WorkKind::Prove, 1).await;
+        let g2 = adm.admit(WorkKind::Prove, 1).await;
+        assert_eq!(adm.registry.units(), (0, 2));
+
+        // A third prove must block at the prove cap.
+        let blocked = adm.admit(WorkKind::Prove, 1);
+        tokio::pin!(blocked);
+        tokio::select! {
+            _ = &mut blocked => panic!("third prove should block at the per-kind cap"),
+            _ = tokio::time::sleep(Duration::from_millis(30)) => {}
+        }
+
+        // Free a slot; the blocked admit proceeds.
+        drop(g1);
+        let g3 = tokio::time::timeout(Duration::from_millis(200), &mut blocked)
+            .await
+            .expect("admit should proceed once a slot frees");
+        assert_eq!(adm.registry.units(), (0, 2));
+        drop(g2);
+        drop(g3);
+    }
+
+    #[tokio::test]
+    async fn witness_tasks_do_not_consume_prove_slots() {
+        let dir = tempfile::tempdir().unwrap();
+        // Unlimited budget → only the per-kind count cap (2) gates.
+        let adm = test_admission(None, 2, dir.path().join("model.json"));
+
+        // Fill the witness cap.
+        let _b1 = adm.admit(WorkKind::Witness, 1).await;
+        let _b2 = adm.admit(WorkKind::Witness, 1).await;
+        assert_eq!(adm.registry.units(), (2, 0));
+
+        // Proves still admit with the witness cap full — witness tasks hold their own slots.
+        let _e1 = tokio::time::timeout(Duration::from_millis(200), adm.admit(WorkKind::Prove, 1))
+            .await
+            .expect("prove must admit even when the witness cap is full");
+        let _e2 = tokio::time::timeout(Duration::from_millis(200), adm.admit(WorkKind::Prove, 1))
+            .await
+            .expect("prove must admit even when the witness cap is full");
+        assert_eq!(adm.registry.units(), (2, 2));
+
+        // The prove cap is now full → a third prove blocks (its own cap, not the witness tasks').
+        let blocked = adm.admit(WorkKind::Prove, 1);
+        tokio::pin!(blocked);
+        tokio::select! {
+            _ = &mut blocked => panic!("third prove should block at the prove cap"),
+            _ = tokio::time::sleep(Duration::from_millis(30)) => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn liveness_floor_admits_one_unit_when_model_is_mislearned() {
+        let dir = tempfile::tempdir().unwrap();
+        // Tiny budget + an absurd learned cost for both kinds: the projection can never fit,
+        // even for a single unit. The floor must still admit one unit when the registry is
+        // empty so a mis-learned model can't block the daemon entirely — but it must NOT
+        // admit a second.
+        let adm = test_admission(Some(1_000_000), 64, dir.path().join("model.json"));
+        {
+            let mut m = adm.cost.lock().unwrap();
+            m.cost_per_gas_witness = 1.0e9; // ~1GB/gas: nothing fits a 1MB budget
+            m.cost_per_gas_prove = 1.0e9;
+        }
+
+        // Registry empty → liveness floor admits the first unit despite the projection.
+        let g1 =
+            tokio::time::timeout(Duration::from_millis(200), adm.admit(WorkKind::Prove, 1_000))
+                .await
+                .expect("floor must admit one unit when nothing is in flight");
+        assert_eq!(adm.registry.in_flight(), 1);
+
+        // A second admit must block: the floor only covers an empty registry; the projection
+        // (which never fits) gates everything beyond the first.
+        let blocked = adm.admit(WorkKind::Witness, 1_000);
+        tokio::pin!(blocked);
+        tokio::select! {
+            _ = &mut blocked => panic!("second admit must block while one unit is in flight"),
+            _ = tokio::time::sleep(Duration::from_millis(30)) => {}
+        }
+
+        // Free the first; the floor applies again and the blocked admit proceeds.
+        drop(g1);
+        let g2 = tokio::time::timeout(Duration::from_millis(200), &mut blocked)
+            .await
+            .expect("admit should proceed once the registry drains");
+        assert_eq!(adm.registry.in_flight(), 1);
+        drop(g2);
+    }
+}

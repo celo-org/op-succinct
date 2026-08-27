@@ -43,7 +43,7 @@ COPY . .
 
 # Build both binaries
 RUN cargo build --release --bin cost-estimator --features eigenda && \
-    cargo build --release --bin parallel-cost-estimator --features eigenda
+    cargo build --release --bin multi-and-agg --features eigenda
 
 # Runtime stage - minimal image
 FROM ubuntu:24.04
@@ -61,11 +61,8 @@ COPY --from=builder /workspace/resources/ ./resources/
 
 # Copy only the built binaries
 COPY --from=builder /workspace/target/release/cost-estimator /usr/local/bin/cost-estimator
-COPY --from=builder /workspace/target/release/parallel-cost-estimator /usr/local/bin/parallel-cost-estimator
+COPY --from=builder /workspace/target/release/multi-and-agg /usr/local/bin/multi-and-agg
 
-# Set environment variable to use the built cost-estimator binary
-ENV COST_ESTIMATOR_BIN=/usr/local/bin/cost-estimator
-
-# Default command
-CMD ["parallel-cost-estimator"]
+# Default command — image is meant to be `exec`d into for ad-hoc runs.
+CMD ["bash", "-c", "tail -f /dev/null"]
 

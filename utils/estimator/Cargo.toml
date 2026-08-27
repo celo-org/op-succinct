@@ -1,0 +1,37 @@
+[package]
+name = "op-succinct-estimator"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+# local
+op-succinct-host-utils.workspace = true
+op-succinct-proof-utils.workspace = true
+op-succinct-client-utils.workspace = true
+
+# sp1
+sp1-sdk.workspace = true
+sp1-core-executor.workspace = true
+
+# general
+anyhow.workspace = true
+thiserror.workspace = true
+serde = { workspace = true, features = ["derive"] }
+bincode.workspace = true
+serde_json.workspace = true
+rkyv.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+default = ["ethereum"]
+# The DA path is provided by op-succinct-proof-utils' matching feature (range ELF +
+# initialize_host). The estimator itself is generic over the host, so it needs no
+# direct DA-host-utils dependency.
+celestia = ["op-succinct-proof-utils/celestia"]
+eigenda = ["op-succinct-proof-utils/eigenda"]
+ethereum = ["op-succinct-proof-utils/ethereum"]

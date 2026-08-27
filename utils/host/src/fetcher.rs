@@ -10,9 +10,11 @@ use crate::rpc_types::{OutputResponse, SafeHeadResponse};
 use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_primitives::{address, keccak256, Address, Bytes, B256, U256, U64};
-use alloy_provider::{Provider, ProviderBuilder, RootProvider};
+use alloy_provider::{Provider, RootProvider};
 use alloy_rlp::Decodable;
+use alloy_rpc_client::ClientBuilder;
 use alloy_sol_types::SolValue;
+use alloy_transport::layers::RetryBackoffLayer;
 use anyhow::{anyhow, bail, Context, Result};
 use celo_alloy_consensus::CeloBlock;
 use celo_alloy_network::Celo;
@@ -96,7 +98,8 @@ fn classify_safe_db_probe_outcome(response: &serde_json::Value) -> Result<bool> 
 #[derive(Clone)]
 /// The OPSuccinctDataFetcher struct is used to fetch the L2 output data and L2 claim data for a
 /// given block number. It is used to generate the boot info for the native host program.
-/// FIXME: Add retries for all requests (3 retries).
+/// Retries are implemented: the alloy providers use a `RetryBackoffLayer`, and the raw JSON-RPC
+/// path in `fetch_rpc_data` retries transport/timeout errors (up to 3 attempts).
 pub struct OPSuccinctDataFetcher {
     pub rpc_config: RPCConfig,
     pub l1_provider: Arc<RootProvider>,
@@ -177,15 +180,26 @@ pub struct FeeData {
     pub tx_fee: u128,
 }
 
+/// Build an HTTP [`RootProvider`] with a bounded retry/backoff layer so that transient,
+/// idempotent RPC failures (rate limits, blips) retry before triggering expensive
+/// witness generation.
+///
+/// The arguments to [`RetryBackoffLayer::new`] are
+/// `(max_rate_limit_retries, initial_backoff_ms, compute_units_per_second)`.
+fn http_provider_with_retries<N: Network>(url: Url) -> Arc<RootProvider<N>> {
+    let retry = RetryBackoffLayer::new(3, 500, 100);
+    let client = ClientBuilder::default().layer(retry).http(url);
+    Arc::new(RootProvider::<N>::new(client))
+}
+
 impl OPSuccinctDataFetcher {
     /// Gets the RPC URL's and saves the rollup config for the chain to the rollup config file.
     pub fn new() -> Self {
         let rpc_config = get_rpcs_from_env();
 
         let l1_provider =
-            Arc::new(ProviderBuilder::default().connect_http(rpc_config.l1_rpc.clone()));
-        let l2_provider =
-            Arc::new(ProviderBuilder::default().connect_http(rpc_config.l2_rpc.clone()));
+            http_provider_with_retries::<alloy_network::Ethereum>(rpc_config.l1_rpc.clone());
+        let l2_provider = http_provider_with_retries::<Celo>(rpc_config.l2_rpc.clone());
 
         OPSuccinctDataFetcher {
             rpc_config,
@@ -202,9 +216,8 @@ impl OPSuccinctDataFetcher {
         let rpc_config = get_rpcs_from_env();
 
         let l1_provider =
-            Arc::new(ProviderBuilder::default().connect_http(rpc_config.l1_rpc.clone()));
-        let l2_provider =
-            Arc::new(ProviderBuilder::default().connect_http(rpc_config.l2_rpc.clone()));
+            http_provider_with_retries::<alloy_network::Ethereum>(rpc_config.l1_rpc.clone());
+        let l2_provider = http_provider_with_retries::<Celo>(rpc_config.l2_rpc.clone());
 
         let (rollup_config, rollup_config_path) =
             Self::fetch_and_save_rollup_config(&rpc_config).await?;
@@ -252,8 +265,11 @@ impl OPSuccinctDataFetcher {
 
         let block_data = stream::iter(start + 1..=end)
             .map(|block_number| async move {
-                let block =
-                    self.l2_provider.get_block_by_number(block_number.into()).await?.unwrap();
+                let block = self
+                    .l2_provider
+                    .get_block_by_number(block_number.into())
+                    .await?
+                    .ok_or_else(|| anyhow!("L2 block {block_number} not found"))?;
                 let (total_l1_fees, total_tx_fees) =
                     match self.l2_provider.get_block_receipts(block_number.into()).await {
                         Ok(Some(receipts)) => {
@@ -566,27 +582,64 @@ impl OPSuccinctDataFetcher {
     where
         T: serde::de::DeserializeOwned,
     {
-        let client = reqwest::Client::new();
-        let response = client
-            .post(url.clone())
-            .json(&json!({
-                "jsonrpc": "2.0",
-                "method": method,
-                "params": params,
-                "id": 1
-            }))
-            .send()
-            .await?
-            .json::<serde_json::Value>()
-            .await?;
+        let client =
+            reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build()?;
 
-        // Check for RPC error from the JSON RPC response.
-        if let Some(error) = response.get("error") {
-            let error_message = error["message"].as_str().unwrap_or("Unknown error");
-            return Err(anyhow::anyhow!("Error calling {method}: {error_message}"));
+        // Retry only transport/timeout/network errors (the reqwest path). A valid JSON-RPC
+        // `error` response is deterministic (a method error) and is NOT retried.
+        const MAX_ATTEMPTS: usize = 3;
+        let backoffs =
+            [std::time::Duration::from_millis(250), std::time::Duration::from_millis(500)];
+        let mut last_err: Option<anyhow::Error> = None;
+        for attempt in 0..MAX_ATTEMPTS {
+            let send_result = client
+                .post(url.clone())
+                .json(&json!({
+                    "jsonrpc": "2.0",
+                    "method": method,
+                    "params": params,
+                    "id": 1
+                }))
+                .send()
+                .await
+                .and_then(reqwest::Response::error_for_status);
+
+            let response = match send_result {
+                Ok(resp) => resp,
+                Err(e) => {
+                    // Transport/timeout/network error: back off and retry.
+                    last_err = Some(e.into());
+                    if let Some(backoff) = backoffs.get(attempt) {
+                        tokio::time::sleep(*backoff).await;
+                    }
+                    continue;
+                }
+            };
+
+            let body = match response.json::<serde_json::Value>().await {
+                Ok(body) => body,
+                Err(e) => {
+                    // Failure reading/decoding the body is treated as transient.
+                    last_err = Some(e.into());
+                    if let Some(backoff) = backoffs.get(attempt) {
+                        tokio::time::sleep(*backoff).await;
+                    }
+                    continue;
+                }
+            };
+
+            // Check for RPC error from the JSON RPC response. This is a deterministic method
+            // error, so return immediately without retrying.
+            if let Some(error) = body.get("error") {
+                let error_message = error["message"].as_str().unwrap_or("Unknown error");
+                return Err(anyhow::anyhow!("Error calling {method}: {error_message}"));
+            }
+
+            return serde_json::from_value(body["result"].clone()).map_err(Into::into);
         }
 
-        serde_json::from_value(response["result"].clone()).map_err(Into::into)
+        Err(last_err
+            .unwrap_or_else(|| anyhow::anyhow!("fetch_rpc_data: {method} exhausted retries")))
     }
 
     /// Execute a JSON-RPC call and return the raw response body without collapsing
@@ -958,7 +1011,11 @@ impl OPSuccinctDataFetcher {
             server: true,
             rollup_config_path: self.rollup_config_path.clone(),
             l1_config_path: self.l1_config_path.clone(),
-            enable_experimental_witness_endpoint: false,
+            // Fetch the complete execution witness via `debug_executePayload`. Without it the
+            // client falls back to `L2StateNode` hints for trie nodes missing from the proof
+            // prefetch, which reth's `debug_dbGet` (code-only, 33-byte keys) can never serve —
+            // observed wedging witness gen on Sepolia (outstanding-work item #31).
+            enable_experimental_witness_endpoint: true,
         })
     }
 }
@@ -971,6 +1028,13 @@ mod tests {
 
     fn test_rollup_config(chain_id: u64) -> CeloRollupConfig {
         CeloRollupConfig(RollupConfig { l2_chain_id: chain_id.into(), ..Default::default() })
+    }
+
+    #[test]
+    fn http_provider_with_retries_constructs() {
+        let url: Url = "http://localhost:8545".parse().unwrap();
+        let _p = http_provider_with_retries::<alloy_network::Ethereum>(url);
+        // Construction must not panic; no network call is made.
     }
 
     #[test]

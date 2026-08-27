@@ -111,7 +111,7 @@ dependencies = [
 [[package]]
 name = "alloy-celo-evm"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#27c9f3287209ca412665d03a4423adf54ec71c6c"
 dependencies = [
  "alloy-consensus",
  "alloy-evm 0.27.3",
@@ -587,9 +587,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-pubsub"
-version = "1.7.3"
+version = "1.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8bd82953194dec221aa4cbbbb0b1e2df46066fe9d0333ac25b43a311e122d13"
+checksum = "6eebf54983d4fccea08053c218ee5c288adf2e660095a243d0532a8070b43955"
 dependencies = [
  "alloy-json-rpc",
  "alloy-primitives",
@@ -915,9 +915,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-transport"
-version = "1.7.3"
+version = "1.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa186e560d523d196580c48bf00f1bf62e63041f28ecf276acc22f8b27bb9f53"
+checksum = "a03bb3f02b9a7ab23dacd1822fa7f69aa5c8eefcdcf57fad085e0b8d76fb4334"
 dependencies = [
  "alloy-json-rpc",
  "auto_impl",
@@ -963,9 +963,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-transport-ipc"
-version = "1.7.3"
+version = "1.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2ef85688e5ac2da72afc804e0a1f153a1f309f05a864b1998bbbed7804dbaab"
+checksum = "49963a2561ebd439549915ea61efb70a7b13b97500ec16ca507721c9d9957d07"
 dependencies = [
  "alloy-json-rpc",
  "alloy-pubsub",
@@ -983,9 +983,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-transport-ws"
-version = "1.7.3"
+version = "1.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9f00445db69d63298e2b00a0ea1d859f00e6424a3144ffc5eba9c31da995e16"
+checksum = "5ed38ea573c6658e0c2745af9d1f1773b1ed83aa59fbd9c286358ad469c3233a"
 dependencies = [
  "alloy-pubsub",
  "alloy-transport",
@@ -1064,22 +1064,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "43d5b281e737544384e969a5ccad3f1cdd24b48086a0fc1b2a5262a26b8f4f4a"
 dependencies = [
  "anstyle",
- "anstyle-parse 0.2.7",
- "anstyle-query",
- "anstyle-wincon",
- "colorchoice",
- "is_terminal_polyfill",
- "utf8parse",
-]
-
-[[package]]
-name = "anstream"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "824a212faf96e9acacdbd09febd34438f8f711fb84e09a8916013cd7815ca28d"
-dependencies = [
- "anstyle",
- "anstyle-parse 1.0.0",
+ "anstyle-parse",
  "anstyle-query",
  "anstyle-wincon",
  "colorchoice",
@@ -1098,15 +1083,6 @@ name = "anstyle-parse"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7644824f0aa2c7b9384579234ef10eb7efb6a0deb83f9630a49594dd9c15c2"
-dependencies = [
- "utf8parse",
-]
-
-[[package]]
-name = "anstyle-parse"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52ce7f38b242319f7cabaa6813055467063ecdc9d355bbb4ce0c68908cd8130e"
 dependencies = [
  "utf8parse",
 ]
@@ -2235,6 +2211,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "backon"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cffb0e931875b666fc4fcb20fee52e9bbd1ef836fd9e9e04ec21555f9f85f7ef"
+dependencies = [
+ "fastrand",
+ "gloo-timers",
+ "tokio",
+]
+
+[[package]]
 name = "backtrace"
 version = "0.3.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2922,7 +2909,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-consensus"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#27c9f3287209ca412665d03a4423adf54ec71c6c"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -2937,7 +2924,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-network"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#27c9f3287209ca412665d03a4423adf54ec71c6c"
 dependencies = [
  "alloy-consensus",
  "alloy-network",
@@ -2951,7 +2938,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-rpc-types"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#27c9f3287209ca412665d03a4423adf54ec71c6c"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -2970,7 +2957,7 @@ dependencies = [
 [[package]]
 name = "celo-alloy-rpc-types-engine"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#27c9f3287209ca412665d03a4423adf54ec71c6c"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -2986,7 +2973,7 @@ dependencies = [
 [[package]]
 name = "celo-client"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#27c9f3287209ca412665d03a4423adf54ec71c6c"
 dependencies = [
  "alloy-celo-evm",
  "alloy-consensus",
@@ -3011,7 +2998,7 @@ dependencies = [
 [[package]]
 name = "celo-driver"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#27c9f3287209ca412665d03a4423adf54ec71c6c"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -3041,7 +3028,7 @@ dependencies = [
 [[package]]
 name = "celo-executor"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#27c9f3287209ca412665d03a4423adf54ec71c6c"
 dependencies = [
  "alloy-celo-evm",
  "alloy-consensus",
@@ -3069,7 +3056,7 @@ dependencies = [
 [[package]]
 name = "celo-genesis"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#27c9f3287209ca412665d03a4423adf54ec71c6c"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3089,7 +3076,7 @@ dependencies = [
 [[package]]
 name = "celo-host"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#27c9f3287209ca412665d03a4423adf54ec71c6c"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3097,8 +3084,10 @@ dependencies = [
  "alloy-provider",
  "alloy-rlp",
  "alloy-rpc-types",
+ "alloy-transport",
  "anyhow",
  "async-trait",
+ "backon",
  "celo-alloy-network",
  "celo-alloy-rpc-types-engine",
  "celo-client",
@@ -3126,7 +3115,7 @@ dependencies = [
 [[package]]
 name = "celo-proof"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#27c9f3287209ca412665d03a4423adf54ec71c6c"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3161,7 +3150,7 @@ dependencies = [
 [[package]]
 name = "celo-protocol"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#27c9f3287209ca412665d03a4423adf54ec71c6c"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3190,7 +3179,7 @@ dependencies = [
 [[package]]
 name = "celo-registry"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#27c9f3287209ca412665d03a4423adf54ec71c6c"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -3204,7 +3193,7 @@ dependencies = [
 [[package]]
 name = "celo-revm"
 version = "1.0.0"
-source = "git+https://github.com/celo-org/celo-kona?rev=61caf47#61caf474624cd8d31fcd689eb2b5ba8979701076"
+source = "git+https://github.com/celo-org/celo-kona?branch=piersy%2Fgame-monitor-improvements#27c9f3287209ca412665d03a4423adf54ec71c6c"
 dependencies = [
  "alloy-eips",
  "alloy-evm 0.27.3",
@@ -3314,7 +3303,7 @@ version = "4.5.60"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "24a241312cea5059b13574bb9b3861cabf758b879c15190b37b6d6fd63ab6876"
 dependencies = [
- "anstream 0.6.21",
+ "anstream",
  "anstyle",
  "clap_lex",
  "strsim",
@@ -4429,29 +4418,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "env_filter"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32e90c2accc4b07a8456ea0debdc2e7587bdd890680d71173a15d4ae604f6eef"
-dependencies = [
- "log",
- "regex",
-]
-
-[[package]]
-name = "env_logger"
-version = "0.11.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0621c04f2196ac3f488dd583365b9c09be011a4ab8b9f37248ffcc8f6198b56a"
-dependencies = [
- "anstream 1.0.0",
- "anstyle",
- "env_filter",
- "jiff",
- "log",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4464,7 +4430,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5026,6 +4992,18 @@ name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
+name = "gloo-timers"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "js-sys",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "gmp-mpfr-sys"
@@ -5741,7 +5719,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.2",
+ "socket2 0.5.10",
  "system-configuration 0.7.0",
  "tokio",
  "tower-layer",
@@ -6056,30 +6034,6 @@ name = "itoa"
 version = "1.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
-
-[[package]]
-name = "jiff"
-version = "0.2.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a3546dc96b6d42c5f24902af9e2538e82e39ad350b0c766eb3fbf2d8f3d8359"
-dependencies = [
- "jiff-static",
- "log",
- "portable-atomic",
- "portable-atomic-util",
- "serde_core",
-]
-
-[[package]]
-name = "jiff-static"
-version = "0.2.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a8c8b344124222efd714b73bb41f8b5120b27a7cc1c75593a6ff768d9d05aa4"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
 
 [[package]]
 name = "jni"
@@ -7469,7 +7423,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7651,7 +7605,7 @@ version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff32365de1b6743cb203b710788263c44a03de03802daf96092f2da4fe6ba4d7"
 dependencies = [
- "proc-macro-crate 3.4.0",
+ "proc-macro-crate 1.1.3",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -7967,6 +7921,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "op-succinct-common"
+version = "4.3.1"
+
+[[package]]
 name = "op-succinct-eigenda-client-utils"
 version = "0.1.0"
 dependencies = [
@@ -8028,6 +7986,26 @@ dependencies = [
 [[package]]
 name = "op-succinct-elfs"
 version = "4.3.1"
+
+[[package]]
+name = "op-succinct-estimator"
+version = "4.3.1"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "op-succinct-client-utils",
+ "op-succinct-host-utils",
+ "op-succinct-proof-utils",
+ "rkyv",
+ "serde",
+ "serde_json",
+ "sp1-core-executor",
+ "sp1-sdk",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "op-succinct-ethereum-client-utils"
@@ -8127,10 +8105,13 @@ dependencies = [
  "alloy-consensus",
  "alloy-contract",
  "alloy-eips",
+ "alloy-network",
  "alloy-primitives",
  "alloy-provider",
  "alloy-rlp",
+ "alloy-rpc-client",
  "alloy-sol-types",
+ "alloy-transport",
  "alloy-trie",
  "anyhow",
  "async-trait",
@@ -8285,23 +8266,30 @@ dependencies = [
  "clap",
  "csv",
  "dotenv",
- "env_logger",
  "futures",
+ "humantime",
  "log",
  "op-succinct-build-utils",
  "op-succinct-client-utils",
+ "op-succinct-common",
  "op-succinct-elfs",
+ "op-succinct-estimator",
  "op-succinct-fp",
  "op-succinct-host-utils",
  "op-succinct-proof-utils",
+ "parse-size",
  "rayon",
+ "rkyv",
  "rustls 0.23.37",
  "serde",
  "serde_json",
  "sp1-sdk",
+ "tempfile",
  "thiserror 2.0.18",
+ "tikv-jemallocator",
  "tokio",
  "tracing",
+ "tracing-subscriber 0.3.22",
 ]
 
 [[package]]
@@ -8966,6 +8954,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "parse-size"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "487f2ccd1e17ce8c1bfab3a65c89525af41cfad4c8659021a1e9a2aacd73b89b"
+
+[[package]]
 name = "pasta_curves"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9199,15 +9193,6 @@ name = "portable-atomic"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
-
-[[package]]
-name = "portable-atomic-util"
-version = "0.2.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "091397be61a01d4be58e7841595bd4bfedb15f1cd54977d79b8271e94ed799a3"
-dependencies = [
- "portable-atomic",
-]
 
 [[package]]
 name = "postgresql_archive"
@@ -9633,7 +9618,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.1",
  "rustls 0.23.37",
- "socket2 0.6.2",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -9670,9 +9655,9 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.2",
+ "socket2 0.5.10",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -11494,7 +11479,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -14034,7 +14019,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -15316,7 +15301,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

@@ -7,6 +7,11 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[package.metadata.cargo-machete]
+# False positive: used via its lib name `fault_proof` (e.g. in bin/game_monitor.rs and
+# src/game_monitor_embedded/discovery.rs), which cargo-machete doesn't map back to the package name.
+ignored = ["op-succinct-fp"]
+
 [lib]
 name = "op_succinct_scripts"
 path = "src/lib.rs"
@@ -48,8 +53,8 @@ name = "game-monitor"
 path = "bin/game_monitor.rs"
 
 [[bin]]
-name = "parallel-cost-estimator"
-path = "bin/parallel_cost_estimator.rs"
+name = "game-monitor-embedded"
+path = "bin/game_monitor_embedded.rs"
 
 [dependencies]
 
@@ -75,19 +80,29 @@ log.workspace = true
 csv.workspace = true
 serde.workspace = true
 futures.workspace = true
+rkyv.workspace = true
 rayon = "1.10.0"
+parse-size = "1"
+humantime = "2"
+tikv-jemallocator = "0.6.0"
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-env_logger = "0.11"
+# `tracing-log` makes the `log` -> `tracing` bridge explicit: `.init()` installs a
+# `LogTracer` only when this feature is on. It is otherwise inherited from the workspace
+# default features, so pinning it here keeps the bridge from silently breaking if those
+# defaults ever change.
+tracing-subscriber = { workspace = true, features = ["env-filter", "json", "tracing-log"] }
 rustls = "0.23.23"
 
 # local
+op-succinct-common.workspace = true
 op-succinct-host-utils.workspace = true
 op-succinct-client-utils.workspace = true
 op-succinct-proof-utils.workspace = true
 op-succinct-elfs.workspace = true
 op-succinct-fp.workspace = true
+op-succinct-estimator.workspace = true
 
 # sp1
 sp1-sdk.workspace = true
@@ -95,8 +110,11 @@ sp1-sdk.workspace = true
 [build-dependencies]
 op-succinct-build-utils.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [features]
 default = ["ethereum"]
-eigenda = ["op-succinct-proof-utils/eigenda"]
-celestia = ["op-succinct-proof-utils/celestia"]
-ethereum = ["op-succinct-proof-utils/ethereum"]
+eigenda = ["op-succinct-proof-utils/eigenda", "op-succinct-estimator/eigenda"]
+celestia = ["op-succinct-proof-utils/celestia", "op-succinct-estimator/celestia"]
+ethereum = ["op-succinct-proof-utils/ethereum", "op-succinct-estimator/ethereum"]

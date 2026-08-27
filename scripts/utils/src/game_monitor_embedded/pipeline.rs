@@ -1,0 +1,60 @@
+use op_succinct_estimator::{memory::WorkKind, Estimator, EstimatorError};
+use op_succinct_host_utils::{
+    block_range::SpanBatchRange, fetcher::OPSuccinctDataFetcher, host::OPSuccinctHost,
+    witness_generation::WitnessGenerator,
+};
+use rkyv::rancor::Error as RkyvError;
+
+use crate::game_monitor_embedded::admission::Admission;
+
+type WitnessOf<H> = <<H as OPSuccinctHost>::WitnessGenerator as WitnessGenerator>::WitnessData;
+
+/// Generate the witness for ONE sub-range — the witness workers' unit of work. Waits for
+/// admission, which registers this witness task's gas (and a concurrency slot) for the
+/// duration via the returned guard, then runs `host.run` + `get_sp1_stdin` (cached by
+/// `witness_range`). The sampler observes the resulting footprint out of band.
+/// Concurrency is the caller's concern (the witness worker pool).
+///
+/// Returns a typed `EstimatorError` so the scheduler can classify a failure that blocks a
+/// demanding game (transient vs fatal).
+///
+/// Runs in a per-range span (spec §4.6) — workers have no `game`/`attempt` context, so
+/// witness tasks are attributed to `range` alone, with the host.run/get_sp1_stdin child spans
+/// nested underneath.
+#[tracing::instrument(
+    name = "range",
+    skip_all,
+    fields(start = range.start, end = range.end, work = "witness")
+)]
+pub async fn pipeline_step<H: OPSuccinctHost>(
+    estimator: &Estimator<H>,
+    fetcher: &OPSuccinctDataFetcher,
+    admission: &Admission,
+    range: &SpanBatchRange,
+) -> Result<(), EstimatorError>
+where
+    // Mirror Estimator<H>'s impl rkyv bounds so this can call witness_range.
+    WitnessOf<H>: for<'a> rkyv::Serialize<
+            rkyv::api::high::HighSerializer<
+                rkyv::util::AlignedVec,
+                rkyv::ser::allocator::ArenaHandle<'a>,
+                RkyvError,
+            >,
+        > + rkyv::Archive,
+    <WitnessOf<H> as rkyv::Archive>::Archived: rkyv::Deserialize<WitnessOf<H>, rkyv::api::high::HighDeserializer<RkyvError>>
+        + for<'a> rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, RkyvError>>,
+{
+    // Gas-weighted RSS projection key: sum the sub-range's L2 block gas.
+    let block_data = fetcher
+        .get_l2_block_data_range(range.start, range.end)
+        .await
+        .map_err(EstimatorError::classify)?;
+    let gas: u64 = block_data.iter().map(|b| b.gas_used).sum();
+
+    // Adaptive admission: block until this witness task fits the memory budget and the
+    // concurrency cap. The guard keeps the witness task's gas and slot registered until it drops.
+    let _admit = admission.admit(WorkKind::Witness, gas).await;
+
+    estimator.witness_range(range).await?;
+    Ok(())
+}
