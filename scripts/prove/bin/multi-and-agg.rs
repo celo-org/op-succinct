@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, Bytes, FixedBytes};
+use alloy_primitives::{Address, Bytes, FixedBytes, B256};
 use alloy_provider::{Provider, ProviderBuilder, RootProvider};
 use alloy_sol_macro::sol;
 use alloy_transport_http::reqwest::Url;
@@ -81,6 +81,11 @@ async fn main() -> Result<()> {
     let range_pk = network_prover.setup(Elf::Static(get_range_elf_embedded())).await?;
     let range_vk = range_pk.verifying_key().clone();
 
+    let l1_head = args.l1_head;
+    if let Some(hash) = l1_head {
+        info!(l1_head = %hash, "Using supplied L1 head for all range proofs");
+    }
+
     let tasks = ranges.into_iter().enumerate().map(|(idx, (start, end))| {
         // Clone these so that they can be moved into the async block.
         let network_prover = network_prover.clone();
@@ -94,7 +99,7 @@ async fn main() -> Result<()> {
                 end - start
             );
             let sp1_stdin =
-                get_range_proof_stdin(host.as_ref(), start, end, None, config.safe_db_fallback)
+                get_range_proof_stdin(host.as_ref(), start, end, l1_head, config.safe_db_fallback)
                     .await?;
             let stdin_bytes = bincode::serialize(&sp1_stdin).unwrap();
             let stdin_len = stdin_bytes.len();
@@ -216,6 +221,9 @@ pub struct Args {
     /// The end block of the range to execute.
     #[arg(long)]
     pub end: Option<u64>,
+    /// L1 head block hash to derive every range from. When set, bypasses SafeDB-based selection.
+    #[arg(long)]
+    pub l1_head: Option<B256>,
     /// The number of blocks to use for the default range.
     #[arg(long, default_value = "5")]
     pub default_range: u64,
