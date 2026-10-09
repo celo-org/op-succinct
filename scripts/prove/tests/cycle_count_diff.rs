@@ -119,7 +119,7 @@ fn create_diff_report(base: &ExecutionStats, current: &ExecutionStats) -> String
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_cycle_count_diff() -> Result<()> {
-    dotenv::dotenv()?;
+    dotenv::dotenv().ok();
 
     let provider = rustls::crypto::ring::default_provider();
     provider
