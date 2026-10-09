@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - develop
+      - 'celo/v*'
     paths:
       - '.cargo/**'
       - '.github/workflows/cargo-tests.yml'
@@ -22,6 +23,7 @@ on:
   push:
     branches:
       - develop
+      - 'celo/v*'
     tags:
       - "celo/v[0-9]*"
     paths-ignore:
