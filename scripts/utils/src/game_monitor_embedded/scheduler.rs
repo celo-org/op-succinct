@@ -395,9 +395,7 @@ async fn prove_worker<H: OPSuccinctHost>(
         // Promoted-demand decision point: a demand with no witness yet is held waiting behind
         // a witness demand instead of generating it inline; a speculative range whose stdin
         // vanished (evicted) is dropped — a game that needs it will re-demand.
-        if !estimator.cache.has_stdin(key.0, key.1) &&
-            !estimator.cache.has_stats(key.0, key.1)
-        {
+        if !estimator.cache.has_stdin(key.0, key.1) && !estimator.cache.has_stats(key.0, key.1) {
             match class {
                 Class::Demand => scheduler.wait_for_witness(key),
                 Class::Speculative => scheduler.prove_dropped(key),

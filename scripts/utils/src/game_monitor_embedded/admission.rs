@@ -353,7 +353,8 @@ impl Admission {
         // Emit a raw RSS-vs-in-flight-gas sample ~once per second while any work is in
         // flight, to plot whether total RSS grows linearly with total in-flight gas or bends
         // sub-linearly (the concurrency memory-model question). TRACE so it is silent by
-        // default; enable with `RUST_LOG=...,op_succinct_scripts::game_monitor_embedded::admission=trace`
+        // default; enable with
+        // `RUST_LOG=...,op_succinct_scripts::game_monitor_embedded::admission=trace`
         // and filter with `admission rss sample`.
         let log_every = (1000u128 / self.sample_period.as_millis().max(1)).max(1) as u32;
         tokio::spawn(async move {

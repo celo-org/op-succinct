@@ -2,16 +2,15 @@
 //!
 //! A range (a pipeline sub-range, or a game's `[start, end]`) may only be built or executed
 //! once it is *finalized on both sides*:
-//!   * its **end block is finalized on L2**, so the batch covering it is already in finalized
-//!     L1 and the data needed to derive it is available; and
+//!   * its **end block is finalized on L2**, so the batch covering it is already in finalized L1
+//!     and the data needed to derive it is available; and
 //!   * **L1 has finalized past its `l1_head + buffer`**, so the host's `calculate_safe_l1_head`
-//!     finality cap (`min(l1_head + 20, finalized_l1)`) never binds and the witness gets the
-//!     host's full `+ 20` read-ahead slack. Derivation can need L1 blocks beyond the
-//!     batch-posting block (the reason for the `+ 20` is unexplained; see the FIXME in
-//!     `utils/ethereum/host/src/host.rs`) and cannot walk past the baked-in `l1_head`, so a
-//!     capped head risks a failed `host.run` near the finalized head. A minor bonus: the
-//!     baked-in head no longer depends on when the witness is built, so an evicted blob
-//!     rebuilds identically.
+//!     finality cap (`min(l1_head + 20, finalized_l1)`) never binds and the witness gets the host's
+//!     full `+ 20` read-ahead slack. Derivation can need L1 blocks beyond the batch-posting block
+//!     (the reason for the `+ 20` is unexplained; see the FIXME in
+//!     `utils/ethereum/host/src/host.rs`) and cannot walk past the baked-in `l1_head`, so a capped
+//!     head risks a failed `host.run` near the finalized head. A minor bonus: the baked-in head no
+//!     longer depends on when the witness is built, so an evicted blob rebuilds identically.
 //!
 //! Both the predictive pipeline (`ready_range_provider`) and the reactive executor gate on this
 //! single function, so the readiness rule lives in exactly one place.

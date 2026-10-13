@@ -223,7 +223,8 @@ async fn second_witness_short_circuits_host_run() {
     // A range the host cannot witness: block numbers far beyond any real chain height. With no
     // cached stdin the witness task MUST reach the host and fail — this exercises (and fails)
     // exactly the path the short-circuit skips.
-    let unwitnessable = SpanBatchRange { start: 9_000_000_000_000_000_000, end: 9_000_000_000_000_000_100 };
+    let unwitnessable =
+        SpanBatchRange { start: 9_000_000_000_000_000_000, end: 9_000_000_000_000_000_100 };
     assert!(
         estimator.witness_range(&unwitnessable).await.is_err(),
         "sanity: an unwitnessable range must fail when its stdin is not cached (host path exercised)"
@@ -231,7 +232,9 @@ async fn second_witness_short_circuits_host_run() {
 
     // Pre-seed its stdin, then witness again: `Ok` is only reachable via the `has_stdin`
     // short-circuit returning before host.fetch/host.run — proving host.run is skipped.
-    cache.save_stdin(unwitnessable.start, unwitnessable.end, &sp1_sdk::SP1Stdin::default()).unwrap();
+    cache
+        .save_stdin(unwitnessable.start, unwitnessable.end, &sp1_sdk::SP1Stdin::default())
+        .unwrap();
     estimator.witness_range(&unwitnessable).await.unwrap();
     assert!(cache.has_stdin(unwitnessable.start, unwitnessable.end));
 }

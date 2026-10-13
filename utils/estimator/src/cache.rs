@@ -239,12 +239,12 @@ impl WitnessCache {
     /// leaks every not-yet-pruned blob).
     ///
     /// Two phases:
-    /// 1. Always reap stray `*.tmp.*` files — leftovers from an interrupted or failed atomic
-    ///    write (e.g. an ENOSPC crash between `write` and `rename`); never useful.
-    /// 2. If the cache still exceeds `max_bytes`, evict whole blobs **oldest-first** (by
-    ///    mtime) until it fits, skipping any file whose `(start, end)` range is in
-    ///    `protected` — the ranges of games still awaiting a background retry, whose cached
-    ///    stdin we keep so the retry stays a cache hit.
+    /// 1. Always reap stray `*.tmp.*` files — leftovers from an interrupted or failed atomic write
+    ///    (e.g. an ENOSPC crash between `write` and `rename`); never useful.
+    /// 2. If the cache still exceeds `max_bytes`, evict whole blobs **oldest-first** (by mtime)
+    ///    until it fits, skipping any file whose `(start, end)` range is in `protected` — the
+    ///    ranges of games still awaiting a background retry, whose cached stdin we keep so the
+    ///    retry stays a cache hit.
     ///
     /// A protected set larger than the cap simply leaves the cache above `max_bytes` rather
     /// than deleting data a pending retry needs.
@@ -438,7 +438,10 @@ mod tests {
 
     #[test]
     fn parse_range_key_reads_leading_blocks() {
-        assert_eq!(parse_range_key("10452239-10452439-eigenda-stdin.bin"), Some((10452239, 10452439)));
+        assert_eq!(
+            parse_range_key("10452239-10452439-eigenda-stdin.bin"),
+            Some((10452239, 10452439))
+        );
         assert_eq!(parse_range_key("100-200-eigenda-witness.tmp.7.3"), Some((100, 200)));
         assert_eq!(parse_range_key("memory_model.json"), None);
     }

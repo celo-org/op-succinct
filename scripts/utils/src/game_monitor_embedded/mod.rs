@@ -12,19 +12,18 @@
 //! `chain_id/start/end/da_type`: the **witness (stdin) cache** and the **proof cache**
 //! (`ExecutionStats` per range).
 //!
-//! * **Speculative work** (ahead of the chain). A [`ReadyRangeProvider`] predicts the next
-//!   game window from the proposal cadence, splits it into fixed sub-ranges anchored at the
-//!   window start, and offers each soundly-finalized sub-range to the build pool's
-//!   speculative LIFO queue (newest first). A completed speculative build is then queued
-//!   for speculative execution, bounded by the lead cap
-//!   (`--max-speculative-lead-windows` past the newest discovered game) — so both the
-//!   witness *and* the execute are usually already cached when the game arrives.
+//! * **Speculative work** (ahead of the chain). A [`ReadyRangeProvider`] predicts the next game
+//!   window from the proposal cadence, splits it into fixed sub-ranges anchored at the window
+//!   start, and offers each soundly-finalized sub-range to the build pool's speculative LIFO queue
+//!   (newest first). A completed speculative build is then queued for speculative execution,
+//!   bounded by the lead cap (`--max-speculative-lead-windows` past the newest discovered game) —
+//!   so both the witness *and* the execute are usually already cached when the game arrives.
 //!
-//! * **Games** (as they appear on-chain). The factory poll enqueues new games newest-first;
-//!   each due game runs as a light task that splits into the same sub-ranges, demands
-//!   whatever the proof cache is missing (FIFO priority queues, served before all
-//!   speculative work), and assembles the aggregate from the cache. An un-built range
-//!   promotes a witness demand rather than building inline.
+//! * **Games** (as they appear on-chain). The factory poll enqueues new games newest-first; each
+//!   due game runs as a light task that splits into the same sub-ranges, demands whatever the proof
+//!   cache is missing (FIFO priority queues, served before all speculative work), and assembles the
+//!   aggregate from the cache. An un-built range promotes a witness demand rather than building
+//!   inline.
 //!
 //! Because the speculative split is anchored at the proposal boundary, its sub-range
 //! boundaries match the games', the cache keys line up, and in the common case a game
@@ -75,8 +74,8 @@
 //! * [`ready_range_provider`] — window prediction, splitting, finalization gating.
 //! * [`scheduler`] — the FIFO-priority/LIFO-speculative queues and the worker pools.
 //! * [`pipeline`] — generates one witness per sub-range (the witness workers' unit of work).
-//! * [`executor`] — proves one sub-range ([`executor::prove_step`]) and assembles games
-//!   from the proof cache ([`executor::prove_game`]).
+//! * [`executor`] — proves one sub-range ([`executor::prove_step`]) and assembles games from the
+//!   proof cache ([`executor::prove_game`]).
 //! * [`discovery`] — reads game metadata from the factory and filters to type-42.
 //! * [`state`] — the queue/attempt types, the pure retry policy, and progress persistence.
 
@@ -87,8 +86,8 @@ pub mod pipeline;
 pub mod readiness;
 pub mod ready_range_provider;
 pub mod registry;
-pub mod scheduler;
 pub mod rss_source;
+pub mod scheduler;
 pub mod state;
 
 use std::{
@@ -232,12 +231,12 @@ pub struct EmbeddedArgs {
     // memory limit. The flags below tune where RSS is read from, how much headroom to keep, how
     // often to sample, and how often to persist what it has learned.
     /// Where to read the process's resident memory (RSS) from each sample:
-    /// - `auto` (default): per-process on Linux (`/proc/self/status`), disabled elsewhere
-    ///   (e.g. macOS dev — the sampler then records nothing and admission falls back to the
-    ///   count cap only).
+    /// - `auto` (default): per-process on Linux (`/proc/self/status`), disabled elsewhere (e.g.
+    ///   macOS dev — the sampler then records nothing and admission falls back to the count cap
+    ///   only).
     /// - `proc`: force `/proc/self/status` (`VmRSS`), this process only.
-    /// - `cgroup`: read the whole cgroup's usage (`memory.current`) — includes child processes
-    ///   and page cache, so it reads higher than `proc`.
+    /// - `cgroup`: read the whole cgroup's usage (`memory.current`) — includes child processes and
+    ///   page cache, so it reads higher than `proc`.
     #[arg(long, value_enum, default_value_t = RssSourceKind::Auto)]
     pub rss_source: RssSourceKind,
     /// Safety headroom kept below the cgroup memory limit, in MiB (default 20480 = 20 GiB).
@@ -853,10 +852,10 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
             tokio::spawn(
                 async move {
                     // Recover a panic anywhere in the task body (fetch / readiness / prove /
-                    // on-demand witness generation, incl. panics deep in kona/sp1) into a `Transient` result so
-                    // the main loop's slot release still runs; without this a
-                    // panicking task sends no result and permanently leaks its
-                    // concurrency slot.
+                    // on-demand witness generation, incl. panics deep in kona/sp1) into a
+                    // `Transient` result so the main loop's slot release still
+                    // runs; without this a panicking task sends no result and
+                    // permanently leaks its concurrency slot.
                     let recovery_pg = pg.clone();
                     let result = catch_game_panic(recovery_pg, async move {
                         // Bound the game-data read; a timeout is a transient defer.
@@ -904,27 +903,29 @@ pub async fn run(args: EmbeddedArgs) -> anyhow::Result<()> {
                                         );
                                         GameTaskResult::Defer { pg }
                                     }
-                                    Ok(true) => match prove_game(
-                                        &estimator, &sched, &game, range_size,
-                                    )
-                                    .await
-                                    {
-                                        Ok((stats, ranges)) => GameTaskResult::Success {
-                                            pg,
-                                            stats: Box::new(stats),
-                                            ranges,
-                                        },
-                                        Err(e) if e.is_transient() => GameTaskResult::Transient {
-                                            pg,
-                                            created_at: game.created_at,
-                                            start_block: game.start_block,
-                                            end_block: game.end_block,
-                                            error: format!("{e}"),
-                                        },
-                                        Err(e) => {
-                                            GameTaskResult::Fatal { pg, error: format!("{e}") }
+                                    Ok(true) => {
+                                        match prove_game(&estimator, &sched, &game, range_size)
+                                            .await
+                                        {
+                                            Ok((stats, ranges)) => GameTaskResult::Success {
+                                                pg,
+                                                stats: Box::new(stats),
+                                                ranges,
+                                            },
+                                            Err(e) if e.is_transient() => {
+                                                GameTaskResult::Transient {
+                                                    pg,
+                                                    created_at: game.created_at,
+                                                    start_block: game.start_block,
+                                                    end_block: game.end_block,
+                                                    error: format!("{e}"),
+                                                }
+                                            }
+                                            Err(e) => {
+                                                GameTaskResult::Fatal { pg, error: format!("{e}") }
+                                            }
                                         }
-                                    },
+                                    }
                                 }
                             }
                             Ok(Err(FetchGameError::WrongGameType { game_type, .. })) => {

@@ -11,8 +11,8 @@ use crate::game_monitor_embedded::readiness::range_ready;
 /// It owns everything needed to answer one question — "what's the next range ready to
 /// process?" — so the caller is free to do whatever it wants with each range it receives
 /// (build a witness, estimate, prove, …):
-///   * predicts game windows from the proposal cadence (`[window_start, window_start +
-///     interval]`, which equals the next game's `[start, end]`),
+///   * predicts game windows from the proposal cadence (`[window_start, window_start + interval]`,
+///     which equals the next game's `[start, end]`),
 ///   * splits each window into fixed-size (`range_size`-block) sub-ranges **anchored at the window
 ///     start**, so the boundaries match the executor's split of the real game (cache keys line up),
 ///   * hands them out one at a time as each becomes soundly ready: its end is L2-finalized AND L1

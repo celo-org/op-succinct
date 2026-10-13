@@ -50,10 +50,8 @@ where
 {
     // Proof-cache hit: the prove already ran (a prior attempt, a speculative prove, or a
     // pre-restart run) — reuse it, no admission slot needed.
-    if let Some(stats) = estimator
-        .cache
-        .load_stats(range.start, range.end)
-        .map_err(EstimatorError::Transient)?
+    if let Some(stats) =
+        estimator.cache.load_stats(range.start, range.end).map_err(EstimatorError::Transient)?
     {
         tracing::debug!("proof cache hit; skipping prove");
         return Ok(stats);
@@ -127,11 +125,7 @@ where
         let mut per_range = Vec::with_capacity(sub_ranges.len());
         let mut missing: Vec<RangeKey> = Vec::new();
         for r in &sub_ranges {
-            match estimator
-                .cache
-                .load_stats(r.start, r.end)
-                .map_err(EstimatorError::Transient)?
-            {
+            match estimator.cache.load_stats(r.start, r.end).map_err(EstimatorError::Transient)? {
                 Some(stats) => per_range.push(stats),
                 None => missing.push((r.start, r.end)),
             }
@@ -158,7 +152,8 @@ where
             scheduler.demand_prove(key);
         }
         // Fallback tick guards against any missed notification wedging the game silently.
-        let _ = tokio::time::timeout(crate::game_monitor_embedded::scheduler::IDLE_RECHECK, completed)
-            .await;
+        let _ =
+            tokio::time::timeout(crate::game_monitor_embedded::scheduler::IDLE_RECHECK, completed)
+                .await;
     }
 }
