@@ -121,6 +121,9 @@ fn create_diff_report(base: &ExecutionStats, current: &ExecutionStats) -> String
 async fn test_cycle_count_diff() -> Result<()> {
     // Best-effort: CI provides configuration via real env vars, not a .env file.
     dotenv::dotenv().ok();
+    // Without a subscriber RUST_LOG does nothing, and a host stuck retrying a failed hint
+    // fetch looks like a silent hang in CI.
+    op_succinct_host_utils::logger::setup_logger();
 
     let provider = rustls::crypto::ring::default_provider();
     provider

@@ -80,6 +80,9 @@ jobs:
           cp -r ./srs/resources ./old_code/scripts/prove
 
       - name: Run Test On New Branch
+        # Build (~13 min) plus test (~3 min). A stuck witness fetch otherwise holds
+        # the runner until the 6 h job limit.
+        timeout-minutes: 45
         run: |
           RUST_LOG=info NEW_BRANCH=true cargo test -p op-succinct-prove --features eigenda test_cycle_count_diff --release -- --exact --nocapture
         working-directory: ./new_code
@@ -99,6 +102,7 @@ jobs:
       - name: Run Test On Old Branch
         # The touch bridges the strict dotenv::dotenv()? still present on the
         # base branch; remove once the best-effort dotenv fix is on develop.
+        timeout-minutes: 45
         run: |
           touch scripts/prove/.env
           RUST_LOG=info NEW_BRANCH=false cargo test -p op-succinct-prove --features eigenda test_cycle_count_diff --release -- --exact --nocapture
