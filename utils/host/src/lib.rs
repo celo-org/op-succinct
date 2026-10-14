@@ -17,4 +17,4 @@ pub mod network;
 pub mod proof_cache;
 pub mod witness_cache;
 pub mod witness_generation;
-pub use logger::setup_logger;
+pub use logger::{build_env_filter, setup_logger};

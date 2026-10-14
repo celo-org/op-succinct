@@ -13,6 +13,12 @@ use crate::{
     witness_generation::WitnessGenerator,
 };
 
+/// L1 blocks added past the batch-posting block by the Ethereum and EigenDA
+/// `calculate_safe_l1_head` implementations, giving derivation read-ahead slack; the result is
+/// capped at the finalized L1 head. See the FIXME in the Ethereum host for why the slack is
+/// needed.
+pub const L1_HEAD_BUFFER: u64 = 20;
+
 #[async_trait]
 pub trait PreimageServerStarter {
     async fn start_server<C>(
