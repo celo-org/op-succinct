@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - 'elf/eigenda-range-elf-embedded'
+      - '.github/workflows/cycle-count-diff-eigenda.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
