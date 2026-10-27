@@ -36,7 +36,7 @@ COPY . .
 RUN cargo build --locked --release --bin proposer --features eigenda
 
 # Keep the system CA bundle current for native-tls and legacy rustls clients.
-FROM ubuntu:24.04 AS runtime-base
+FROM ubuntu:24.04 AS runtime
 
 WORKDIR /app
 
@@ -47,8 +47,6 @@ RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 instal
     libssl-dev \
     && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge 20260816ubuntu0.24.04.1 \
     && rm -rf /var/lib/apt/lists/*
-
-FROM runtime-base AS runtime
 
 # Create configs directories and copy pre-existing configs from fault-proof/configs/ for custom L1 (local devnet)
 RUN mkdir -p ./configs/L1
