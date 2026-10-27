@@ -20,6 +20,7 @@ mod asr_filtering {
             proposal_status: ProposalStatus::Unchallenged,
             deadline: 0,
             should_attempt_to_resolve: false,
+            should_attempt_to_close_game: false,
             should_attempt_to_claim_bond: false,
             aggregation_vkey: B256::ZERO,
             range_vkey_commitment: B256::ZERO,
@@ -72,20 +73,31 @@ mod proposer_sync {
         },
         TestEnvironment,
     };
-    use alloy_eips::BlockId;
+    use alloy::{
+        rpc::client::RpcClient,
+        transports::{TransportErrorKind, TransportFut},
+    };
+    use alloy_eips::{BlockId, BlockNumberOrTag};
+    use alloy_json_rpc::RequestPacket;
     use alloy_primitives::{Bytes, FixedBytes, Uint, U256};
-    use alloy_sol_types::{SolCall, SolValue};
+    use alloy_provider::Provider;
+    use alloy_sol_types::{SolCall, SolError, SolValue};
     use anyhow::{Context, Result};
     use fault_proof::{
-        contract::ProposalStatus,
+        contract::{ProposalStatus, BOND_DISTRIBUTION_MODE_UNDECIDED},
         proposer::{
             Game, GameFetchResult, OPSuccinctProposer, ProposerStateSnapshot, MAX_GAME_DEADLINE_LAG,
         },
     };
-    use op_succinct_bindings::dispute_game_factory::DisputeGameFactory;
+    use op_succinct_bindings::{
+        dispute_game_factory::DisputeGameFactory,
+        op_succinct_fault_dispute_game::OPSuccinctFaultDisputeGame::NoCreditToClaim,
+    };
     use op_succinct_host_utils::host::OPSuccinctHost;
+    use op_succinct_signer_utils::NUM_CONFIRMATIONS;
     use rand::Rng;
     use rstest::rstest;
+    use tower::ServiceExt;
 
     const M: u32 = u32::MAX;
 
@@ -109,6 +121,31 @@ mod proposer_sync {
             .get_game(U256::from(index))
             .await
             .with_context(|| format!("game {index} missing from cache"))
+    }
+
+    /// Service transactions need confirmation blocks while interval mining is disabled.
+    async fn create_and_confirm<H: OPSuccinctHost + Clone>(
+        proposer: &OPSuccinctProposer<fault_proof::L1Provider, H>,
+        block: U256,
+        parent: u32,
+    ) -> Result<()> {
+        let expected_count = proposer.factory.gameCount().call().await? + U256::from(1);
+        tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            let mine_confirmations = async {
+                while proposer.factory.gameCount().call().await? < expected_count {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                for _ in 1..NUM_CONFIRMATIONS {
+                    let _: serde_json::Value =
+                        proposer.l1_provider.raw_request("evm_mine".into(), ()).await?;
+                }
+                Ok::<_, anyhow::Error>(())
+            };
+            tokio::try_join!(proposer.handle_game_creation(block, parent), mine_confirmations)?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("Service creation did not complete after mining confirmations")?
     }
 
     trait Assertion {
@@ -153,6 +190,480 @@ mod proposer_sync {
                 "Canonical head L2 block should match"
             );
         }
+    }
+
+    /// A reorg can replace a factory index without changing the factory game count.
+    #[rstest]
+    #[case::same_height(0, false, 0, false, false)]
+    #[case::lower_head(0, false, 0, false, true)]
+    #[case::advanced_head(2, false, 0, false, false)]
+    #[case::removed_game(0, true, 0, false, false)]
+    #[case::confirmed_head(0, false, 1, false, false)]
+    #[case::cached_before_first_sync(0, false, 0, true, false)]
+    #[tokio::test]
+    async fn test_sync_state_recovers_l1_reorg(
+        #[case] extra_blocks: u64,
+        #[case] remove_game: bool,
+        #[case] confirmations: u64,
+        #[case] cached_before_first_sync: bool,
+        #[case] lower_head: bool,
+    ) -> Result<()> {
+        let (env, mut proposer, init_bond) = setup().await?;
+        proposer.config.sync_l1_confirmations = confirmations;
+        let provider = &env.anvil.provider;
+        let _: serde_json::Value =
+            provider.raw_request("evm_setIntervalMining".into(), [0u64]).await?;
+        let _: serde_json::Value = provider.raw_request("evm_setAutomine".into(), [true]).await?;
+        let snapshot: String = provider.raw_request("evm_snapshot".into(), ()).await?;
+        let block = env.anvil.starting_l2_block_number + 1;
+        let root = env.compute_output_root_at_block(block).await?;
+        env.create_game(root, block, M, init_bond).await?;
+        let old_address = env.last_game_info().await?.1;
+        for _ in 0..(confirmations + u64::from(lower_head)) {
+            let _: serde_json::Value = provider.raw_request("evm_mine".into(), ()).await?;
+        }
+        if cached_before_first_sync {
+            proposer.fetch_game(U256::ZERO, BlockId::latest()).await?;
+        } else {
+            proposer.sync_state().await?;
+        }
+        assert_eq!(proposer.state_snapshot().await.games, vec![(U256::ZERO, old_address)]);
+        let old_head = provider
+            .get_block_by_number(BlockNumberOrTag::Latest)
+            .await?
+            .context("missing original L1 head")?
+            .header;
+
+        assert!(provider.raw_request::<_, bool>("evm_revert".into(), [snapshot]).await?);
+        let _: serde_json::Value =
+            provider.raw_request("anvil_dropAllTransactions".into(), ()).await?;
+        let new_address = if remove_game {
+            let _: serde_json::Value = provider.raw_request("evm_mine".into(), ()).await?;
+            None
+        } else {
+            let root = env.compute_output_root_at_block(block + 1).await?;
+            env.create_game(root, block + 1, M, init_bond).await?;
+            Some(env.last_game_info().await?.1)
+        };
+        for _ in 0..confirmations {
+            let _: serde_json::Value = provider.raw_request("evm_mine".into(), ()).await?;
+        }
+        let new_head = provider
+            .get_block_by_number(BlockNumberOrTag::Latest)
+            .await?
+            .context("missing replacement L1 head")?
+            .header;
+        assert_eq!(old_head.number, new_head.number + u64::from(lower_head));
+        assert_ne!(old_head.hash, new_head.hash);
+        assert_eq!(
+            env.factory()?.gameCount().call().await?,
+            U256::from(u8::from(!remove_game)),
+            "Replacement branch must contain only its intended game"
+        );
+        for _ in 0..extra_blocks {
+            let _: serde_json::Value = provider.raw_request("evm_mine".into(), ()).await?;
+        }
+
+        // Recover immediately, then stay consistent as L1 advances further.
+        for _ in 0..3 {
+            proposer.sync_state().await?;
+            proposer.sync_state().await?;
+            let state = proposer.state_snapshot().await;
+            match new_address {
+                Some(address) => {
+                    assert_eq!(state.games, vec![(U256::ZERO, address)]);
+                    state.assert_canonical_head(Some(0), 2, env.anvil.starting_l2_block_number);
+                }
+                None => {
+                    state.assert_game_len(0);
+                    state.assert_anchor_index(None);
+                    state.assert_canonical_head(None, 0, env.anvil.starting_l2_block_number);
+                }
+            }
+            let _: serde_json::Value = provider.raw_request("evm_mine".into(), ()).await?;
+        }
+        Ok(())
+    }
+
+    /// A stale backend must not hide a replacement chain and poison subsequent syncs.
+    #[rstest]
+    #[case::stale_number(false)]
+    #[case::missing_parent(true)]
+    #[tokio::test]
+    async fn test_sync_state_recovers_mixed_fork_headers(
+        #[case] lagging_parent: bool,
+    ) -> Result<()> {
+        let (mut env, mut proposer, init_bond) = setup().await?;
+        let original = env.anvil.provider.clone();
+        let _: serde_json::Value =
+            original.raw_request("evm_setIntervalMining".into(), [0u64]).await?;
+        let _: serde_json::Value = original.raw_request("evm_setAutomine".into(), [true]).await?;
+        let common_height = original.get_block_number().await?;
+        let block = env.anvil.starting_l2_block_number + 1;
+        env.create_game(env.compute_output_root_at_block(block).await?, block, M, init_bond)
+            .await?;
+        let old_address = env.last_game_info().await?.1;
+        proposer.sync_state().await?;
+        let old_height = original.get_block_number().await?;
+
+        // Keep the old node alive while a second node builds a different branch from their
+        // common parent. Every response below comes from one of these real nodes.
+        let replacement = alloy_node_bindings::Anvil::new()
+            .fork(&env.anvil.endpoint)
+            .fork_block_number(common_height)
+            .arg("--disable-code-size-limit")
+            .spawn();
+        let current = fault_proof::L1Provider::new_http(replacement.endpoint_url());
+        env.anvil.provider = current.clone();
+        env.anvil.endpoint = replacement.endpoint();
+        env.rpc_config.l1_rpc = replacement.endpoint_url();
+        env.create_game(
+            env.compute_output_root_at_block(block + 1).await?,
+            block + 1,
+            M,
+            init_bond,
+        )
+        .await?;
+        let new_address = env.last_game_info().await?.1;
+        assert_eq!(proposer.get_game(U256::ZERO).await.unwrap().address, old_address);
+        assert_eq!(
+            env.fault_dispute_game(new_address).await?.l2BlockNumber().call().await?,
+            U256::from(block + 1),
+        );
+        assert_eq!(env.factory()?.gameCount().call().await?, U256::ONE);
+        while current.get_block_number().await? <= old_height {
+            let _: serde_json::Value = current.raw_request("evm_mine".into(), ()).await?;
+        }
+
+        let stale = original.client().transport().clone();
+        let healthy = current.client().transport().clone();
+        let once = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let transport = tower::service_fn(move |packet: RequestPacket| -> TransportFut<'static> {
+            let previous_height = match &packet {
+                RequestPacket::Single(request) if request.method() == "eth_getBlockByNumber" => {
+                    let params: serde_json::Value =
+                        serde_json::from_str(request.params().unwrap().get()).unwrap();
+                    params[0] == format!("0x{old_height:x}")
+                }
+                RequestPacket::Single(request)
+                    if lagging_parent && request.method() == "eth_getBlockByHash" =>
+                {
+                    true
+                }
+                _ => false,
+            };
+            let transport =
+                if previous_height && once.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                    stale.clone()
+                } else {
+                    healthy.clone()
+                };
+            Box::pin(transport.oneshot(packet))
+        });
+        let provider = fault_proof::L1Provider::new(RpcClient::new(transport, true));
+        proposer.factory = std::sync::Arc::new(fault_proof::contract::DisputeGameFactory::new(
+            *proposer.factory.address(),
+            provider.clone(),
+        ));
+        proposer.anchor_state_registry =
+            std::sync::Arc::new(fault_proof::contract::AnchorStateRegistry::new(
+                *proposer.anchor_state_registry.address(),
+                provider.clone(),
+            ));
+        proposer.l1_provider = provider;
+        proposer.config.l1_rpc = replacement.endpoint_url();
+        proposer.config.proposal_interval_in_blocks = 1;
+
+        // A transient RPC error is allowed, but healthy later passes must recover without
+        // restarting the proposer or clearing its cache from the test.
+        let mut result = proposer.sync_state().await;
+        for _ in 0..3 {
+            let _: serde_json::Value = current.raw_request("evm_mine".into(), ()).await?;
+            result = proposer.sync_state().await;
+        }
+        result.context("Sync did not recover after all requests returned the replacement fork")?;
+        assert_eq!(proposer.state_snapshot().await.games, vec![(U256::ZERO, new_address)]);
+        assert_eq!(
+            proposer.state_snapshot().await.canonical_head_l2_block,
+            U256::from(block + 1),
+            "Replacement game metadata must be refreshed even when its address is reused",
+        );
+        let (should_create, next_block, parent) = proposer.should_create_game().await?;
+        assert!(should_create);
+        create_and_confirm(&proposer, next_block, parent).await?;
+        proposer.sync_state().await?;
+        assert_eq!(env.factory()?.gameCount().call().await?, U256::from(2));
+        proposer.state_snapshot().await.assert_game_len(2);
+        Ok(())
+    }
+
+    /// Reorg recovery must release the duplicate guard for a game removed from L1.
+    #[tokio::test]
+    async fn test_sync_state_reorg_clears_orphan_creation_guard() -> Result<()> {
+        let (env, mut proposer, init_bond) = setup().await?;
+        proposer.config.proposal_interval_in_blocks = 1;
+        let provider = &env.anvil.provider;
+        let _: serde_json::Value =
+            provider.raw_request("evm_setIntervalMining".into(), [0u64]).await?;
+        let _: serde_json::Value = provider.raw_request("evm_setAutomine".into(), [true]).await?;
+        let snapshot: String = provider.raw_request("evm_snapshot".into(), ()).await?;
+        let block = env.anvil.starting_l2_block_number + 1;
+        create_and_confirm(&proposer, U256::from(block + 1), M).await?;
+        proposer.sync_state().await?;
+
+        assert!(provider.raw_request::<_, bool>("evm_revert".into(), [snapshot]).await?);
+        let _: serde_json::Value =
+            provider.raw_request("anvil_dropAllTransactions".into(), ()).await?;
+        let root = env.compute_output_root_at_block(block).await?;
+        env.create_game(root, block, M, init_bond).await?;
+        let replacement = env.last_game_info().await?.1;
+        for _ in 1..NUM_CONFIRMATIONS {
+            let _: serde_json::Value = provider.raw_request("evm_mine".into(), ()).await?;
+        }
+        proposer.sync_state().await?;
+        assert_eq!(proposer.state_snapshot().await.games, vec![(U256::ZERO, replacement)]);
+        proposer.state_snapshot().await.assert_canonical_head(
+            Some(0),
+            1,
+            env.anvil.starting_l2_block_number,
+        );
+        assert_eq!(proposer.should_create_game().await?, (true, U256::from(block + 1), 0));
+        Ok(())
+    }
+
+    /// Reconcile an unseen creation after L1 either removes it or includes it again.
+    #[rstest]
+    #[case::removed(false)]
+    #[case::recreated(true)]
+    #[tokio::test]
+    async fn test_sync_state_reorg_clears_pending_creation_guard(
+        #[case] recreate: bool,
+    ) -> Result<()> {
+        let (env, mut proposer, init_bond) = setup().await?;
+        proposer.config.proposal_interval_in_blocks = 1;
+        proposer.config.sync_l1_confirmations = NUM_CONFIRMATIONS + 1;
+        let provider = &env.anvil.provider;
+        let _: serde_json::Value =
+            provider.raw_request("evm_setIntervalMining".into(), [0u64]).await?;
+        let _: serde_json::Value = provider.raw_request("evm_setAutomine".into(), [true]).await?;
+        let snapshot: String = provider.raw_request("evm_snapshot".into(), ()).await?;
+        let _: serde_json::Value = provider.raw_request("evm_mine".into(), ()).await?;
+        let old_parent = provider
+            .get_block_by_number(BlockNumberOrTag::Latest)
+            .await?
+            .context("missing original parent")?
+            .header;
+        let block = env.anvil.starting_l2_block_number + 1;
+        create_and_confirm(&proposer, U256::from(block), M).await?;
+        let old_address = env.last_game_info().await?.1;
+        proposer.sync_state().await?;
+        proposer.state_snapshot().await.assert_game_len(0);
+        assert!(!proposer.should_create_game().await?.0, "Unconfirmed game must keep its guard");
+
+        assert!(provider.raw_request::<_, bool>("evm_revert".into(), [snapshot]).await?);
+        let _: serde_json::Value =
+            provider.raw_request("anvil_dropAllTransactions".into(), ()).await?;
+        let _: serde_json::Value = provider
+            .raw_request("evm_setNextBlockTimestamp".into(), [old_parent.timestamp + 1])
+            .await?;
+        let _: serde_json::Value = provider.raw_request("evm_mine".into(), ()).await?;
+        let new_parent = provider
+            .get_block_by_number(BlockNumberOrTag::Latest)
+            .await?
+            .context("missing replacement parent")?
+            .header;
+        assert_eq!(old_parent.number, new_parent.number);
+        assert_ne!(old_parent.hash, new_parent.hash);
+        for _ in 0..NUM_CONFIRMATIONS {
+            let _: serde_json::Value = provider.raw_request("evm_mine".into(), ()).await?;
+        }
+        let mut before_reinclusion = None;
+        if recreate {
+            // Include the same proposal later, with a different parent block hash.
+            before_reinclusion =
+                Some(provider.raw_request::<_, String>("evm_snapshot".into(), ()).await?);
+            let root = env.compute_output_root_at_block(block).await?;
+            env.create_game(root, block, M, init_bond).await?;
+        } else {
+            assert!(provider.get_code_at(old_address).await?.is_empty());
+        }
+        proposer.sync_state().await?;
+        proposer.state_snapshot().await.assert_game_len(0);
+        if recreate {
+            assert!(
+                !proposer.should_create_game().await?.0,
+                "A re-included proposal must retain its guard even if its address changes"
+            );
+            assert!(
+                provider
+                    .raw_request::<_, bool>(
+                        "evm_revert".into(),
+                        [before_reinclusion.context("missing pre-inclusion snapshot")?]
+                    )
+                    .await?
+            );
+            let _: serde_json::Value =
+                provider.raw_request("anvil_dropAllTransactions".into(), ()).await?;
+            proposer.sync_state().await?;
+            assert!(
+                !proposer.should_create_game().await?.0,
+                "A tip below the last existence observation must retain the guard"
+            );
+            let _: serde_json::Value = provider.raw_request("evm_mine".into(), ()).await?;
+            proposer.sync_state().await?;
+            assert_eq!(proposer.should_create_game().await?, (true, U256::from(block), M));
+        } else {
+            assert_eq!(proposer.should_create_game().await?, (true, U256::from(block), M));
+        }
+        Ok(())
+    }
+
+    /// An older L1 tip must not erase a creation confirmed during or before the sync.
+    #[rstest]
+    #[case::already_created(false)]
+    #[case::created_during_sync(true)]
+    #[tokio::test]
+    async fn test_sync_state_retains_creation_guard_at_older_tip(
+        #[case] create_during_sync: bool,
+    ) -> Result<()> {
+        let (env, mut proposer, _) = setup().await?;
+        proposer.config.proposal_interval_in_blocks = 1;
+        let provider = &env.anvil.provider;
+        let _: serde_json::Value =
+            provider.raw_request("evm_setIntervalMining".into(), [0u64]).await?;
+        let _: serde_json::Value = provider.raw_request("evm_setAutomine".into(), [true]).await?;
+        let old_tip = provider
+            .get_block_by_number(BlockNumberOrTag::Latest)
+            .await?
+            .context("missing pre-creation L1 head")?
+            .header
+            .number;
+        let block = U256::from(env.anvil.starting_l2_block_number + 1);
+        if !create_during_sync {
+            create_and_confirm(&proposer, block, M).await?;
+        }
+        let original_provider = proposer.l1_provider.clone();
+        let creator = proposer.clone();
+        let creation_task = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+        let task_slot = creation_task.clone();
+        let pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(create_during_sync));
+        let redirected = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = redirected.clone();
+        let transport = original_provider.client().transport().clone();
+        let transport = tower::service_fn(move |packet: RequestPacket| -> TransportFut<'static> {
+            let mut packet = packet;
+            let mut old_tip_requested = false;
+            if let RequestPacket::Single(request) = &packet {
+                if request.method() == "eth_getBlockByNumber" {
+                    let params: serde_json::Value =
+                        serde_json::from_str(request.params().unwrap().get()).unwrap();
+                    if params[0] == "latest" {
+                        // Forward to a real earlier block, as a lagging RPC backend would.
+                        packet = RequestPacket::Single(
+                            alloy_json_rpc::Request::new(
+                                request.method().to_owned(),
+                                request.id().clone(),
+                                (BlockNumberOrTag::Number(old_tip), false),
+                            )
+                            .serialize()
+                            .unwrap(),
+                        );
+                        old_tip_requested = true;
+                        observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            }
+            let transport = transport.clone();
+            let creator = creator.clone();
+            let pending = pending.clone();
+            let task_slot = task_slot.clone();
+            Box::pin(async move {
+                if old_tip_requested && pending.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                    let task_creator = creator.clone();
+                    *task_slot.lock().await = Some(tokio::spawn(async move {
+                        create_and_confirm(&task_creator, block, M).await
+                    }));
+                    // Confirm on-chain before returning the old tip. Guard registration
+                    // waits for sync to release its mutex, so do not await that task here.
+                    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+                        while creator.l1_provider.get_block_number().await? <
+                            old_tip + NUM_CONFIRMATIONS
+                        {
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        }
+                        Ok::<_, anyhow::Error>(())
+                    })
+                    .await
+                    .expect("Concurrent creation did not reach its confirmation height")
+                    .unwrap();
+                }
+                transport.oneshot(packet).await
+            })
+        });
+        proposer.l1_provider = fault_proof::L1Provider::new(RpcClient::new(transport, true));
+        proposer.sync_state().await?;
+        if let Some(task) = creation_task.lock().await.take() {
+            task.await??;
+        }
+        proposer.state_snapshot().await.assert_game_len(0);
+        assert!(redirected.load(std::sync::atomic::Ordering::Relaxed) > 0);
+        assert!(!proposer.should_create_game().await?.0, "A lagging tip must retain the guard");
+        proposer.l1_provider = original_provider;
+        proposer.sync_state().await?;
+        proposer.state_snapshot().await.assert_game_len(1);
+        assert_eq!(proposer.should_create_game().await?, (true, block + U256::from(1), 0));
+        Ok(())
+    }
+
+    /// Every contract read in a sync must use the same exact L1 block hash.
+    #[tokio::test]
+    async fn test_sync_state_pins_l1_reads_by_hash() -> Result<()> {
+        let (env, mut proposer, init_bond) = setup().await?;
+        let _: serde_json::Value =
+            env.anvil.provider.raw_request("evm_setIntervalMining".into(), [0u64]).await?;
+        let _: serde_json::Value =
+            env.anvil.provider.raw_request("evm_setAutomine".into(), [true]).await?;
+        let block = env.anvil.starting_l2_block_number + 1;
+        let root = env.compute_output_root_at_block(block).await?;
+        env.create_game(root, block, M, init_bond).await?;
+        let hash = env
+            .anvil
+            .provider
+            .get_block_by_number(BlockNumberOrTag::Latest)
+            .await?
+            .context("missing L1 head")?
+            .header
+            .hash;
+        let expected = serde_json::json!({"blockHash": hash, "requireCanonical": true});
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = calls.clone();
+        let transport = proposer.l1_provider.client().transport().clone();
+        let transport = tower::service_fn(move |packet: RequestPacket| -> TransportFut<'static> {
+            if let RequestPacket::Single(request) = &packet {
+                if request.method() == "eth_call" {
+                    let params: serde_json::Value =
+                        serde_json::from_str(request.params().unwrap().get()).unwrap();
+                    assert_eq!(params[1], expected, "Sync must pin contract reads by hash");
+                    observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            Box::pin(transport.clone().oneshot(packet))
+        });
+        let provider = fault_proof::L1Provider::new(RpcClient::new(transport, true));
+        proposer.factory = std::sync::Arc::new(fault_proof::contract::DisputeGameFactory::new(
+            *proposer.factory.address(),
+            provider.clone(),
+        ));
+        proposer.anchor_state_registry =
+            std::sync::Arc::new(fault_proof::contract::AnchorStateRegistry::new(
+                *proposer.anchor_state_registry.address(),
+                provider.clone(),
+            ));
+        proposer.l1_provider = provider;
+        proposer.sync_state().await?;
+        proposer.state_snapshot().await.assert_game_len(1);
+        assert!(calls.load(std::sync::atomic::Ordering::Relaxed) > 0);
+        Ok(())
     }
 
     /// Verifies proposer state sync across multiple happy-path scenarios with only valid games.
@@ -377,16 +888,27 @@ mod proposer_sync {
         Ok(())
     }
 
+    #[rstest]
+    #[case::clean(false, false, false, false)]
+    #[case::retry_after_rpc_failure(true, false, false, false)]
+    #[case::tracked_before_first_sync(false, true, false, false)]
+    #[case::reverted_old_claim(false, true, true, false)]
+    #[case::removal_only_backup(false, true, true, true)]
     #[tokio::test]
-    async fn test_sync_state_with_max_game_deadline_gap() -> Result<()> {
-        let (env, proposer, init_bond) = setup().await?;
+    async fn test_sync_state_with_max_game_deadline_gap(
+        #[case] retry_after_rpc_failure: bool,
+        #[case] tracked_before_first_sync: bool,
+        #[case] reverted_old_claim: bool,
+        #[case] removal_only_backup: bool,
+    ) -> Result<()> {
+        let (env, mut proposer, init_bond) = setup().await?;
 
         let starting_l2_block = env.anvil.starting_l2_block_number;
 
         // Phase 1: Create all games with time gaps between creations. The contract requires
         // parent.l2SeqNum > anchor.l2SeqNum, so all games must exist before anchors are set.
-        // The time gaps ensure game 0 and 1 exceed MAX_GAME_DEADLINE_LAG from the anchor
-        // (game 2), so the deadline filter drops them during sync.
+        // Game 1 exceeds MAX_GAME_DEADLINE_LAG from the anchor (game 2). Discovery
+        // retains this boundary game and stops before game 0.
         let mut parent_id = M;
         let mut block = starting_l2_block;
         let mut game_addresses = Vec::new();
@@ -422,12 +944,214 @@ mod proposer_sync {
             tracing::info!("Anchor game set to index {i}");
         }
 
+        if tracked_before_first_sync {
+            // A restored cache can contain an unpaid game beyond normal discovery's cutoff.
+            proposer.fetch_game(U256::ZERO, BlockId::latest()).await?;
+        }
+
+        if retry_after_rpc_failure {
+            // Fail on game 1, after discovery has already loaded the anchor (game 2).
+            // Forward every other request to the existing L2 node.
+            let l2_provider = proposer.l2_provider.clone();
+            let transport = l2_provider.client().transport().clone();
+            let failing_block = format!("0x{:x}", starting_l2_block + 2);
+            let transport =
+                tower::service_fn(move |packet: RequestPacket| -> TransportFut<'static> {
+                    let transport = transport.clone();
+                    let should_fail = match &packet {
+                        RequestPacket::Single(request)
+                            if request.method() == "eth_getHeaderByNumber" =>
+                        {
+                            let params: serde_json::Value =
+                                serde_json::from_str(request.params().unwrap().get()).unwrap();
+                            params[0].as_str() == Some(failing_block.as_str())
+                        }
+                        _ => false,
+                    };
+                    Box::pin(async move {
+                        if should_fail {
+                            return Err(TransportErrorKind::custom_str("game 1 L2 RPC unavailable"));
+                        }
+                        transport.oneshot(packet).await
+                    })
+                });
+            proposer.l2_provider = fault_proof::L2Provider::new(RpcClient::new(transport, true));
+
+            let error = proposer.sync_state().await.unwrap_err();
+            assert!(error.to_string().contains("game 1 L2 RPC unavailable"), "{error:#}");
+            proposer.state_snapshot().await.assert_game_len(0);
+            proposer.l2_provider = l2_provider;
+        }
+
         proposer.sync_state().await?;
 
         let snapshot = proposer.state_snapshot().await;
-        snapshot.assert_game_len(2);
+        snapshot.assert_game_len(if tracked_before_first_sync { 3 } else { 2 });
+        let mut indices: Vec<_> = snapshot.games.iter().map(|game| game.0).collect();
+        indices.sort();
+        let expected = if tracked_before_first_sync { vec![0, 1, 2] } else { vec![1, 2] };
+        assert_eq!(indices, expected.into_iter().map(U256::from).collect::<Vec<_>>());
         snapshot.assert_anchor_index(Some(2));
         snapshot.assert_canonical_head(Some(2), 3, starting_l2_block);
+
+        if reverted_old_claim {
+            let backup_dir = tempfile::tempdir()?;
+            let backup_path = backup_dir.path().join("proposer.json");
+            // Leave only the old bond payable so the backup-only service pass has no work.
+            for address in &game_addresses[1..] {
+                assert!(env.claim_bond(*address, PROPOSER_ADDRESS).await?.status());
+            }
+            let provider = &env.anvil.provider;
+            let mut expected_anchor = game_addresses[2];
+            let mut expected_anchor_l2 = U256::from(starting_l2_block + 3);
+            if removal_only_backup {
+                // A new game type's anchor stops fresh discovery above the old payable game.
+                env.setup_legacy_game_type(MOCK_PERMISSIONED_GAME_TYPE, U256::ZERO).await?;
+                env.set_respected_game_type(MOCK_PERMISSIONED_GAME_TYPE).await?;
+                expected_anchor_l2 += U256::ONE;
+                let root = env.compute_output_root_at_block(expected_anchor_l2.to::<u64>()).await?;
+                let create = DisputeGameFactory::createCall {
+                    _gameType: MOCK_PERMISSIONED_GAME_TYPE,
+                    _rootClaim: root,
+                    _extraData: (expected_anchor_l2, M).abi_encode_packed().into(),
+                };
+                env.send_factory_tx(create.abi_encode(), Some(U256::ZERO)).await?;
+                expected_anchor = env.last_game_info().await?.1;
+                assert!(env.resolve_game(expected_anchor).await?.status());
+                env.warp_time(DISPUTE_GAME_FINALITY_DELAY_SECONDS + 1).await?;
+                let update = op_succinct_bindings::anchor_state_registry::AnchorStateRegistry::setAnchorStateCall {
+                    _game: expected_anchor,
+                };
+                env.send_anchor_state_registry_tx(update.abi_encode(), None).await?;
+            }
+            let _: serde_json::Value =
+                provider.raw_request("evm_setIntervalMining".into(), [0u64]).await?;
+            let _: serde_json::Value =
+                provider.raw_request("evm_setAutomine".into(), [true]).await?;
+            let credit_before = env.get_credit(game_addresses[0], PROPOSER_ADDRESS).await?;
+            assert!(credit_before > U256::ZERO);
+            let before_claim: String = provider.raw_request("evm_snapshot".into(), ()).await?;
+            assert!(env.claim_bond(game_addresses[0], PROPOSER_ADDRESS).await?.status());
+            proposer.sync_state().await?;
+            assert!(proposer.get_game(U256::ZERO).await.is_none(), "Paid old game must be evicted");
+
+            let mut backup_proposer =
+                env.new_proposer_with_options(Some(backup_path.clone()), 0).await?;
+            backup_proposer.config.fetch_interval = 1;
+            backup_proposer.config.proposal_interval_in_blocks = 10_000;
+            backup_proposer.fetch_game(U256::ZERO, BlockId::latest()).await?;
+            let backup_service = tokio::spawn(std::sync::Arc::new(backup_proposer).run());
+            let saved = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                loop {
+                    // Inspect the service-written file before restart invokes production
+                    // validation.
+                    if let Ok(bytes) = std::fs::read(&backup_path) {
+                        let backup: fault_proof::backup::ProposerBackup =
+                            serde_json::from_slice(&bytes)
+                                .expect("Service backup must be valid JSON");
+                        assert!(!backup.games.iter().any(|game| game.index == U256::ZERO));
+                        assert!(backup.removed_games.contains_key(&U256::ZERO));
+                        if removal_only_backup {
+                            assert!(backup.games.is_empty(), "Only recovery records may remain");
+                            assert!(backup.cursor.is_some_and(|cursor| cursor > U256::ZERO));
+                            assert!(backup.anchor_game_index.is_none());
+                        }
+                        break backup.removed_games[&U256::ZERO];
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            })
+            .await;
+            backup_service.abort();
+            let old_removal = saved.context("Service did not save the post-claim backup")?;
+
+            assert!(provider.raw_request::<_, bool>("evm_revert".into(), [before_claim]).await?);
+            let _: serde_json::Value =
+                provider.raw_request("anvil_dropAllTransactions".into(), ()).await?;
+            let _: serde_json::Value = provider.raw_request("evm_mine".into(), ()).await?;
+            assert_eq!(env.get_credit(game_addresses[0], PROPOSER_ADDRESS).await?, credit_before);
+            proposer.sync_state().await?;
+            let restored = proposer.get_game(U256::ZERO).await.context(
+                "Reorg restored the old bond but sync lost its game beyond the discovery cutoff",
+            )?;
+            assert!(restored.should_attempt_to_close_game);
+            if removal_only_backup {
+                let fresh = env.init_proposer().await?;
+                fresh.sync_state().await?;
+                assert!(
+                    fresh.get_game(U256::ZERO).await.is_none(),
+                    "Fresh discovery must not recover the old bond without its removal record"
+                );
+            }
+
+            // Restart from the pre-reorg backup, where game 0 is already absent.
+            let mut restarted = env.new_proposer_with_options(Some(backup_path.clone()), 0).await?;
+            restarted.config.fetch_interval = 1;
+            restarted.config.proposal_interval_in_blocks = 10_000;
+            let tracked = [crate::common::monitor::TrackedGame {
+                index: U256::ZERO,
+                address: game_addresses[0],
+                l2_block_number: U256::from(starting_l2_block + 1),
+                parent_index: M,
+            }];
+            let checks = env.capture_bond_claims(&tracked, PROPOSER_ADDRESS).await?;
+            let _: serde_json::Value =
+                provider.raw_request("evm_setIntervalMining".into(), [1u64]).await?;
+            let restarted = std::sync::Arc::new(restarted);
+            let handle = tokio::spawn(restarted.clone().run());
+            let result = async {
+                env.wait_for_bond_claims(&tracked, PROPOSER_ADDRESS, 60).await?;
+                if removal_only_backup {
+                    // This recovered game is now the old-type cache's head and stays retained.
+                    return Ok::<_, anyhow::Error>(());
+                }
+                tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                    loop {
+                        let backup = fault_proof::backup::ProposerBackup::load(&backup_path)
+                            .expect("Saved backup must remain readable");
+                        if !backup.games.iter().any(|game| game.index == U256::ZERO) &&
+                            backup
+                                .removed_games
+                                .get(&U256::ZERO)
+                                .is_some_and(|block| block.number > old_removal.number)
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                })
+                .await
+                .context("Service did not back up the new claim's removal")?;
+                Ok::<_, anyhow::Error>(())
+            }
+            .await;
+            handle.abort();
+            result?;
+            env.verify_bond_claims(&checks, expected_anchor, expected_anchor_l2).await?;
+            if removal_only_backup {
+                return Ok(());
+            }
+
+            // Once the removal block is finalized, the next service backup must release it.
+            let _: serde_json::Value = provider.raw_request("anvil_mine".into(), ["0x80"]).await?;
+            let mut cleanup = env.new_proposer_with_options(Some(backup_path.clone()), 0).await?;
+            cleanup.config.fetch_interval = 1;
+            cleanup.config.proposal_interval_in_blocks = 10_000;
+            let cleanup_service = tokio::spawn(std::sync::Arc::new(cleanup).run());
+            let cleaned = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                loop {
+                    let backup = fault_proof::backup::ProposerBackup::load(&backup_path)
+                        .expect("Saved backup must remain readable");
+                    if !backup.removed_games.contains_key(&U256::ZERO) {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            })
+            .await;
+            cleanup_service.abort();
+            cleaned.context("Finalized removal records were not released")?;
+        }
 
         Ok(())
     }
@@ -1410,13 +2134,12 @@ mod proposer_sync {
         Ok(())
     }
 
-    /// Tests the `should_attempt_to_claim_bond` flag logic for finalized games.
+    /// Tests close-before-claim flag logic for finalized games.
     ///
-    /// Verifies that the flag is correctly set based on:
-    /// - Finality (finalized vs not finalized)
-    /// - Credit availability (credit > 0 vs credit = 0)
+    /// A finalized game is not necessarily closed. The proposer must close an UNDECIDED
+    /// DEFENDER_WINS game before using credit to decide claim or eviction.
     #[tokio::test]
-    async fn test_bond_claim_marking() -> Result<()> {
+    async fn test_close_and_bond_claim_marking() -> Result<()> {
         let (env, proposer, init_bond) = setup().await?;
 
         let starting_l2_block = env.anvil.starting_l2_block_number;
@@ -1437,6 +2160,10 @@ mod proposer_sync {
         // === Case 1: DEFENDER_WINS + not finalized ===
         let game_0 = cached_game(&proposer, 0).await?;
         assert!(
+            !game_0.should_attempt_to_close_game,
+            "Game 0: should_attempt_to_close_game should be false (not finalized)"
+        );
+        assert!(
             !game_0.should_attempt_to_claim_bond,
             "Game 0: should_attempt_to_claim_bond should be false (not finalized)"
         );
@@ -1448,26 +2175,161 @@ mod proposer_sync {
         env.warp_time(DISPUTE_GAME_FINALITY_DELAY_SECONDS + 1).await?;
         proposer.sync_state().await?;
 
-        // === Case 2: DEFENDER_WINS + finalized + credit > 0 ===
+        // === Case 2: DEFENDER_WINS + finalized + UNDECIDED ===
+        let game_0 = cached_game(&proposer, 0).await?;
+        assert_eq!(
+            env.get_bond_distribution_mode(address).await?,
+            BOND_DISTRIBUTION_MODE_UNDECIDED,
+            "Game 0 should not be closed before closeGame"
+        );
+        assert!(
+            game_0.should_attempt_to_close_game,
+            "Game 0: should_attempt_to_close_game should be true (finalized + UNDECIDED)"
+        );
+        assert!(
+            !game_0.should_attempt_to_claim_bond,
+            "Game 0: should_attempt_to_claim_bond should be false before close"
+        );
+        tracing::info!("✓ Case 2: DEFENDER_WINS + finalized + UNDECIDED → close, not claim");
+
+        // Close game before claiming. Once closed, the proposer may claim credit.
+        env.close_game(address).await?;
+        proposer.sync_state().await?;
+
+        // === Case 3: DEFENDER_WINS + closed + credit > 0 ===
         let game_0 = cached_game(&proposer, 0).await?;
         assert!(
-            game_0.should_attempt_to_claim_bond,
-            "Game 0: should_attempt_to_claim_bond should be true (finalized + credit > 0)"
+            !game_0.should_attempt_to_close_game,
+            "Game 0: should_attempt_to_close_game should be false after close"
         );
-        tracing::info!("✓ Case 2: DEFENDER_WINS + finalized + credit > 0 → should_attempt_to_claim_bond = true");
+        assert!(
+            game_0.should_attempt_to_claim_bond,
+            "Game 0: should_attempt_to_claim_bond should be true (closed + credit > 0)"
+        );
+        tracing::info!("✓ Case 3: DEFENDER_WINS + closed + credit > 0 → claim");
 
         // Claim bond for game 0 to set credit = 0
         env.claim_bond(address, PROPOSER_ADDRESS).await?;
         proposer.sync_state().await?;
 
-        // === Case 3: DEFENDER_WINS + finalized + credit = 0 ===
+        // === Case 4: DEFENDER_WINS + closed + credit = 0 ===
         let game_0 = cached_game(&proposer, 0).await?;
         assert!(
-            !game_0.should_attempt_to_claim_bond,
-            "Game 0: should_attempt_to_claim_bond should be false (credit = 0)"
+            !game_0.should_attempt_to_close_game,
+            "Game 0: should_attempt_to_close_game should be false (closed + credit = 0)"
         );
-        tracing::info!("✓ Case 3: DEFENDER_WINS + finalized + credit = 0 → should_attempt_to_claim_bond = false");
+        assert!(
+            !game_0.should_attempt_to_claim_bond,
+            "Game 0: should_attempt_to_claim_bond should be false (closed + credit = 0)"
+        );
+        tracing::info!("✓ Case 4: DEFENDER_WINS + closed + credit = 0 → no claim");
 
+        Ok(())
+    }
+
+    /// Verifies zero-init-bond games are closed before eviction.
+    #[tokio::test]
+    async fn test_zero_init_bond_finalized_game_closes_before_eviction() -> Result<()> {
+        let (env, proposer, _init_bond) = setup().await?;
+
+        let set_init_call = DisputeGameFactory::setInitBondCall {
+            _gameType: TEST_GAME_TYPE,
+            _initBond: U256::ZERO,
+        };
+        env.send_factory_tx(set_init_call.abi_encode(), None).await?;
+
+        let block = env.anvil.starting_l2_block_number + 1;
+        let root_claim = env.compute_output_root_at_block(block).await?;
+        env.create_game(root_claim, block, M, U256::ZERO).await?;
+        let (_, address) = env.last_game_info().await?;
+
+        env.warp_time(MAX_CHALLENGE_DURATION + 1).await?;
+        env.resolve_game(address).await?;
+        env.warp_time(DISPUTE_GAME_FINALITY_DELAY_SECONDS + 1).await?;
+
+        proposer.sync_state().await?;
+
+        let game = cached_game(&proposer, 0).await?;
+        assert_eq!(
+            env.get_credit(address, PROPOSER_ADDRESS).await?,
+            U256::ZERO,
+            "zero init bond should leave proposer credit at zero"
+        );
+        assert_eq!(
+            env.get_bond_distribution_mode(address).await?,
+            BOND_DISTRIBUTION_MODE_UNDECIDED,
+            "zero-bond game should still be unclosed"
+        );
+        assert!(
+            game.should_attempt_to_close_game,
+            "zero-credit finalized game should be marked for close"
+        );
+        assert!(
+            !game.should_attempt_to_claim_bond,
+            "zero-credit unclosed game must not be claimed"
+        );
+
+        // The old claim-only path reverts and rolls back the implicit close.
+        let error = env.claim_bond(address, PROPOSER_ADDRESS).await.unwrap_err();
+        let revert = error
+            .downcast_ref::<alloy::contract::Error>()
+            .and_then(alloy::contract::Error::as_revert_data);
+        assert_eq!(
+            revert.as_ref().map(|data| data.as_ref()),
+            Some(NoCreditToClaim::SELECTOR.as_slice()),
+            "Expected NoCreditToClaim, got {error:#}"
+        );
+        assert_eq!(
+            env.get_bond_distribution_mode(address).await?,
+            BOND_DISTRIBUTION_MODE_UNDECIDED
+        );
+        proposer.submit_close_game_transaction(&game).await?;
+        proposer.sync_state().await?;
+
+        let game = cached_game(&proposer, 0).await?;
+        assert!(
+            !game.should_attempt_to_close_game,
+            "already closed zero-credit game should not be marked for close after restart/sync"
+        );
+        assert!(
+            !game.should_attempt_to_claim_bond,
+            "closed zero-credit game should not be marked for claim"
+        );
+
+        Ok(())
+    }
+
+    /// Foreign unclosed games must not wait for a closer that excludes them.
+    #[tokio::test]
+    async fn test_foreign_zero_bond_game_is_evicted_without_closing() -> Result<()> {
+        let (env, proposer, _) = setup().await?;
+        env.deploy_game_impl_with_vkeys(
+            FixedBytes::repeat_byte(0x11),
+            FixedBytes::repeat_byte(0x22),
+        )
+        .await?;
+        let call = DisputeGameFactory::setInitBondCall {
+            _gameType: TEST_GAME_TYPE,
+            _initBond: U256::ZERO,
+        };
+        env.send_factory_tx(call.abi_encode(), None).await?;
+        let block = env.anvil.starting_l2_block_number + 1;
+        for l2_block in [block, block + 1] {
+            let root = env.compute_output_root_at_block(l2_block).await?;
+            env.create_game(root, l2_block, M, U256::ZERO).await?;
+        }
+        proposer.sync_state().await?;
+        let first = cached_game(&proposer, 0).await?;
+        assert_eq!(proposer.state_snapshot().await.canonical_head_index, Some(U256::from(1)));
+        env.warp_time(MAX_CHALLENGE_DURATION + 1).await?;
+        env.resolve_game(first.address).await?;
+        env.warp_time(DISPUTE_GAME_FINALITY_DELAY_SECONDS + 1).await?;
+        proposer.sync_state().await?;
+        assert!(proposer.get_game(U256::ZERO).await.is_none());
+        assert_eq!(
+            env.get_bond_distribution_mode(first.address).await?,
+            BOND_DISTRIBUTION_MODE_UNDECIDED
+        );
         Ok(())
     }
 
@@ -1651,8 +2513,13 @@ mod proposer_sync {
     ///
     /// Without the address-based invalidation, the guard would stay set and permanently
     /// block creation after the branch switch.
+    #[rstest]
+    #[case::confirmed_creation(false)]
+    #[case::pending_creation(true)]
     #[tokio::test]
-    async fn test_challenger_wins_clears_creation_guard() -> Result<()> {
+    async fn test_challenger_wins_clears_creation_guard(
+        #[case] pending_creation: bool,
+    ) -> Result<()> {
         let (env, proposer, init_bond) = setup().await?;
         let starting_l2_block = env.anvil.starting_l2_block_number;
 
@@ -1694,7 +2561,47 @@ mod proposer_sync {
 
         // Now resolve game 1 as CHALLENGER_WINS (challenged + prove deadline expired).
         env.warp_time(MAX_PROVE_DURATION + 1).await?;
-        env.resolve_game(game_1_address).await?;
+        if pending_creation {
+            // Keep the descendant's receipt pending while sync removes its losing ancestor.
+            let provider = &env.anvil.provider;
+            let _: serde_json::Value =
+                provider.raw_request("evm_setIntervalMining".into(), [0u64]).await?;
+            let _: serde_json::Value =
+                provider.raw_request("evm_setAutomine".into(), [true]).await?;
+            let creation =
+                proposer.handle_game_creation(U256::from(next_block + proposal_interval), 1);
+            tokio::pin!(creation);
+            let prune = async {
+                tokio::time::timeout(std::time::Duration::from_secs(60), async {
+                    while proposer.factory.gameCount().call().await? < U256::from(3) {
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    }
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await
+                .context("Descendant creation was not mined")??;
+                env.resolve_game(game_1_address).await?;
+                proposer.sync_state().await?;
+                let snapshot = proposer.state_snapshot().await;
+                assert_eq!(snapshot.canonical_head_index, Some(U256::ZERO));
+                assert_eq!(snapshot.games, vec![(U256::ZERO, game_0_address)]);
+                Ok::<_, anyhow::Error>(())
+            };
+            tokio::select! {
+                biased;
+                result = &mut creation => panic!("Creation completed before subtree removal: {result:?}"),
+                result = prune => result?,
+            }
+            // Creation and resolution each mined one block; finish the remaining confirmations.
+            for _ in 2..NUM_CONFIRMATIONS {
+                let _: serde_json::Value = provider.raw_request("evm_mine".into(), ()).await?;
+            }
+            tokio::time::timeout(std::time::Duration::from_secs(60), creation)
+                .await
+                .context("Descendant receipt did not finish after confirmation mining")??;
+        } else {
+            env.resolve_game(game_1_address).await?;
+        }
 
         // Step 5: Sync — CHALLENGER_WINS triggers RemoveSubtree.
         // The guard should be cleared because game 1's address matches.
@@ -1711,8 +2618,15 @@ mod proposer_sync {
         // by the subtree removal, so should_create_game uses game 0 as head and computes
         // a fresh next_l2_block. Without the address-based clear, the guard would still
         // be set at next_block and would block this.
-        let (unblocked, _, _) = proposer.should_create_game().await?;
+        let (unblocked, next_block, parent) = proposer.should_create_game().await?;
         assert!(unblocked, "Creation should be unblocked after CHALLENGER_WINS clears the guard");
+        if pending_creation {
+            assert_eq!(parent, 0, "Recovery must extend the last valid parent");
+            create_and_confirm(&proposer, next_block, parent).await?;
+            let (_, recovery_address) = env.last_game_info().await?;
+            let recovery = env.fault_dispute_game(recovery_address).await?;
+            assert_eq!(recovery.claimData().call().await?.parentIndex, 0);
+        }
 
         Ok(())
     }
@@ -1731,8 +2645,10 @@ mod challenger_sync {
     use alloy_sol_types::{SolCall, SolValue};
     use anyhow::{Context, Result};
     use fault_proof::{
-        challenger::{Game, OPSuccinctChallenger},
-        contract::{GameStatus, ProposalStatus},
+        challenger::{
+            Game, GameValidation, InvalidReason, OPSuccinctChallenger, UnavailableReason,
+        },
+        contract::{GameStatus, ProposalStatus, BOND_DISTRIBUTION_MODE_UNDECIDED},
     };
     use op_succinct_bindings::dispute_game_factory::DisputeGameFactory;
     use rand::Rng;
@@ -1799,8 +2715,33 @@ mod challenger_sync {
         for i in 0..num_games {
             let game = cached_game(&challenger, i).await?;
             assert_eq!(game.index, U256::from(i));
-            assert!(!game.is_invalid, "Valid output root should not be marked invalid");
+            assert_eq!(game.validation, GameValidation::Valid);
         }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_challenger_discovers_game_only_after_l1_confirmation_depth() -> Result<()> {
+        let env = TestEnvironment::setup().await?;
+        let factory = env.factory()?;
+        let init_bond = factory.initBonds(TEST_GAME_TYPE).call().await?;
+        let mut challenger = env.new_challenger().await?;
+        challenger.config.sync_l1_confirmations = 1;
+        challenger.try_init().await?;
+        let block = env.anvil.starting_l2_block_number + 1;
+        let root = env.compute_output_root_at_block(block).await?;
+
+        env.create_game(root, block, M, init_bond).await?;
+        challenger.sync_state().await?;
+        assert!(
+            challenger.get_game(U256::ZERO).await.is_none(),
+            "The game creation block must be excluded from the pinned snapshot"
+        );
+
+        env.warp_time(0).await?;
+        challenger.sync_state().await?;
+        assert_eq!(cached_game(&challenger, 0).await?.validation, GameValidation::Valid);
 
         Ok(())
     }
@@ -1943,7 +2884,9 @@ mod challenger_sync {
         challenger.sync_state().await?;
 
         let game = cached_game(&challenger, 0).await?;
-        assert_eq!(game.is_invalid, is_invalid);
+        if !already_challenged {
+            assert_eq!(matches!(game.validation, GameValidation::Invalid(_)), is_invalid);
+        }
         assert_eq!(
             game.should_attempt_to_challenge, expected_should_challenge,
             "should_attempt_to_challenge mismatch for is_invalid={is_invalid}, already_challenged={already_challenged}"
@@ -1968,9 +2911,36 @@ mod challenger_sync {
 
         for i in 0..2u64 {
             let game = cached_game(&challenger, i).await?;
-            assert!(game.is_invalid, "Game {i} should be invalid");
+            assert_eq!(
+                game.validation,
+                GameValidation::Invalid(InvalidReason::OutputRootMismatch),
+                "Game {i} should be invalid"
+            );
             assert!(game.should_attempt_to_challenge, "Game {i} should be marked for challenge");
         }
+
+        Ok(())
+    }
+
+    /// An L2 block number that cannot be represented by execution-layer RPCs is deterministically
+    /// invalid and must not abort challenger synchronization.
+    #[tokio::test]
+    async fn test_l2_block_number_above_u64_max_is_marked_for_challenge() -> Result<()> {
+        let (env, challenger, init_bond) = setup().await?;
+        let oversized = U256::from(u64::MAX) + U256::from(1);
+
+        env.create_game_with_l2_block_number(random_invalid_root(), oversized, M, init_bond)
+            .await?;
+
+        challenger.sync_state().await?;
+
+        let game = cached_game(&challenger, 0).await?;
+        assert_eq!(game.l2_block_number, oversized);
+        assert_eq!(game.validation, GameValidation::Invalid(InvalidReason::L2BlockNumberOverflow));
+        assert!(
+            game.should_attempt_to_challenge,
+            "oversized L2 block number must be marked for challenge"
+        );
 
         Ok(())
     }
@@ -2010,9 +2980,15 @@ mod challenger_sync {
         // Child still has ~59 minutes left on its challenge window
         // Sync: child of CHALLENGER_WINS should be marked for challenge
         challenger.sync_state().await?;
+        let child = cached_game(&challenger, 1).await?;
         assert!(
-            cached_game(&challenger, 1).await?.should_attempt_to_challenge,
+            child.should_attempt_to_challenge,
             "Child of CHALLENGER_WINS should be marked for challenge"
+        );
+        assert_eq!(
+            child.validation,
+            GameValidation::Valid,
+            "Parent status must not overwrite the child's output-root validation"
         );
 
         Ok(())
@@ -2069,7 +3045,10 @@ mod challenger_sync {
         challenger.sync_state().await?;
 
         let game = cached_game(&challenger, 0).await?;
-        assert!(game.is_invalid, "Game should be marked invalid");
+        assert_eq!(
+            game.validation,
+            GameValidation::Unavailable(UnavailableReason::ValidationPending)
+        );
         assert!(!game.should_attempt_to_challenge, "Should not challenge after deadline");
 
         Ok(())
@@ -2148,20 +3127,22 @@ mod challenger_sync {
 
     // ==================== Bond Claim Marking Tests ====================
 
-    /// Verifies `should_attempt_to_claim_bond` flag across different states.
+    /// Verifies close-before-claim flags across different challenger states.
     ///
     /// Conditions for bond claim:
     /// - Game status is CHALLENGER_WINS
     /// - Game is finalized (past finality delay)
+    /// - Game has been closed
     /// - Credit > 0
     #[rstest]
-    #[case::finalized_with_credit(true, false, true)]
-    #[case::not_finalized(false, false, false)]
-    #[case::finalized_no_credit(true, true, false)]
+    #[case::not_finalized(false, false, false, false)]
+    #[case::finalized_unclosed(true, false, true, false)]
+    #[case::finalized_closed_no_credit(true, true, false, false)]
     #[tokio::test]
-    async fn test_bond_claim_marking(
+    async fn test_close_and_bond_claim_marking(
         #[case] finalized: bool,
         #[case] claim_bond: bool,
+        #[case] expected_should_close: bool,
         #[case] expected_should_claim: bool,
     ) -> Result<()> {
         let (env, challenger, init_bond) = setup().await?;
@@ -2196,10 +3177,65 @@ mod challenger_sync {
             let game = cached_game(&challenger, 0).await?;
             assert_eq!(game.status, GameStatus::CHALLENGER_WINS);
             assert_eq!(
+                game.should_attempt_to_close_game, expected_should_close,
+                "should_attempt_to_close_game mismatch"
+            );
+            assert_eq!(
                 game.should_attempt_to_claim_bond, expected_should_claim,
                 "should_attempt_to_claim_bond mismatch"
             );
         }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_challenger_claims_only_after_close() -> Result<()> {
+        let (env, challenger, init_bond) = setup().await?;
+
+        let block = env.anvil.starting_l2_block_number + 1;
+        env.create_game(random_invalid_root(), block, M, init_bond).await?;
+        let (_, game_address) = env.last_game_info().await?;
+
+        env.challenge_game(game_address).await?;
+        env.warp_time(MAX_PROVE_DURATION + 1).await?;
+        env.resolve_game(game_address).await?;
+        env.warp_time(DISPUTE_GAME_FINALITY_DELAY_SECONDS + 1).await?;
+
+        let observer = crate::common::new_challenger(
+            &env.rpc_config,
+            env.private_keys.proposer,
+            &env.deployed.anchor_state_registry,
+            &env.deployed.factory,
+            env.game_type,
+            None,
+        )
+        .await?;
+        observer.try_init().await?;
+        observer.sync_state().await?;
+        assert!(
+            observer.get_game(U256::ZERO).await.is_none(),
+            "A different signer must evict this game without scheduling a paid close"
+        );
+
+        challenger.sync_state().await?;
+        let game = cached_game(&challenger, 0).await?;
+        assert_eq!(
+            env.get_bond_distribution_mode(game_address).await?,
+            BOND_DISTRIBUTION_MODE_UNDECIDED,
+            "challenger-won game should be unclosed before closeGame"
+        );
+        assert!(game.should_attempt_to_close_game, "unclosed finalized game should close first");
+        assert!(
+            !game.should_attempt_to_claim_bond,
+            "unclosed finalized game should not claim before close"
+        );
+
+        env.close_game(game_address).await?;
+        challenger.sync_state().await?;
+        let game = cached_game(&challenger, 0).await?;
+        assert!(!game.should_attempt_to_close_game, "closed game should not close again");
+        assert!(game.should_attempt_to_claim_bond, "closed game with credit should claim");
 
         Ok(())
     }

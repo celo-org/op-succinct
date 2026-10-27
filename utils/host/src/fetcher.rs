@@ -39,7 +39,7 @@ const L2_TO_L1_MESSAGE_PASSER: Address = address!("0x420000000000000000000000000
 /// Resolve the L2ToL1MessagePasser storage root from a block.
 ///
 /// Post-Isthmus, the header's `withdrawals_root` field carries this value directly.
-/// Pre-Isthmus (Canyon→Fjord), `withdrawals_root` is set to `EMPTY_ROOT_HASH`,
+/// Before Isthmus, `withdrawals_root` is absent or set to `EMPTY_ROOT_HASH`,
 /// so we fall back to `eth_getProof`.
 /// Ref: <https://specs.optimism.io/protocol/isthmus/exec-engine.html>
 async fn l2_to_l1_message_passer_storage_root(
@@ -256,6 +256,61 @@ impl OPSuccinctDataFetcher {
             l1_config_path: Some(l1_config_path),
             l1_selection,
         })
+    }
+
+    /// Require SafeDB at startup for a non-default L1 selection.
+    ///
+    /// Returns an error if SafeDB is unavailable or its probe fails.
+    /// Call this from entry points that use the configured L1 selection.
+    pub async fn validate_l1_selection(&self) -> Result<()> {
+        if self.l1_selection.is_default() {
+            return Ok(());
+        }
+
+        if !self.is_safe_db_activated().await? {
+            bail!(
+                "L1_BLOCK_TAG={:?} with L1_CONFIRMATIONS={} requires SafeDB to be activated on \
+                 op-node. Either enable SafeDB on the L2 node, or unset L1_BLOCK_TAG and \
+                 L1_CONFIRMATIONS to use the default (finalized).",
+                self.l1_selection.tag,
+                self.l1_selection.confirmations
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Get the highest L2 block that can be proved under the configured L1 selection.
+    ///
+    /// The default selection uses L2 finalized. Other selections use the L2 safe head at
+    /// the selected L1 block and require SafeDB. RPC and SafeDB errors are propagated.
+    pub async fn get_max_provable_l2_block_number(&self) -> Result<u64> {
+        if self.l1_selection.is_default() {
+            return Ok(self.get_l2_header(BlockId::finalized()).await?.number);
+        }
+
+        let resolved_l1 = self.resolve_selected_l1_header().await?;
+        self.get_l2_safe_head_from_l1_block_number(resolved_l1.number).await
+    }
+
+    /// Calculate the L1 head for a proof ending at `l2_end_block`.
+    ///
+    /// Add the existing 20-block buffer to the batch posting block, capped at the selected
+    /// L1 head. Pass `safe_db_fallback` through to [`Self::get_l1_head`]; propagate errors.
+    pub async fn calculate_safe_l1_head(
+        &self,
+        l2_end_block: u64,
+        safe_db_fallback: bool,
+    ) -> Result<B256> {
+        let (_, l1_head_number) = self.get_l1_head(l2_end_block, safe_db_fallback).await?;
+
+        // Preserve the buffer used by all retained DA backends.
+        // FIXME(fakedev9999): Investigate why the L1 head must extend beyond the batch posting
+        // block whose safe head already covers the L2 end block.
+        let l1_head_number = l1_head_number + 20;
+        let selected_l1 = self.resolve_selected_l1_header().await?;
+        let safe_l1_head_number = min(l1_head_number, selected_l1.number);
+        Ok(self.get_l1_header(safe_l1_head_number.into()).await?.hash_slow())
     }
 
     /// Resolve the L1 [`Header`] selected by the configured tag and confirmations.
@@ -945,6 +1000,35 @@ impl OPSuccinctDataFetcher {
         classify_safe_db_probe_outcome(&response)
     }
 
+    /// Calculate an L2 output root using the execution RPC used for witness generation.
+    ///
+    /// Historical pre-Isthmus blocks need account proofs from this RPC, which can retain
+    /// more history than the execution node behind the rollup RPC.
+    pub async fn get_l2_output_root(&self, block_number: u64) -> Result<B256> {
+        let output = self.get_l2_execution_output(block_number).await?;
+        Ok(keccak256(output.abi_encode()))
+    }
+
+    async fn get_l2_execution_output(&self, block_number: u64) -> Result<L2Output> {
+        let block = self
+            .l2_provider
+            .get_block_by_number(block_number.into())
+            .await?
+            .ok_or_else(|| anyhow!("Block not found for block number {block_number}"))?;
+        let storage_root = l2_to_l1_message_passer_storage_root(
+            self.l2_provider.as_ref(),
+            &block.header.inner,
+            block_number,
+        )
+        .await?;
+        Ok(L2Output {
+            zero: 0,
+            l2_state_root: block.header.state_root.0.into(),
+            l2_storage_hash: storage_root.0.into(),
+            l2_claim_hash: block.header.hash.0.into(),
+        })
+    }
+
     /// Get the L2 output data for a given block number and save the boot info to a file in the data
     /// directory with block_number. Return the arguments to be passed to the native host for
     /// datagen.
@@ -966,48 +1050,10 @@ impl OPSuccinctDataFetcher {
             ));
         }
 
-        let l2_provider = self.l2_provider.clone();
-
-        // Get L2 output data.
-        let l2_output_block =
-            l2_provider.get_block_by_number(l2_start_block.into()).await?.ok_or_else(|| {
-                anyhow::anyhow!("Block not found for block number {}", l2_start_block)
-            })?;
-        let l2_output_state_root = l2_output_block.header.state_root;
-        let agreed_l2_head_hash = l2_output_block.header.hash;
-        let l2_output_storage_hash = l2_to_l1_message_passer_storage_root(
-            l2_provider.as_ref(),
-            &l2_output_block.header.inner,
-            l2_start_block,
-        )
-        .await?;
-
-        let l2_output_encoded = L2Output {
-            zero: 0,
-            l2_state_root: l2_output_state_root.0.into(),
-            l2_storage_hash: l2_output_storage_hash.0.into(),
-            l2_claim_hash: agreed_l2_head_hash.0.into(),
-        };
-        let agreed_l2_output_root = keccak256(l2_output_encoded.abi_encode());
-
-        // Get L2 claim data.
-        let l2_claim_block = l2_provider.get_block_by_number(l2_end_block.into()).await?.unwrap();
-        let l2_claim_state_root = l2_claim_block.header.state_root;
-        let l2_claim_hash = l2_claim_block.header.hash;
-        let l2_claim_storage_hash = l2_to_l1_message_passer_storage_root(
-            l2_provider.as_ref(),
-            &l2_claim_block.header.inner,
-            l2_end_block,
-        )
-        .await?;
-
-        let l2_claim_encoded = L2Output {
-            zero: 0,
-            l2_state_root: l2_claim_state_root.0.into(),
-            l2_storage_hash: l2_claim_storage_hash.0.into(),
-            l2_claim_hash: l2_claim_hash.0.into(),
-        };
-        let claimed_l2_output_root = keccak256(l2_claim_encoded.abi_encode());
+        let agreed_output = self.get_l2_execution_output(l2_start_block).await?;
+        let agreed_l2_head_hash = agreed_output.l2_claim_hash;
+        let agreed_l2_output_root = keccak256(agreed_output.abi_encode());
+        let claimed_l2_output_root = self.get_l2_output_root(l2_end_block).await?;
 
         let l1_beacon_address = self
             .rpc_config
@@ -1046,6 +1092,327 @@ mod tests {
     use super::*;
     use kona_genesis::RollupConfig;
     use tempfile::TempDir;
+
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    use tokio::{
+        io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+        net::TcpListener,
+        task::JoinHandle,
+    };
+
+    use crate::{
+        block_range::{get_rolling_block_range, get_validated_block_range},
+        l1_selection::L1BlockTag,
+    };
+
+    struct TestRpc {
+        fetcher: OPSuccinctDataFetcher,
+        calls: Arc<AtomicUsize>,
+        server: JoinHandle<()>,
+    }
+
+    impl Drop for TestRpc {
+        fn drop(&mut self) {
+            self.server.abort();
+        }
+    }
+
+    impl TestRpc {
+        async fn new(
+            selection: L1BlockSelectionConfig,
+            respond: impl Fn(&str, &Value) -> Value + Send + 'static,
+        ) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let rpc_config = RPCConfig {
+                l1_rpc: format!("{base}/l1").parse().unwrap(),
+                l2_rpc: format!("{base}/l2").parse().unwrap(),
+                l2_node_rpc: format!("{base}/node").parse().unwrap(),
+                l1_beacon_rpc: None,
+            };
+            let fetcher = OPSuccinctDataFetcher {
+                l1_provider: Arc::new(
+                    ProviderBuilder::default().connect_http(rpc_config.l1_rpc.clone()),
+                ),
+                l2_provider: Arc::new(
+                    ProviderBuilder::default().connect_http(rpc_config.l2_rpc.clone()),
+                ),
+                rpc_config,
+                rollup_config: Some(RollupConfig::default()),
+                rollup_config_path: None,
+                l1_config_path: None,
+                l1_selection: selection,
+            };
+            let calls = Arc::new(AtomicUsize::new(0));
+            let server_calls = calls.clone();
+            let server = tokio::spawn(async move {
+                loop {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let mut reader = BufReader::new(stream);
+                    let mut request_line = String::new();
+                    assert!(reader.read_line(&mut request_line).await.unwrap() > 0);
+                    let path = request_line.split_whitespace().nth(1).unwrap();
+                    let mut content_length = None;
+                    loop {
+                        let mut line = String::new();
+                        assert!(reader.read_line(&mut line).await.unwrap() > 0);
+                        if line == "\r\n" {
+                            break;
+                        }
+                        if let Some((name, value)) = line.split_once(':') {
+                            if name.eq_ignore_ascii_case("content-length") {
+                                content_length = Some(value.trim().parse::<usize>().unwrap());
+                            }
+                        }
+                    }
+                    let mut body = vec![0; content_length.unwrap()];
+                    reader.read_exact(&mut body).await.unwrap();
+                    let request: Value = serde_json::from_slice(&body).unwrap();
+                    server_calls.fetch_add(1, AtomicOrdering::Relaxed);
+                    let mut response = respond(path, &request);
+                    response["id"] = request["id"].clone();
+                    response["jsonrpc"] = json!("2.0");
+                    let body = response.to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    reader.get_mut().write_all(response.as_bytes()).await.unwrap();
+                }
+            });
+            Self { fetcher, calls, server }
+        }
+    }
+
+    fn block_response(number: u64) -> Value {
+        let header = Header { number, ..Default::default() };
+        let mut block = serde_json::to_value(&header).unwrap();
+        block["hash"] = json!(header.hash_slow());
+        block["transactions"] = json!([]);
+        block["uncles"] = json!([]);
+        json!({ "result": block })
+    }
+
+    fn safe_head_response(l1: u64, l2: u64) -> Value {
+        json!({ "result": {
+            "l1Block": { "hash": B256::ZERO, "number": l1 },
+            "safeHead": { "hash": B256::ZERO, "number": l2 },
+        } })
+    }
+
+    #[tokio::test]
+    async fn execution_output_roots_reuse_host_calculation_without_rollup_rpc() {
+        for withdrawals_root in [Some(alloy_trie::EMPTY_ROOT_HASH), Some(B256::repeat_byte(3))] {
+            let storage_root = B256::repeat_byte(3);
+            let rpc = TestRpc::new(L1BlockSelectionConfig::default(), move |path, request| {
+                assert_eq!(path, "/l2", "Output roots must use the witness execution RPC");
+                match request["method"].as_str().unwrap() {
+                    "eth_getBlockByNumber" => {
+                        let number = u64::from_str_radix(
+                            request["params"][0].as_str().unwrap().trim_start_matches("0x"),
+                            16,
+                        )
+                        .unwrap();
+                        let header = Header {
+                            number,
+                            state_root: B256::repeat_byte(number as u8),
+                            withdrawals_root,
+                            ..Default::default()
+                        };
+                        let mut block = serde_json::to_value(&header).unwrap();
+                        block["hash"] = json!(header.hash_slow());
+                        block["transactions"] = json!([]);
+                        block["uncles"] = json!([]);
+                        json!({"result": block})
+                    }
+                    "eth_getProof" => {
+                        assert_eq!(withdrawals_root, Some(alloy_trie::EMPTY_ROOT_HASH));
+                        assert_eq!(request["params"][0], json!(L2_TO_L1_MESSAGE_PASSER));
+                        assert_eq!(request["params"][1], json!([]));
+                        assert!([json!("0x1"), json!("0x6")].contains(&request["params"][2]));
+                        json!({"result": {
+                            "address": L2_TO_L1_MESSAGE_PASSER,
+                            "accountProof": [],
+                            "balance": "0x0",
+                            "codeHash": B256::ZERO,
+                            "nonce": "0x0",
+                            "storageHash": storage_root,
+                            "storageProof": [],
+                        }})
+                    }
+                    other => panic!("Unexpected execution RPC method: {other}"),
+                }
+            })
+            .await;
+            let args = rpc.fetcher.get_host_args(1, 6, B256::ZERO).await.unwrap();
+            assert_ne!(args.agreed_l2_output_root, args.claimed_l2_output_root);
+            assert_eq!(
+                rpc.fetcher.get_l2_output_root(1).await.unwrap(),
+                args.agreed_l2_output_root
+            );
+            assert_eq!(
+                rpc.fetcher.get_l2_output_root(6).await.unwrap(),
+                args.claimed_l2_output_root
+            );
+            let expected_calls =
+                if withdrawals_root == Some(alloy_trie::EMPTY_ROOT_HASH) { 8 } else { 4 };
+            assert_eq!(rpc.calls.load(AtomicOrdering::Relaxed), expected_calls);
+        }
+    }
+
+    #[tokio::test]
+    async fn default_ranges_only_query_l2_finalized() {
+        let rpc = TestRpc::new(L1BlockSelectionConfig::default(), |path, request| {
+            assert_eq!(path, "/l2");
+            assert_eq!(request["method"], "eth_getBlockByNumber");
+            assert_eq!(request["params"], json!(["finalized", false]));
+            block_response(700)
+        })
+        .await;
+
+        rpc.fetcher.validate_l1_selection().await.unwrap();
+        assert_eq!(rpc.calls.load(AtomicOrdering::Relaxed), 0);
+        assert_eq!(
+            get_validated_block_range(&rpc.fetcher, None, None, 10).await.unwrap(),
+            (690, 700)
+        );
+        assert_eq!(rpc.calls.load(AtomicOrdering::Relaxed), 1);
+        assert_eq!(get_rolling_block_range(&rpc.fetcher, 10).await.unwrap(), (690, 700));
+        assert_eq!(rpc.calls.load(AtomicOrdering::Relaxed), 2);
+        assert!(get_validated_block_range(&rpc.fetcher, Some(690), Some(701), 10)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("max provable L2 block (700)"));
+        assert!(get_validated_block_range(&rpc.fetcher, Some(700), Some(700), 10).await.is_err());
+        assert!(get_rolling_block_range(&rpc.fetcher, 701).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn non_default_ranges_use_the_confirmed_l1_safe_head() {
+        for tag in [L1BlockTag::Finalized, L1BlockTag::Safe, L1BlockTag::Latest] {
+            let rpc =
+                TestRpc::new(L1BlockSelectionConfig { tag, confirmations: 10 }, |path, request| {
+                    match path {
+                        "/l1" => {
+                            assert_eq!(request["method"], "eth_getBlockByNumber");
+                            match request["params"][0].as_str().unwrap() {
+                                "finalized" | "safe" | "latest" => block_response(120),
+                                "0x6e" => block_response(110),
+                                other => panic!("Unexpected L1 block: {other}"),
+                            }
+                        }
+                        "/node" => {
+                            assert_eq!(request["method"], "optimism_safeHeadAtL1Block");
+                            assert_eq!(request["params"], json!(["0x6e"]));
+                            safe_head_response(110, 500)
+                        }
+                        other => panic!("Unexpected RPC path: {other}"),
+                    }
+                })
+                .await;
+            assert_eq!(
+                get_validated_block_range(&rpc.fetcher, None, None, 10).await.unwrap(),
+                (490, 500)
+            );
+            assert_eq!(get_rolling_block_range(&rpc.fetcher, 10).await.unwrap(), (490, 500));
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_validation_requires_safedb_and_propagates_rpc_errors() {
+        for (response, expected_error) in [
+            (safe_head_response(100, 50), None),
+            (
+                json!({ "error": { "code": -32601, "message": "method not found" } }),
+                Some("requires SafeDB"),
+            ),
+            (
+                json!({ "error": { "code": -32000, "message": "unauthorized" } }),
+                Some("unauthorized"),
+            ),
+            (json!({ "result": null }), Some("Malformed")),
+        ] {
+            let rpc = TestRpc::new(
+                L1BlockSelectionConfig { tag: L1BlockTag::Safe, confirmations: 0 },
+                move |path, request| match path {
+                    "/l1" => block_response(100),
+                    "/node" => {
+                        assert_eq!(request["method"], "optimism_safeHeadAtL1Block");
+                        response.clone()
+                    }
+                    other => panic!("Unexpected RPC path: {other}"),
+                },
+            )
+            .await;
+            let result = rpc.fetcher.validate_l1_selection().await;
+            match expected_error {
+                Some(message) => assert!(result.unwrap_err().to_string().contains(message)),
+                None => result.unwrap(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn safe_l1_head_preserves_the_buffer_and_selection_cap() {
+        for (selection, posting_block, expected_head) in [
+            (L1BlockSelectionConfig::default(), 70, 90),
+            (L1BlockSelectionConfig::default(), 90, 100),
+            (L1BlockSelectionConfig { tag: L1BlockTag::Latest, confirmations: 10 }, 125, 130),
+        ] {
+            let rpc = TestRpc::new(selection, move |path, request| {
+                match (path, request["method"].as_str().unwrap()) {
+                    ("/l1", "eth_getBlockByNumber") => {
+                        let block = match request["params"][0].as_str().unwrap() {
+                            "finalized" => 100,
+                            "latest" => 140,
+                            number => {
+                                u64::from_str_radix(number.trim_start_matches("0x"), 16).unwrap()
+                            }
+                        };
+                        block_response(block)
+                    }
+                    ("/node", "optimism_outputAtBlock") => {
+                        let mut block_ref = L2BlockInfo::default();
+                        block_ref.l1_origin.number = 10;
+                        json!({ "result": OutputResponse {
+                            version: B256::ZERO,
+                            output_root: B256::ZERO,
+                            block_ref,
+                            withdrawal_storage_root: B256::ZERO,
+                            state_root: B256::ZERO,
+                            sync_status: kona_protocol::SyncStatus {
+                                current_l1: Default::default(),
+                                current_l1_finalized: Default::default(),
+                                head_l1: Default::default(),
+                                safe_l1: Default::default(),
+                                finalized_l1: Default::default(),
+                                unsafe_l2: Default::default(),
+                                safe_l2: Default::default(),
+                                finalized_l2: Default::default(),
+                                local_safe_l2: Default::default(),
+                            },
+                        } })
+                    }
+                    ("/node", "optimism_safeHeadAtL1Block") => {
+                        let block = u64::from_str_radix(
+                            request["params"][0].as_str().unwrap().trim_start_matches("0x"),
+                            16,
+                        )
+                        .unwrap();
+                        safe_head_response(block, if block >= posting_block { 50 } else { 49 })
+                    }
+                    other => panic!("Unexpected RPC request: {other:?}"),
+                }
+            })
+            .await;
+            assert_eq!(
+                rpc.fetcher.calculate_safe_l1_head(50, false).await.unwrap(),
+                Header { number: expected_head, ..Default::default() }.hash_slow()
+            );
+        }
+    }
 
     fn test_rollup_config(chain_id: u64) -> CeloRollupConfig {
         CeloRollupConfig::new(RollupConfig { l2_chain_id: chain_id.into(), ..Default::default() })

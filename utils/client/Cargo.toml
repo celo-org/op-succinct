@@ -2,6 +2,7 @@
 name = "op-succinct-client-utils"
 version.workspace = true
 license.workspace = true
+publish.workspace = true
 edition.workspace = true
 
 [dependencies]
@@ -56,4 +57,5 @@ celo-protocol.workspace = true
 celo-genesis.workspace = true
 
 [dev-dependencies]
+op-alloy-rpc-types-engine.workspace = true
 tokio.workspace = true
