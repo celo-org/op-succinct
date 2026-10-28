@@ -484,7 +484,8 @@ where
         }
 
         // Drop games with different anchor state registry.
-        let anchor_state_registry = contract.anchorStateRegistry().call().await?;
+        let anchor_state_registry =
+            contract.anchorStateRegistry().block(pinned_block).call().await?;
         if anchor_state_registry != self.config.anchor_state_registry_address {
             tracing::debug!(
                 game_index = %index,
@@ -1446,6 +1447,61 @@ mod tests {
         assert!(asserter.read_q().is_empty());
     }
 
+    #[tokio::test]
+    async fn monitor_only_never_submits() {
+        // The signer sends through its own connection to the test config's unreachable
+        // `l1_rpc`, so any attempt to send the challenge returns an error instead of `Ok(())`.
+        let asserter = Asserter::new();
+        let challenger = test_challenger(&asserter);
+        challenger.challenger_bond.set(U256::from(1)).unwrap();
+        let mut game = test_game(GameValidation::Invalid(InvalidReason::OutputRootMismatch));
+        game.should_attempt_to_challenge = true;
+
+        challenger.submit_challenge_transaction_unchecked(&game, false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn challenging_loop_uses_configured_monitor_only_mode() {
+        let (mut challenger, _validator, mock) = challenger_with_request_aware_validator([]);
+        challenger.config.disable_monitor_only = false;
+        challenger.challenger_bond.set(U256::from(1)).unwrap();
+        let mut game = test_game(GameValidation::Invalid(InvalidReason::OutputRootMismatch));
+        game.address = Address::from([7; 20]);
+        game.should_attempt_to_challenge = true;
+        challenger.state.lock().await.games.insert(game.index, game.clone());
+
+        // The latest-state preflight sees a challengeable game.
+        let mut latest_block: Block = Block::default();
+        latest_block.header.number = 10;
+        latest_block.header.timestamp = 50;
+        latest_block.header.hash = B256::repeat_byte(0x10);
+        mock.push_success("eth_getBlockByNumber", &Some(latest_block));
+        mock.push_success(
+            eth_call_key(game.address, "status()"),
+            &GameStatus::IN_PROGRESS.abi_encode(),
+        );
+        mock.push_success(
+            eth_call_key(game.address, "claimData()"),
+            &ClaimData {
+                parentIndex: u32::MAX,
+                counteredBy: Address::ZERO,
+                prover: Address::ZERO,
+                claim: B256::ZERO,
+                status: ProposalStatus::Unchallenged,
+                deadline: 100,
+            }
+            .abi_encode(),
+        );
+
+        challenger.handle_game_challenging().await.unwrap();
+
+        // Only the monitor-only `Ok(())` path clears the flag: a send attempt would fail against
+        // the unreachable `l1_rpc` and leave the game queued for challenging.
+        let state = challenger.state.lock().await;
+        assert!(!state.games.get(&game.index).unwrap().should_attempt_to_challenge);
+        assert!(mock.responses.read().unwrap().values().all(|queue| queue.is_empty()));
+    }
+
     fn push_active_unchallenged_game(asserter: &Asserter, deadline: u64) {
         push_active_unchallenged_game_with_parent(asserter, deadline, u32::MAX);
     }
@@ -1479,6 +1535,12 @@ mod tests {
             &(0u32, 0u64, address).abi_encode(),
         );
         mock.push_success(eth_call_key(address, "gameType()"), &0u32.abi_encode());
+        // Matches the configured anchor state registry in
+        // `challenger_with_request_aware_validator`.
+        mock.push_success(
+            eth_call_key(address, "anchorStateRegistry()"),
+            &Address::ZERO.abi_encode(),
+        );
         mock.push_success(
             eth_call_key(address, "wasRespectedGameTypeWhenCreated()"),
             &true.abi_encode(),
@@ -1765,6 +1827,57 @@ mod tests {
         let requests = validator.requests.lock().unwrap();
         assert_eq!(requests.len(), 4);
         assert!(requests.iter().any(|request| request.game_index == U256::ZERO));
+        assert!(mock.responses.read().unwrap().values().all(|queue| queue.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn sync_state_advances_cursor_past_dropped_games() {
+        let (challenger, validator, mock) = challenger_with_request_aware_validator([]);
+
+        let mut latest_block: Block = Block::default();
+        latest_block.header.number = 10;
+        latest_block.header.timestamp = 50;
+        latest_block.header.hash = B256::repeat_byte(0x10);
+
+        let block_key = "eth_getBlockByNumber";
+        let game_count_key = eth_call_key(Address::ZERO, "gameCount()");
+        let game_at_index_key = eth_call_key(Address::ZERO, "gameAtIndex(uint256)");
+        let wrong_type_game = Address::from([1; 20]);
+        let wrong_registry_game = Address::from([2; 20]);
+
+        // Game 0 has an unsupported game type; game 1 points at a different anchor state registry.
+        mock.push_success(block_key, &Some(latest_block.clone()));
+        mock.push_success(game_count_key.clone(), &U256::from(2).abi_encode());
+        mock.push_success(game_at_index_key.clone(), &(0u32, 0u64, wrong_type_game).abi_encode());
+        mock.push_success(eth_call_key(wrong_type_game, "gameType()"), &1u32.abi_encode());
+        mock.push_success(game_at_index_key, &(0u32, 0u64, wrong_registry_game).abi_encode());
+        mock.push_success(eth_call_key(wrong_registry_game, "gameType()"), &0u32.abi_encode());
+        mock.push_success(
+            eth_call_key(wrong_registry_game, "anchorStateRegistry()"),
+            &Address::repeat_byte(0xde).abi_encode(),
+        );
+
+        challenger.sync_state().await.unwrap();
+
+        {
+            let state = challenger.state.lock().await;
+            assert_eq!(state.cursor, Some(U256::from(1)));
+            assert!(state.pending_discoveries.is_empty());
+            assert!(state.games.is_empty());
+        }
+
+        // The next cycle sees no new games and must not fetch the dropped ones again: any
+        // `gameAtIndex` call would hit an empty response queue and land the index in pending.
+        mock.push_success(block_key, &Some(latest_block));
+        mock.push_success(game_count_key, &U256::from(2).abi_encode());
+
+        challenger.sync_state().await.unwrap();
+
+        let state = challenger.state.lock().await;
+        assert_eq!(state.cursor, Some(U256::from(1)));
+        assert!(state.pending_discoveries.is_empty());
+        assert!(state.games.is_empty());
+        assert!(validator.requests.lock().unwrap().is_empty());
         assert!(mock.responses.read().unwrap().values().all(|queue| queue.is_empty()));
     }
 
