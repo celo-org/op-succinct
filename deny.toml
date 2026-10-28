@@ -67,6 +67,8 @@ exceptions = [
   { allow = ["LicenseRef-hokulea-unlicensed"], crate = "hokulea-proof" },
   { allow = ["LicenseRef-hokulea-unlicensed"], crate = "hokulea-witgen" },
   { allow = ["LicenseRef-hokulea-unlicensed"], crate = "hokulea-zkvm-verification" },
+  # Pulled in by hokulea-proof's `sp1-bn` feature, which Celo enables.
+  { allow = ["LicenseRef-hokulea-unlicensed"], crate = "hokulea-sp1-bn-verifier" },
 ]
 
 # Reviewed at hokulea tag hokulea-client/v1.4.0.
@@ -145,6 +147,12 @@ crate = "hokulea-zkvm-verification"
 expression = "LicenseRef-hokulea-unlicensed"
 license-files = []
 
+# Reviewed at hokulea tag hokulea-client/v1.4.2.
+[[licenses.clarify]]
+crate = "hokulea-sp1-bn-verifier"
+expression = "LicenseRef-hokulea-unlicensed"
+license-files = []
+
 [licenses.private]
 ignore = true
 
@@ -156,4 +164,4 @@ allow-wildcard-paths = true
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-org = { github = ["Layr-Labs", "ethereum-optimism", "paradigmxyz", "sp1-patches", "succinctlabs"] }
+allow-org = { github = ["Layr-Labs", "celo-org", "ethereum-optimism", "paradigmxyz", "sp1-patches", "succinctlabs"] }
