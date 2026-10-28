@@ -480,7 +480,6 @@ where
                 expected_game_type = self.config.game_type,
                 "Dropping game due to invalid game type"
             );
-            self.state.lock().await.cursor = index;
             return Ok(());
         }
 
@@ -494,7 +493,6 @@ where
                 expected_anchor_state_registry = ?self.config.anchor_state_registry_address,
                 "Dropping game with different anchor state registry"
             );
-            self.state.lock().await.cursor = index;
             return Ok(());
         }
 
@@ -1521,6 +1519,7 @@ mod tests {
             malicious_challenge_percentage: 0.0,
             sync_l1_confirmations: 0,
             tx_confirmation_timeout: 60,
+            disable_monitor_only: true,
         };
         let game_validator = Arc::new(RecordingValidator::new([]));
         OPSuccinctChallenger::new_with_game_validator(
@@ -1564,6 +1563,7 @@ mod tests {
             malicious_challenge_percentage: 0.0,
             sync_l1_confirmations: 0,
             tx_confirmation_timeout: 60,
+            disable_monitor_only: true,
         };
         let validator = Arc::new(RecordingValidator::new(outcomes));
         let challenger = OPSuccinctChallenger::new_with_game_validator(

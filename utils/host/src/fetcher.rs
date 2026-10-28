@@ -20,10 +20,10 @@ use anyhow::{anyhow, bail, Context, Result};
 use celo_alloy_consensus::CeloBlock;
 use celo_alloy_network::Celo;
 use celo_genesis::CeloRollupConfig;
-use celo_protocol::CeloL2BlockInfo;
 use celo_registry::ROLLUP_CONFIGS;
 use futures::{stream, StreamExt};
 use kona_host::single::SingleChainHost;
+use kona_protocol::L2BlockInfo;
 use kona_registry::L1_CONFIGS;
 use op_alloy_network::{primitives::HeaderResponse, BlockResponse, Network};
 use op_succinct_client_utils::boot::{hash_rollup_config, BootInfoStruct};
@@ -954,14 +954,14 @@ impl OPSuccinctDataFetcher {
         Ok(block)
     }
 
-    pub async fn l2_block_info_by_number(&self, block_number: u64) -> Result<CeloL2BlockInfo> {
+    pub async fn l2_block_info_by_number(&self, block_number: u64) -> Result<L2BlockInfo> {
         // If the rollup config is not already loaded, fetch and save it.
         if self.rollup_config.is_none() {
             return Err(anyhow::anyhow!("Rollup config not loaded."));
         }
         let genesis = self.rollup_config.as_ref().unwrap().genesis;
         let block = self.get_l2_block_by_number(block_number).await?;
-        Ok(CeloL2BlockInfo::from_block_and_genesis(&block, &genesis)?)
+        Ok(L2BlockInfo::from_block_and_genesis(&block, &genesis)?)
     }
 
     /// Get the L2 safe head corresponding to the L1 block number using optimism_safeHeadAtL1Block.
@@ -1139,7 +1139,7 @@ mod tests {
                     ProviderBuilder::default().connect_http(rpc_config.l2_rpc.clone()),
                 ),
                 rpc_config,
-                rollup_config: Some(RollupConfig::default()),
+                rollup_config: Some(CeloRollupConfig::new(RollupConfig::default())),
                 rollup_config_path: None,
                 l1_config_path: None,
                 l1_selection: selection,

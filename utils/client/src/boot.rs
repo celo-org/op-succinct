@@ -60,8 +60,7 @@ mod espresso_pin_tests {
     //! `batch_authenticator_address` the espresso-wiring commit stitches onto the rollup config
     //! and carries into derivation.
     //!
-    //! celo-kona is pinned to `main` at rev `6a80c17` (the merge commit of celo-org/celo-kona#242),
-    //! which should be re-pinned to a release tag once one is cut. These tests drive
+    //! celo-kona is pinned by commit rather than by release tag. These tests drive
     //! `CeloBootInfo::load` with a tiny in-memory preimage oracle and assert the Chaos and
     //! Mainnet Espresso values. If a celo-kona re-pin silently changes the Chaos schedule (or
     //! flips Mainnet on), they fail loudly rather than letting a proof derive against a
@@ -177,10 +176,13 @@ mod espresso_pin_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kona_genesis::AltDAConfig;
+    use kona_genesis::{AltDAConfig, RollupConfig};
 
     #[test]
     fn altda_limit_roundtrips_and_changes_the_config_hash_only_when_set() {
+        let hash_rollup_config = |config: &RollupConfig| {
+            super::hash_rollup_config(&CeloRollupConfig::new(config.clone()))
+        };
         let mut config =
             RollupConfig { alt_da_config: Some(AltDAConfig::default()), ..Default::default() };
         let original_hash = hash_rollup_config(&config);

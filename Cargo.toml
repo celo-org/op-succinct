@@ -104,15 +104,12 @@ kona-registry = { git = "https://github.com/ethereum-optimism/optimism", tag = "
 kona-genesis = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.8.0", default-features = false }
 
 # celo-kona
-# Pinned to the head of celo-org/celo-kona#242 (kona-client/v1.6.0 bump).
-# TODO: re-pin to the release tag once that PR merges and is tagged.
-celo-driver = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745" }
-celo-proof = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745" }
-celo-host = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745" }
-celo-protocol = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745", default-features = false }
-celo-genesis = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745", default-features = false }
-celo-derive = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745", default-features = false }
-celo-registry = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745", default-features = false }
+# Pinned to celo-org/celo-kona main (kona-client/v1.8.0, hokulea-client/v1.4.2).
+celo-proof = { git = "https://github.com/celo-org/celo-kona", rev = "e840ddc425a53d83645cdc3a41c5f2e6a220e060" }
+celo-host = { git = "https://github.com/celo-org/celo-kona", rev = "e840ddc425a53d83645cdc3a41c5f2e6a220e060" }
+celo-genesis = { git = "https://github.com/celo-org/celo-kona", rev = "e840ddc425a53d83645cdc3a41c5f2e6a220e060", default-features = false }
+celo-derive = { git = "https://github.com/celo-org/celo-kona", rev = "e840ddc425a53d83645cdc3a41c5f2e6a220e060", default-features = false }
+celo-registry = { git = "https://github.com/celo-org/celo-kona", rev = "e840ddc425a53d83645cdc3a41c5f2e6a220e060", default-features = false }
 
 # Hokulea
 # Must match the tag celo-kona's celo-host depends on.
@@ -150,8 +147,6 @@ op-succinct-range-utils = { path = "programs/range/utils" }
 op-succinct-bindings = { path = "bindings" }
 
 # Alloy (Network)
-# We should pin these alloy crates version to apply below patches. The patches won't used in the crate
-# graph if those have a different version from what is locked in the Cargo.lock file.
 alloy-signer-local = { version = "=2.3.0" }
 alloy-provider = { version = "=2.3.0" }
 alloy-transport = { version = "=2.3.0" }
@@ -200,10 +195,10 @@ op-alloy-rpc-types-engine = { git = "https://github.com/ethereum-optimism/optimi
 op-alloy-network = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.8.0", default-features = false }
 
 # Celo Alloy
-celo-alloy-consensus = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745", default-features = false }
-celo-alloy-rpc-types = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745", default-features = false }
-celo-alloy-rpc-types-engine = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745", default-features = false }
-celo-alloy-network = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745", default-features = false }
+celo-alloy-consensus = { git = "https://github.com/celo-org/celo-kona", rev = "e840ddc425a53d83645cdc3a41c5f2e6a220e060", default-features = false }
+celo-alloy-rpc-types = { git = "https://github.com/celo-org/celo-kona", rev = "e840ddc425a53d83645cdc3a41c5f2e6a220e060", default-features = false }
+celo-alloy-rpc-types-engine = { git = "https://github.com/celo-org/celo-kona", rev = "e840ddc425a53d83645cdc3a41c5f2e6a220e060", default-features = false }
+celo-alloy-network = { git = "https://github.com/celo-org/celo-kona", rev = "e840ddc425a53d83645cdc3a41c5f2e6a220e060", default-features = false }
 
 # Execution
 alloy-evm = { version = "0.38.0", default-features = false }
@@ -220,7 +215,7 @@ revm-precompile = { version = "42.0.1", default-features = false }
 op-revm = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.8.0", default-features = false }
 
 # Celo Execution
-alloy-celo-evm = { git = "https://github.com/celo-org/celo-kona", rev = "6a80c17741ad2c5660466589c44433a04ed5a745", default-features = false }
+alloy-celo-evm = { git = "https://github.com/celo-org/celo-kona", rev = "e840ddc425a53d83645cdc3a41c5f2e6a220e060", default-features = false }
 
 # SP1 v6.10.0 (Hypercube)
 sp1-sdk = { version = "=6.10.0", features = ["network", "blocking", "profiling"] }
@@ -287,9 +282,3 @@ op-alloy = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-
 # but hokulea pulls op-revm from crates.io, producing two op-revm versions and
 # OpSpecId/OpEvm type mismatches. Patching unifies the whole graph on the git op-revm.
 op-revm = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.8.0" }
-
-# We patch alloy-eips to a version where fake_exponential does not overflow when provided with large inputs.
-alloy-eips = { git = "https://github.com/celo-org/alloy", branch = "fix-fake-exponential-2.0.5" }
-# We also need to patch alloy-serde to this version since otherwise a different non patch version is also included in the project
-# which breaks trait bound satisfaction
-alloy-serde = { git = "https://github.com/celo-org/alloy", branch = "fix-fake-exponential-2.0.5" }

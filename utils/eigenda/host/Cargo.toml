@@ -25,7 +25,6 @@ kona-proof.workspace = true
 # celo-kona
 celo-host.workspace = true
 celo-genesis.workspace = true
-celo-protocol.workspace = true
 
 # celo eigenda registry
 celo-eigenda-registry.workspace = true
