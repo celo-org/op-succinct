@@ -9,6 +9,14 @@ pub struct BlobFixture {
     pub proof: kzg_rs::Bytes48,
 }
 
+/// A KZG opening of a blob polynomial at `z`, as the point evaluation precompile receives it.
+pub struct OpeningFixture {
+    pub commitment: [u8; 48],
+    pub z: [u8; 32],
+    pub y: [u8; 32],
+    pub proof: [u8; 48],
+}
+
 /// Builds a deterministic, valid blob from `seed`. Every field element keeps its top byte zero so
 /// it stays below the BLS12-381 scalar modulus. The seed scales each element differently, so blobs
 /// from different seeds never differ by a constant (which would give them identical proofs).
@@ -31,4 +39,12 @@ pub fn blob_fixture(seed: u8) -> BlobFixture {
         commitment: kzg_rs::Bytes48(*commitment),
         proof: kzg_rs::Bytes48(*proof.to_bytes()),
     }
+}
+
+pub fn opening_fixture(seed: u8, z: [u8; 32]) -> OpeningFixture {
+    let settings = ethereum_kzg_settings(0);
+    let blob = c_kzg_blob(seed);
+    let commitment = settings.blob_to_kzg_commitment(&blob).unwrap().to_bytes();
+    let (proof, y) = settings.compute_kzg_proof(&blob, &z.into()).unwrap();
+    OpeningFixture { commitment: *commitment, z, y: *y, proof: *proof.to_bytes() }
 }

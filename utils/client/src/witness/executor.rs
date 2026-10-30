@@ -143,7 +143,7 @@ pub trait WitnessExecutor {
         P: Pipeline + SignalReceiver + Send + Sync + Debug,
     {
         // Install custom crypto provider for KZG point evaluation precompile
-        revm::precompile::install_crypto(CustomCrypto::default());
+        revm::precompile::install_crypto(CustomCrypto);
 
         let boot_clone = boot.clone();
 
