@@ -103,6 +103,19 @@ jobs:
           HEADS_FILE=$(find ${{ github.workspace }}/new_code -name "cycle_count_heads.json" -type f | head -1)
           cp "$HEADS_FILE" ${{ github.workspace }}/old_code/scripts/prove/cycle_count_heads.json
 
+      - name: Pin Old Branch To Recorded Heads
+        # A base branch whose benchmark predates cycle_count_heads.json would pick
+        # its own L1 head. Patch only the temporary checkout so both runs share
+        # the recorded heads; git apply fails the job if the patch is stale.
+        run: |
+          set -euo pipefail
+          if grep -q cycle_count_heads.json scripts/prove/tests/cycle_count_diff.rs; then
+            echo "Base branch already reads cycle_count_heads.json"
+          else
+            git apply --verbose ${{ github.workspace }}/new_code/.github/patches/cycle-count-pin-heads.patch
+          fi
+        working-directory: ./old_code
+
       - name: Run Test On Old Branch
         timeout-minutes: 45
         run: |
