@@ -80,7 +80,9 @@ impl BlobProvider for BlobStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kzg_fixtures::{blob_fixture, BlobFixture};
+    use crate::kzg_fixtures::{
+        blob_fixture, BlobFixture, G1_NOT_IN_SUBGROUP, G1_OFF_CURVE, SCALAR_MODULUS,
+    };
 
     fn blob_data(fixtures: &[BlobFixture]) -> BlobData {
         BlobData {
@@ -194,5 +196,58 @@ mod tests {
             commitments: vec![fixture.commitment],
             proofs: vec![fixture.proof],
         });
+    }
+
+    // Malformed inputs fail kzg-rs's own point and scalar validation, on both the single-blob and
+    // the batch path. kzg-rs reports a malformed G1 point and a non-canonical blob field element
+    // with the same "Failed to parse G1Affine from bytes" message.
+
+    #[test]
+    #[should_panic(expected = "KZG proof verification error: Failed to parse G1Affine from bytes")]
+    fn single_blob_commitment_not_in_subgroup_is_rejected() {
+        let mut data = blob_data(&[blob_fixture(1)]);
+        data.commitments[0] = kzg_rs::Bytes48(G1_NOT_IN_SUBGROUP);
+        let _ = BlobStore::from(data);
+    }
+
+    #[test]
+    #[should_panic(expected = "KZG proof verification error: Failed to parse G1Affine from bytes")]
+    fn multiple_blobs_commitment_off_curve_is_rejected() {
+        let mut data = blob_data(&[blob_fixture(1), blob_fixture(2)]);
+        data.commitments[1] = kzg_rs::Bytes48(G1_OFF_CURVE);
+        let _ = BlobStore::from(data);
+    }
+
+    #[test]
+    #[should_panic(expected = "KZG proof verification error: Failed to parse G1Affine from bytes")]
+    fn single_blob_proof_off_curve_is_rejected() {
+        let mut data = blob_data(&[blob_fixture(1)]);
+        data.proofs[0] = kzg_rs::Bytes48(G1_OFF_CURVE);
+        let _ = BlobStore::from(data);
+    }
+
+    #[test]
+    #[should_panic(expected = "KZG proof verification error: Failed to parse G1Affine from bytes")]
+    fn multiple_blobs_proof_not_in_subgroup_is_rejected() {
+        let mut data = blob_data(&[blob_fixture(1), blob_fixture(2)]);
+        data.proofs[0] = kzg_rs::Bytes48(G1_NOT_IN_SUBGROUP);
+        let _ = BlobStore::from(data);
+    }
+
+    #[test]
+    #[should_panic(expected = "KZG proof verification error: Failed to parse G1Affine from bytes")]
+    fn single_blob_non_canonical_element_is_rejected() {
+        let mut data = blob_data(&[blob_fixture(1)]);
+        data.blobs[0].0[..32].copy_from_slice(&SCALAR_MODULUS);
+        let _ = BlobStore::from(data);
+    }
+
+    #[test]
+    #[should_panic(expected = "KZG proof verification error: Failed to parse G1Affine from bytes")]
+    fn multiple_blobs_non_canonical_element_is_rejected() {
+        let mut data = blob_data(&[blob_fixture(1), blob_fixture(2)]);
+        let last = data.blobs[1].0.len() - 32;
+        data.blobs[1].0[last..].copy_from_slice(&SCALAR_MODULUS);
+        let _ = BlobStore::from(data);
     }
 }

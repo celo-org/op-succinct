@@ -1,6 +1,22 @@
 //! Real KZG vectors for tests, generated with c-kzg and the Ethereum mainnet trusted setup.
 
+use alloy_primitives::hex_literal::hex;
 use c_kzg::{ethereum_kzg_settings, BYTES_PER_BLOB};
+
+/// A compressed G1 encoding of a point on the curve but outside the prime-order subgroup
+/// (x^3 + 4 is a square mod p).
+pub const G1_NOT_IN_SUBGROUP: [u8; 48] = hex!(
+    "8123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+);
+
+/// A compressed G1 encoding with x = 1, which is off the curve: x^3 + 4 = 5 is not a square mod p.
+pub const G1_OFF_CURVE: [u8; 48] = hex!(
+    "800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001"
+);
+
+/// The BLS12-381 scalar field modulus, one past the largest field element (big-endian).
+pub const SCALAR_MODULUS: [u8; 32] =
+    hex!("73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001");
 
 /// A blob, its commitment and its blob KZG proof.
 pub struct BlobFixture {

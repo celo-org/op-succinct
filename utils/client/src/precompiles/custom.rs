@@ -46,7 +46,7 @@ impl Crypto for CustomCrypto {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kzg_fixtures::opening_fixture;
+    use crate::kzg_fixtures::{opening_fixture, G1_NOT_IN_SUBGROUP, G1_OFF_CURVE, SCALAR_MODULUS};
     use alloy_primitives::hex_literal::hex;
 
     /// Opening of a mainnet blob from the KZG spec tests; `z` is the largest field element.
@@ -141,16 +141,11 @@ mod tests {
 
     #[test]
     fn malformed_inputs_are_rejected() {
-        // A compressed G1 encoding whose x coordinate is not on the curve.
-        let off_curve = hex!(
-            "8123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-        );
-        // The BLS12-381 scalar field modulus, one past the largest field element.
-        let modulus = hex!("73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001");
-
-        assert!(!verify(&Z, &Y, &off_curve, &PROOF), "commitment off curve");
-        assert!(!verify(&Z, &Y, &COMMITMENT, &off_curve), "proof off curve");
-        assert!(!verify(&modulus, &Y, &COMMITMENT, &PROOF), "z not canonical");
-        assert!(!verify(&Z, &modulus, &COMMITMENT, &PROOF), "y not canonical");
+        assert!(!verify(&Z, &Y, &G1_NOT_IN_SUBGROUP, &PROOF), "commitment not in subgroup");
+        assert!(!verify(&Z, &Y, &G1_OFF_CURVE, &PROOF), "commitment off curve");
+        assert!(!verify(&Z, &Y, &COMMITMENT, &G1_NOT_IN_SUBGROUP), "proof not in subgroup");
+        assert!(!verify(&Z, &Y, &COMMITMENT, &G1_OFF_CURVE), "proof off curve");
+        assert!(!verify(&SCALAR_MODULUS, &Y, &COMMITMENT, &PROOF), "z not canonical");
+        assert!(!verify(&Z, &SCALAR_MODULUS, &COMMITMENT, &PROOF), "y not canonical");
     }
 }
