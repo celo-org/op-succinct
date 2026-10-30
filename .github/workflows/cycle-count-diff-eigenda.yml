@@ -109,7 +109,7 @@ jobs:
         # the recorded heads; git apply fails the job if the patch is stale.
         run: |
           set -euo pipefail
-          if grep -q cycle_count_heads.json scripts/prove/tests/cycle_count_diff.rs; then
+          if grep -qF 'File::open("cycle_count_heads.json")' scripts/prove/tests/cycle_count_diff.rs; then
             echo "Base branch already reads cycle_count_heads.json"
           else
             git apply --verbose ${{ github.workspace }}/new_code/.github/patches/cycle-count-pin-heads.patch
