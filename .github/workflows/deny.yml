@@ -2,7 +2,7 @@ name: cargo-deny
 
 on:
   push:
-    branches: [main]
+    branches: [develop]
   # cargo-deny checks the root workspace only, so submodules and contract libs don't trigger it.
   pull_request:
     paths:
@@ -19,7 +19,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/heads/develop' }}
 
 permissions:
   contents: read
