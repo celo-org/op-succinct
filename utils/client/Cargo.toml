@@ -52,5 +52,6 @@ celo-proof.workspace = true
 celo-genesis.workspace = true
 
 [dev-dependencies]
+c-kzg = { workspace = true, features = ["std", "ethereum_kzg_settings"] }
 op-alloy-rpc-types-engine.workspace = true
 tokio.workspace = true

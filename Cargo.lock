@@ -7958,6 +7958,7 @@ dependencies = [
  "alloy-sol-types",
  "anyhow",
  "async-trait",
+ "c-kzg",
  "celo-genesis",
  "celo-proof",
  "cfg-if",
