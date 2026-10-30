@@ -33,7 +33,7 @@ jobs:
       - name: Install SP1 toolchain
         run: |
           curl -L https://sp1.succinct.xyz | bash
-          ~/.sp1/bin/sp1up -v 6.2.4
+          ~/.sp1/bin/sp1up -v 6.10.0
           ~/.sp1/bin/cargo-prove prove --version
           source ~/.bashrc
 
@@ -95,17 +95,30 @@ jobs:
           EIGENDA_PROXY_ADDRESS: ${{ secrets.EIGENDA_PROXY_ADDRESS }}
           OP_SUCCINCT_MOCK: true
 
-      - name: Copy Stats File For Old Branch
+      - name: Copy Stats Files For Old Branch
         run: |
           STATS_FILE=$(find ${{ github.workspace }}/new_code -name "new_cycle_stats.json" -type f | head -1)
           cp "$STATS_FILE" ${{ github.workspace }}/old_code/scripts/prove/new_cycle_stats.json
+          # The old-branch run reads the L1/L2 heads the new-branch run recorded.
+          HEADS_FILE=$(find ${{ github.workspace }}/new_code -name "cycle_count_heads.json" -type f | head -1)
+          cp "$HEADS_FILE" ${{ github.workspace }}/old_code/scripts/prove/cycle_count_heads.json
+
+      - name: Pin Old Branch To Recorded Heads
+        # A base branch whose benchmark predates cycle_count_heads.json would pick
+        # its own L1 head. Patch only the temporary checkout so both runs share
+        # the recorded heads; git apply fails the job if the patch is stale.
+        run: |
+          set -euo pipefail
+          if grep -qF 'File::open("cycle_count_heads.json")' scripts/prove/tests/cycle_count_diff.rs; then
+            echo "Base branch already reads cycle_count_heads.json"
+          else
+            git apply --verbose ${{ github.workspace }}/new_code/.github/patches/cycle-count-pin-heads.patch
+          fi
+        working-directory: ./old_code
 
       - name: Run Test On Old Branch
-        # The touch bridges the strict dotenv::dotenv()? still present on the
-        # base branch; remove once the best-effort dotenv fix is on develop.
         timeout-minutes: 45
         run: |
-          touch scripts/prove/.env
           RUST_LOG=info NEW_BRANCH=false cargo test -p op-succinct-prove --features eigenda test_cycle_count_diff --release -- --exact --nocapture
         working-directory: ./old_code
         env:

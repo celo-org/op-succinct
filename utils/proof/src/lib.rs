@@ -1,5 +1,5 @@
-// The SP1 cluster proof types (sp1-cluster-* v2.4.2) produce a deeply nested
-// async future in `cluster_proof_blocking`, whose layout exceeds the default
+// The SP1 cluster proof types produce a deeply nested async future in
+// `cluster_proof_blocking`, whose layout exceeds the default
 // recursion limit of 128. Raise it so the layout query can complete.
 #![recursion_limit = "256"]
 
@@ -29,14 +29,12 @@ use sp1_sdk::{
     SP1VerifyingKey,
 };
 
+pub mod execution;
+
 /// Get the range ELF depending on the feature flag.
 pub fn get_range_elf_embedded() -> &'static [u8] {
     cfg_if::cfg_if! {
-        if #[cfg(feature = "celestia")] {
-            use op_succinct_elfs::CELESTIA_RANGE_ELF_EMBEDDED;
-
-            CELESTIA_RANGE_ELF_EMBEDDED
-        } else if #[cfg(feature = "eigenda")] {
+        if #[cfg(feature = "eigenda")] {
             use op_succinct_elfs::EIGENDA_RANGE_ELF_EMBEDDED;
 
             EIGENDA_RANGE_ELF_EMBEDDED
@@ -53,17 +51,7 @@ pub fn get_range_elf_embedded() -> &'static [u8] {
 }
 
 cfg_if::cfg_if! {
-    if #[cfg(feature = "celestia")] {
-        use op_succinct_celestia_host_utils::host::CelestiaOPSuccinctHost;
-
-        /// Initialize the Celestia host.
-        pub fn initialize_host(
-            fetcher: Arc<OPSuccinctDataFetcher>,
-        ) -> Arc<CelestiaOPSuccinctHost> {
-            tracing::info!("Initializing host with Celestia DA");
-            Arc::new(CelestiaOPSuccinctHost::new(fetcher))
-        }
-    } else if #[cfg(feature = "eigenda")] {
+    if #[cfg(feature = "eigenda")] {
         use op_succinct_eigenda_host_utils::host::EigenDAOPSuccinctHost;
 
         /// Initialize the EigenDA host.
@@ -226,6 +214,7 @@ impl ClusterArtifactStore {
 /// Always stored behind `Arc` — no `Clone` needed (and `ArtifactStoreConfig` is not `Clone`).
 pub struct ClusterProofConfig {
     pub cluster_rpc: String,
+    pub cluster_access_token: Option<String>,
     pub artifact_store: ClusterArtifactStore,
     /// The raw `ArtifactStoreConfig` from `request_config_from_env()`, used to construct
     /// per-call `ProofRequestConfig`. We pass the real value rather than a dummy to avoid
@@ -256,6 +245,7 @@ impl ClusterProofConfig {
         // Use dummy mode/timeout — these are per-call and only matter for `create_request`.
         let config = request_config_from_env(ProofMode::Compressed, 1);
         let cluster_rpc = config.cluster_rpc.clone();
+        let cluster_access_token = config.cluster_access_token.clone();
 
         let artifact_store = match &config.artifact_store {
             ArtifactStoreConfig::Redis { nodes } => {
@@ -277,12 +267,14 @@ impl ClusterProofConfig {
             }
         };
 
-        let service_client = ClusterServiceClient::new(cluster_rpc.clone())
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to create cluster service client: {e}"))?;
+        let service_client =
+            ClusterServiceClient::new(cluster_rpc.clone(), cluster_access_token.clone())
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to create cluster service client: {e}"))?;
 
         Ok(Self {
             cluster_rpc,
+            cluster_access_token,
             artifact_store,
             artifact_store_config: config.artifact_store,
             service_client,
@@ -294,6 +286,7 @@ impl ClusterProofConfig {
         let timeout_hours = timeout_secs.div_ceil(3600).max(1);
         ProofRequestConfig {
             cluster_rpc: self.cluster_rpc.clone(),
+            cluster_access_token: self.cluster_access_token.clone(),
             mode,
             timeout_hours,
             artifact_store: match &self.artifact_store_config {

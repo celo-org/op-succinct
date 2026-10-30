@@ -424,7 +424,7 @@ remove-config config_name env_file=".env":
 # Generate verification key hashes for all DA variants.
 vkeys:
     #!/usr/bin/env bash
-    set -e
+    set -euo pipefail
 
     echo "Generating verification key hashes..."
     echo ""
@@ -434,21 +434,29 @@ vkeys:
     ETH_RANGE=$(echo "$ETH_OUTPUT" | grep "Range Verification Key Hash" | awk '{print $NF}')
     AGG_KEY=$(echo "$ETH_OUTPUT" | grep "Aggregation Verification Key Hash" | awk '{print $NF}')
 
-    # Celestia DA
-    CEL_OUTPUT=$(RUST_LOG=error cargo run --release --bin config --features celestia 2>&1)
-    CEL_RANGE=$(echo "$CEL_OUTPUT" | grep "Range Verification Key Hash" | awk '{print $NF}')
-
     # EigenDA
     EIGEN_OUTPUT=$(RUST_LOG=error cargo run --release --bin config --features eigenda 2>&1)
     EIGEN_RANGE=$(echo "$EIGEN_OUTPUT" | grep "Range Verification Key Hash" | awk '{print $NF}')
+    EIGEN_AGG=$(echo "$EIGEN_OUTPUT" | grep "Aggregation Verification Key Hash" | awk '{print $NF}')
+
+    # AltDA
+    ALTDA_OUTPUT=$(RUST_LOG=error cargo run --release --bin config --features altda 2>&1)
+    ALTDA_RANGE=$(echo "$ALTDA_OUTPUT" | grep "Range Verification Key Hash" | awk '{print $NF}')
+    ALTDA_AGG=$(echo "$ALTDA_OUTPUT" | grep "Aggregation Verification Key Hash" | awk '{print $NF}')
+
+    # All DA modes must use the same aggregation key for the shared row below.
+    if [[ "$AGG_KEY" != "$EIGEN_AGG" || "$AGG_KEY" != "$ALTDA_AGG" ]]; then
+        echo "Aggregation verification keys differ across DA modes." >&2
+        exit 1
+    fi
 
     echo "## Verification Key Hashes"
     echo ""
     echo "| Program | Verification Key Hash |"
     echo "|--------|------------------------|"
     echo "| Ethereum DA Range Verification Key | **$ETH_RANGE** |"
-    echo "| Celestia DA Range Verification Key | **$CEL_RANGE** |"
     echo "| EigenDA Range Verification Key | **$EIGEN_RANGE** |"
+    echo "| AltDA Range Verification Key | **$ALTDA_RANGE** |"
     echo "| Aggregation Verification Key | **$AGG_KEY** |"
 
 # Build all ELF files.
@@ -459,17 +467,17 @@ build-range-elfs:
     #!/usr/bin/env bash
 
     cd programs/range/ethereum
-    ~/.sp1/bin/cargo-prove prove build --elf-name range-elf-embedded --docker --tag v6.2.4 --output-directory ../../../elf
+    ~/.sp1/bin/cargo-prove prove build --elf-name range-elf-embedded --docker --tag v6.10.0 --output-directory ../../../elf
 
     cd ../eigenda
-    ~/.sp1/bin/cargo-prove prove build --elf-name eigenda-range-elf-embedded --docker --tag v6.2.4 --output-directory ../../../elf
+    ~/.sp1/bin/cargo-prove prove build --elf-name eigenda-range-elf-embedded --docker --tag v6.10.0 --output-directory ../../../elf
 
 # Build ELF file for aggregation program.
 build-agg-elf:
     #!/usr/bin/env bash
 
     cd programs/aggregation
-    ~/.sp1/bin/cargo-prove prove build --elf-name aggregation-elf --docker --tag v6.2.4 --output-directory ../../elf
+    ~/.sp1/bin/cargo-prove prove build --elf-name aggregation-elf --docker --tag v6.10.0 --output-directory ../../elf
 
 # Run all unit tests except for the specified ones.
 audit-forkdiff:
@@ -485,22 +493,36 @@ audit-forkdiff:
 
     echo "Audit forkdiff written to $outpath"
 
-# Run all unit and integration tests except for the specified ones.
+# Compare both checkouts against the same finalized local Sysgo input.
+cycle-count-diff BASE:
+   cd tests && CYCLE_COUNT_BASE_DIR="{{absolute_path(BASE)}}" just rust-tests cycle-count
+
+# Run workspace tests against local Sysgo nodes.
 tests:
+   cd tests && just rust-tests workspace
+
+# Run workspace tests against RPCs supplied through the environment.
+# The bundle build script otherwise reuses an archive from before a version change.
+tests-rpc:
+   cargo clean --release -p postgresql_embedded
    cargo t --release \
     -- \
     --skip test_cycle_count_diff \
     --skip test_post_to_github \
     --skip execute_batch \
 
-# Run fault-proof integration tests
+# Run fault-proof integration tests against local Sysgo nodes.
 # target: test file (integration, sync, etc.)
-# da: DA feature (ethereum, eigenda, celestia). DA-agnostic tests like sync work with any.
+# da selects the Rust feature; local nodes use Ethereum DA.
 fp-integration-tests target="integration" da="ethereum":
+  cd tests && just rust-tests fault-proof {{target}} {{da}}
+
+# Run the same Rust tests against RPCs supplied through the environment.
+fp-integration-tests-rpc target="integration" da="ethereum":
   cd fault-proof && cargo t --test {{target}} --release --features integration,{{da}} -- --test-threads=1 --nocapture
 
 # Run DA-specific host utility tests
-# da: ethereum, eigenda, celestia
+# da: ethereum, eigenda
 da-integration-tests da="ethereum":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -537,3 +559,11 @@ forge-build *ARGS:
     --sig "idonotexist()" \
     --skip-simulation \
     2>/dev/null || true
+
+# Run cost estimation over a recent range of local L2 blocks.
+cost-estimator-test:
+  cd tests && just rust-tests cost-estimator
+
+# Run the same estimator command against RPCs supplied through the environment.
+cost-estimator-rpc:
+  cargo run --bin cost-estimator --release -- --rolling

@@ -2,6 +2,7 @@
 name = "op-succinct-range-utils"
 version.workspace = true
 license.workspace = true
+publish.workspace = true
 edition.workspace = true
 authors.workspace = true
 homepage.workspace = true
@@ -18,7 +19,6 @@ kona-proof.workspace = true
 # celo-kona
 celo-genesis.workspace = true
 celo-proof.workspace = true
-celo-protocol.workspace = true
 
 # sp1
 sp1-zkvm.workspace = true
