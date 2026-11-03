@@ -2,6 +2,7 @@
 name = "op-succinct-altda-host-utils"
 version.workspace = true
 license.workspace = true
+publish.workspace = true
 edition.workspace = true
 
 [dependencies]
@@ -19,7 +20,6 @@ kona-proof.workspace = true
 celo-host.workspace = true
 
 # alloy
-alloy-eips.workspace = true
 alloy-primitives.workspace = true
 
 # general

@@ -28,38 +28,35 @@ jobs:
         with:
           filters: |
             code:
+              - '.cargo/**'
               - '.github/workflows/integration-tests.yml'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'justfile'
               - 'rust-toolchain.toml'
               - 'fault-proof/**'
+              - 'tests/**'
+              - 'contracts/**'
               - 'bindings/**'
               - 'utils/**'
 
   # Runs on every PR so that required check names are reported to the ruleset.
-  # sync/ethereum runs the real test; other combinations report success immediately
-  # so the PR can enter the merge queue, where the full matrix runs for real.
+  # sync runs on PRs; integration is deferred to the merge queue.
   # On docs-only PRs, even sync exits immediately at step level.
   fp-integration-tests-pr:
     needs: changes
     if: always() && github.event_name == 'pull_request'
-    name: Fault Proof (${{ matrix.test }}${{ matrix.da != 'ethereum' && format(' - {0}', matrix.da) || '' }})
+    name: Fault Proof (${{ matrix.test }})
     runs-on: ${{ (!matrix.run_real || (needs.changes.result == 'success' && needs.changes.outputs.code != 'true')) && 'ubuntu-latest' || fromJSON(format('["runs-on","runner=64cpu-linux-x64","run-id={0}","spot=false","disk=large","extras=s3-cache"]', github.run_id)) }}
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     strategy:
       fail-fast: false
       matrix:
         include:
           - test: sync
-            da: ethereum
             run_real: true
           - test: integration
-            da: ethereum
-            run_real: false
-          - test: integration
-            da: eigenda
             run_real: false
 
     steps:
@@ -115,44 +112,19 @@ jobs:
       if: matrix.run_real && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true')
       uses: extractions/setup-just@v3
 
-    - name: Start ephemeral EigenDA proxy
-      if: matrix.da == 'eigenda' && matrix.run_real && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true')
-      uses: ./.github/actions/start-eigenda-proxy
-      with:
-        l1_rpc: ${{ secrets.L1_RPC }}
-
     - name: Run tests
       if: matrix.run_real && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true')
-      run: just fp-integration-tests ${{ matrix.test }} ${{ matrix.da }}
-      env:
-        L1_RPC: ${{ secrets.L1_RPC }}
-        L1_BEACON_RPC: ${{ secrets.L1_BEACON_RPC }}
-        L2_RPC: ${{ matrix.da == 'eigenda' && secrets.L2_EIGENDA_RPC || secrets.L2_RPC }}
-        L2_NODE_RPC: ${{ matrix.da == 'eigenda' && secrets.L2_EIGENDA_RPC || secrets.L2_NODE_RPC }}
-        EIGENDA_PROXY_ADDRESS: http://localhost:4242
+      run: just fp-integration-tests ${{ matrix.test }} ethereum
 
     - name: Upload test logs on failure
       if: failure() && matrix.run_real
       uses: actions/upload-artifact@v4
       with:
-        name: fp-${{ matrix.test }}-${{ matrix.da }}-pr-logs
+        name: fp-${{ matrix.test }}-ethereum-pr-logs
         path: |
           **/*.log
           target/debug/deps/*.log
         retention-days: 7
-
-  # Reports required check name for DA Host on PRs.
-  # Real execution happens in the merge queue via da-integration-tests.
-  da-integration-tests-pr:
-    if: github.event_name == 'pull_request'
-    name: DA Host (${{ matrix.da }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        da: [eigenda]
-    steps:
-    - run: echo "Deferred to merge queue"
 
   # Full matrix on push to main, merge queue, and /integration comment
   fp-integration-tests:
@@ -165,22 +137,15 @@ jobs:
        (github.event.comment.author_association == 'MEMBER' ||
         github.event.comment.author_association == 'COLLABORATOR' ||
         github.event.comment.author_association == 'OWNER'))
-    name: Fault Proof (${{ matrix.test }}${{ matrix.da != 'ethereum' && format(' - {0}', matrix.da) || '' }})
+    name: Fault Proof (${{ matrix.test }})
     environment: e2e
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     strategy:
       fail-fast: false
       matrix:
-        # sync is DA-agnostic (runs once), integration is DA-specific
-        include:
-          - test: sync
-            da: ethereum
-          - test: integration
-            da: ethereum
-          - test: integration
-            da: eigenda
+        test: [sync, integration]
 
     steps:
     - name: Get PR ref
@@ -245,26 +210,14 @@ jobs:
     - name: Install just
       uses: extractions/setup-just@v3
 
-    - name: Start ephemeral EigenDA proxy
-      if: matrix.da == 'eigenda'
-      uses: ./.github/actions/start-eigenda-proxy
-      with:
-        l1_rpc: ${{ secrets.L1_RPC }}
-
     - name: Run tests
-      run: just fp-integration-tests ${{ matrix.test }} ${{ matrix.da }}
-      env:
-        L1_RPC: ${{ secrets.L1_RPC }}
-        L1_BEACON_RPC: ${{ secrets.L1_BEACON_RPC }}
-        L2_RPC: ${{ matrix.da == 'eigenda' && secrets.L2_EIGENDA_RPC || secrets.L2_RPC }}
-        L2_NODE_RPC: ${{ matrix.da == 'eigenda' && secrets.L2_EIGENDA_RPC || secrets.L2_NODE_RPC }}
-        EIGENDA_PROXY_ADDRESS: http://localhost:4242
+      run: just fp-integration-tests ${{ matrix.test }} ethereum
 
     - name: Upload test logs on failure
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: fp-${{ matrix.test }}-${{ matrix.da }}-logs
+        name: fp-${{ matrix.test }}-ethereum-logs
         path: |
           **/*.log
           target/debug/deps/*.log

@@ -53,14 +53,8 @@ async fn main() -> Result<()> {
 
     // If the end block is provided, check that it is less than the latest finalized block. If the
     // end block is not provided, use the latest finalized block.
-    let (l2_start_block, l2_end_block) = get_validated_block_range(
-        host.as_ref(),
-        &data_fetcher,
-        args.start,
-        args.end,
-        args.default_range,
-    )
-    .await?;
+    let (l2_start_block, l2_end_block) =
+        get_validated_block_range(&data_fetcher, args.start, args.end, args.default_range).await?;
 
     // Split the range into sub-ranges.
     let ranges =

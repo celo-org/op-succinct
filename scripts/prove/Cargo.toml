@@ -3,6 +3,7 @@ name = "op-succinct-prove"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -83,6 +84,5 @@ op-succinct-build-utils.workspace = true
 
 [features]
 default = ["ethereum"]
-celestia = ["op-succinct-proof-utils/celestia"]
 eigenda = ["op-succinct-proof-utils/eigenda"]
 ethereum = ["op-succinct-proof-utils/ethereum"]

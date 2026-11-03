@@ -13,3 +13,6 @@ extern crate alloc;
 pub mod client;
 
 pub mod witness;
+
+#[cfg(test)]
+mod kzg_fixtures;

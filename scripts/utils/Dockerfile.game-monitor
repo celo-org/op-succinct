@@ -29,7 +29,7 @@ RUN rustup install stable && rustup default stable
 
 # Install SP1
 RUN curl -L https://sp1.succinct.xyz | bash && \
-    ~/.sp1/bin/sp1up -v 6.2.4 && \
+    ~/.sp1/bin/sp1up -v 6.10.0 && \
     ~/.sp1/bin/cargo-prove prove --version
 
 # Copy toolchain file
@@ -44,19 +44,21 @@ FROM rust-base AS builder
 COPY . .
 
 # Build the cost-estimator
-RUN cargo build --release --bin cost-estimator --features eigenda
+RUN cargo build --locked --release --bin cost-estimator --features eigenda
 # Build the game-monitor
-RUN cargo build --release --bin game-monitor
+RUN cargo build --locked --release --bin game-monitor
 
 # Runtime stage (minimal image)
 FROM ubuntu:24.04
 
 WORKDIR /app
 
-# Install only necessary runtime dependencies
-RUN apt-get update && apt-get install -y \
+# USN-8944-1 removes the compromised eMudhra chain. Fail rather than ship an older bundle.
+RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+    ca-certificates \
     curl \
     libssl-dev \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge 20260816ubuntu0.24.04.1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the built binaries

@@ -3,6 +3,7 @@ name = "op-succinct-scripts"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -89,6 +90,9 @@ op-succinct-fp.workspace = true
 # sp1
 sp1-sdk.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [build-dependencies]
 op-succinct-build-utils.workspace = true
 
@@ -96,5 +100,4 @@ op-succinct-build-utils.workspace = true
 default = ["ethereum"]
 altda = ["op-succinct-proof-utils/altda"]
 eigenda = ["op-succinct-proof-utils/eigenda"]
-celestia = ["op-succinct-proof-utils/celestia"]
 ethereum = ["op-succinct-proof-utils/ethereum"]

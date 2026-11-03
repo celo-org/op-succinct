@@ -1,7 +1,7 @@
 use alloy_primitives::B256;
-use anyhow::Result;
+use anyhow::{ensure, Context, Result};
 use clap::Parser;
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use log::info;
 use op_succinct_host_utils::{
     block_range::{
@@ -9,13 +9,15 @@ use op_succinct_host_utils::{
         split_range_basic, SpanBatchRange,
     },
     fetcher::OPSuccinctDataFetcher,
-    host::{enforce_l1_selection_supported, OPSuccinctHost},
+    host::OPSuccinctHost,
     l1_selection::L1BlockSelectionConfig,
     stats::ExecutionStats,
     witness_cache::{load_stdin_from_cache, save_stdin_to_cache},
     witness_generation::WitnessGenerator,
 };
-use op_succinct_proof_utils::{get_range_elf_embedded, initialize_host};
+use op_succinct_proof_utils::{
+    execution::validate_range_execution, get_range_elf_embedded, initialize_host,
+};
 use op_succinct_scripts::HostExecutorArgs;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use sp1_sdk::{
@@ -85,12 +87,20 @@ where
             let block_data = data_fetcher
                 .get_l2_block_data_range(range.start, range.end)
                 .await
-                .expect("Failed to fetch block data range.");
-            (range, block_data)
+                .context("Failed to fetch block data range")?;
+            let starting_output_root = data_fetcher
+                .get_l2_output_root(range.start)
+                .await
+                .context("Failed to fetch expected starting L2 output")?;
+            let output_root = data_fetcher
+                .get_l2_output_root(range.end)
+                .await
+                .context("Failed to fetch expected L2 output")?;
+            Ok::<_, anyhow::Error>((range, block_data, starting_output_root, output_root))
         })
         .buffered(15)
-        .collect::<Vec<_>>()
-        .await;
+        .try_collect::<Vec<_>>()
+        .await?;
 
     let report_path = if !log_only {
         let cargo_metadata = cargo_metadata::MetadataCommand::new().exec().unwrap();
@@ -165,60 +175,62 @@ where
     let report_path_clone = report_path.clone();
     tokio::task::spawn_blocking(move || {
         let prover = CpuProver::new();
-        execution_inputs.into_par_iter().for_each(|(sp1_stdin, (range, block_data))| {
-        let stdin_bytes = bincode::serialize(&sp1_stdin).unwrap();
-        let stdin_len = stdin_bytes.len();
-        info!("SP1 stdin for blocks {:?} to {:?}, number: {:?}, size: {stdin_len} bytes", range.start, range.end, range.end - range.start);
-            let result = prover
-                .execute(Elf::Static(get_range_elf_embedded()), sp1_stdin)
-                .deferred_proof_verification(false)
-                .run();
-
-            if let Some(err) = result.as_ref().err() {
-                log::warn!(
-                    "Failed to execute blocks {:?} - {:?} because of {:?}. Reduce your `batch-size` if you're running into OOM issues on SP1.",
+        execution_inputs.into_par_iter().try_for_each(
+            |(sp1_stdin, (range, block_data, starting_output_root, output_root))| {
+                let stdin_bytes = bincode::serialize(&sp1_stdin).unwrap();
+                let stdin_len = stdin_bytes.len();
+                info!(
+                    "SP1 stdin for blocks {:?} to {:?}, number: {:?}, size: {stdin_len} bytes",
                     range.start,
                     range.end,
-                    err
+                    range.end - range.start
                 );
-                panic!("Execution failed for blocks {:?} - {:?}: {:?}", range.start, range.end, err);
-            }
+                let (public_values, report) = prover
+                    .execute(Elf::Static(get_range_elf_embedded()), sp1_stdin)
+                    .calculate_gas(true)
+                    .deferred_proof_verification(false)
+                    .run()
+                    .with_context(|| {
+                        format!("Failed to execute blocks {}-{}", range.start, range.end)
+                    })?;
 
-            let (_, report) = result.unwrap();
+                validate_range_execution(
+                    &public_values,
+                    &report,
+                    range.end,
+                    starting_output_root,
+                    output_root,
+                )?;
+                let execution_stats = ExecutionStats::new(0, &block_data, &report, 0, 0);
 
-            let execution_stats = ExecutionStats::new(0, &block_data, &report, 0, 0);
+                if let Some(report_path) = &report_path_clone {
+                    let mut file =
+                        OpenOptions::new().read(true).append(true).open(report_path).unwrap();
 
-        if let Some(ref report_path) = report_path_clone {
-            // Write to CSV file
-            let mut file = OpenOptions::new()
-                .read(true)
-                .append(true)
-                .open(report_path)
-                .unwrap();
+                    // Writes the headers only if the file is empty.
+                    let needs_header = file.seek(std::io::SeekFrom::End(0)).unwrap() == 0;
 
-            // Writes the headers only if the file is empty.
-            let needs_header = file.seek(std::io::SeekFrom::End(0)).unwrap() == 0;
+                    let mut csv_writer =
+                        csv::WriterBuilder::new().has_headers(needs_header).from_writer(file);
 
-            let mut csv_writer = csv::WriterBuilder::new()
-                .has_headers(needs_header)
-                .from_writer(file);
-
-            csv_writer
-                .serialize(execution_stats.clone())
-                .expect("Failed to write execution stats to CSV.");
-            csv_writer.flush().expect("Failed to flush CSV writer.");
-        } else {
-            // Log only mode - print stats to console
-            log::info!(
-                "Execution stats for blocks {} to {}:\n{}",
-                range.start,
-                range.end,
-                execution_stats
-            );
-        }
-    });
+                    csv_writer
+                        .serialize(execution_stats.clone())
+                        .expect("Failed to write execution stats to CSV.");
+                    csv_writer.flush().expect("Failed to flush CSV writer.");
+                } else {
+                    // Log only mode - print stats to console
+                    log::info!(
+                        "Execution stats for blocks {} to {}:\n{}",
+                        range.start,
+                        range.end,
+                        execution_stats
+                    );
+                }
+                Ok::<_, anyhow::Error>(())
+            },
+        )
     })
-    .await?;
+    .await??;
 
     info!("Execution is complete.");
 
@@ -303,21 +315,14 @@ async fn main() -> Result<()> {
     // Get the host CLIs in order, in parallel.
     let host = initialize_host(Arc::new(data_fetcher.clone()));
 
-    enforce_l1_selection_supported(host.as_ref(), &data_fetcher, l1_selection).await?;
+    data_fetcher.validate_l1_selection().await?;
 
     let (l2_start_block, l2_end_block) = if args.rolling {
         info!("Using rolling block range");
-        get_rolling_block_range(host.as_ref(), &data_fetcher, args.default_range).await?
+        get_rolling_block_range(&data_fetcher, args.default_range).await?
     } else {
         info!("Using validated block range");
-        get_validated_block_range(
-            host.as_ref(),
-            &data_fetcher,
-            args.start,
-            args.end,
-            args.default_range,
-        )
-        .await?
+        get_validated_block_range(&data_fetcher, args.start, args.end, args.default_range).await?
     };
 
     // Pick the splitter. With --no-safe-head-split the caller wants the basic fixed-size splitter
@@ -379,6 +384,13 @@ async fn main() -> Result<()> {
             final_execution_stats.push(stats);
         }
 
+        let executed_blocks: u64 = final_execution_stats.iter().map(|stats| stats.nb_blocks).sum();
+        ensure!(
+            executed_blocks == l2_end_block - l2_start_block,
+            "Executed {executed_blocks} blocks, expected {}",
+            l2_end_block - l2_start_block
+        );
+
         println!("Wrote execution stats to {}", report_path.display());
 
         // Aggregate the execution stats and print them to the user.
@@ -392,4 +404,21 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use op_succinct_host_utils::l1_selection::{L1_BLOCK_TAG_ENV, L1_CONFIRMATIONS_ENV};
+
+    #[test]
+    fn explicit_l1_head_ignores_non_default_l1_selection_env() {
+        std::env::set_var(L1_BLOCK_TAG_ENV, "safe");
+        std::env::set_var(L1_CONFIRMATIONS_ENV, "4");
+        let l1_selection = cost_estimator_l1_selection(true).unwrap();
+        std::env::remove_var(L1_BLOCK_TAG_ENV);
+        std::env::remove_var(L1_CONFIRMATIONS_ENV);
+
+        assert_eq!(l1_selection, L1BlockSelectionConfig::default());
+    }
 }

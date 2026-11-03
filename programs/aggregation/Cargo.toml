@@ -2,6 +2,7 @@
 name = "aggregation"
 version.workspace = true
 license.workspace = true
+publish.workspace = true
 edition.workspace = true
 authors.workspace = true
 homepage.workspace = true
@@ -11,6 +12,7 @@ repository.workspace = true
 sha2.workspace = true
 sp1-zkvm.workspace = true
 sp1-lib.workspace = true
+sp1-hypercube.workspace = true
 op-succinct-client-utils.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true

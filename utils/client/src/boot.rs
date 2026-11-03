@@ -60,8 +60,7 @@ mod espresso_pin_tests {
     //! `batch_authenticator_address` the espresso-wiring commit stitches onto the rollup config
     //! and carries into derivation.
     //!
-    //! celo-kona is pinned to `main` at rev `6a80c17` (the merge commit of celo-org/celo-kona#242),
-    //! which should be re-pinned to a release tag once one is cut. These tests drive
+    //! celo-kona is pinned by commit rather than by release tag. These tests drive
     //! `CeloBootInfo::load` with a tiny in-memory preimage oracle and assert the Chaos and
     //! Mainnet Espresso values. If a celo-kona re-pin silently changes the Chaos schedule (or
     //! flips Mainnet on), they fail loudly rather than letting a proof derive against a
@@ -171,5 +170,32 @@ mod espresso_pin_tests {
         let mut cfg = CeloRollupConfig::new(boot.op_boot_info.rollup_config.clone());
         cfg.espresso = boot.espresso;
         assert!(!cfg.is_batch_auth_enabled(), "Mainnet must keep sender-based batch authorization");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kona_genesis::{AltDAConfig, RollupConfig};
+
+    #[test]
+    fn altda_limit_roundtrips_and_changes_the_config_hash_only_when_set() {
+        let hash_rollup_config = |config: &RollupConfig| {
+            super::hash_rollup_config(&CeloRollupConfig::new(config.clone()))
+        };
+        let mut config =
+            RollupConfig { alt_da_config: Some(AltDAConfig::default()), ..Default::default() };
+        let original_hash = hash_rollup_config(&config);
+        let serialized = serde_json::to_string(&config).unwrap();
+        assert!(!serialized.contains("da_max_input_size"));
+        let restored: RollupConfig = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(hash_rollup_config(&restored), original_hash);
+
+        config.alt_da_config.as_mut().unwrap().da_max_input_size = Some(200_000);
+        let restored: RollupConfig =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(restored.alt_da_config.as_ref().unwrap().da_max_input_size, Some(200_000));
+        assert_eq!(hash_rollup_config(&restored), hash_rollup_config(&config));
+        assert_ne!(hash_rollup_config(&restored), original_hash);
     }
 }

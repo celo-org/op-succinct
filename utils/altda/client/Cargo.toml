@@ -2,6 +2,7 @@
 name = "op-succinct-altda-client-utils"
 version.workspace = true
 license.workspace = true
+publish.workspace = true
 edition.workspace = true
 
 [dependencies]
@@ -26,3 +27,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 spin.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+kona-derive = { workspace = true, features = ["test-utils"] }
+tokio.workspace = true
