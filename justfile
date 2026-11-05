@@ -106,6 +106,21 @@ _deploy-fdg-contracts env_file=".env" custom_config_file="":
     RPC_URL_TO_USE="${RPC_URL:-$L1_RPC}"
     echo "Using RPC URL: $RPC_URL_TO_USE"
 
+    # Glamsterdam repriced state creation, so forge's local gas simulation underestimates CREATE gas.
+    # Probe: deploying 256 bytes of code costs ~105k gas before Glamsterdam, ~420k after.
+    PROBE_GAS=$(cast estimate --rpc-url "$RPC_URL_TO_USE" --create 0x6101006000f3)
+    NETWORK_GLAMSTERDAM=$([ "$PROBE_GAS" -gt 200000 ] && echo true || echo false)
+    if [ "${GLAMSTERDAM:-false}" != "$NETWORK_GLAMSTERDAM" ]; then
+        echo "Error: GLAMSTERDAM=${GLAMSTERDAM:-false}, but network gas pricing (probe: $PROBE_GAS gas) says GLAMSTERDAM=$NETWORK_GLAMSTERDAM"
+        exit 1
+    fi
+    GAS_FLAGS=""
+    if [ "$NETWORK_GLAMSTERDAM" = true ]; then
+        # Estimate gas via the node; 110 keeps the ~14.6M game create under the 2^24 per-tx cap (EIP-7825).
+        GAS_FLAGS="--skip-simulation --gas-estimate-multiplier 110"
+        echo "Glamsterdam gas pricing: $GAS_FLAGS"
+    fi
+
     echo "Deploying FDG contracts..."
     
     # Change to contracts directory
@@ -146,6 +161,7 @@ _deploy-fdg-contracts env_file=".env" custom_config_file="":
         --slow \
         --rpc-url "$RPC_URL_TO_USE" \
         --private-key "$PRIVATE_KEY" \
+        $GAS_FLAGS \
         $VERIFY
     
     echo "FDG contract deployment complete!"
