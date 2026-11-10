@@ -39,9 +39,7 @@ concurrency:
 
 jobs:
   tests:
-    # The embedded Postgres binaries used by the validity DB tests link libxml2.so.2,
-    # which ubuntu-26.04 lacks (it ships only libxml2.so.16).
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
     - name: Checkout code
