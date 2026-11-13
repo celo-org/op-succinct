@@ -5,7 +5,7 @@
 //!
 //! 1. **Primary**: fast retries with linear backoff (bounded by `--cost-estimator-retries`).
 //! 2. **Background**: long-tail retries with exponential 4x backoff, only using spare execution
-//!    slots, evicted after `--background-retry-max-age-secs`.
+//!    slots. The `--lookback-secs` window limits startup discovery and both retry queues.
 //!
 //! Running processes are monitored for anomalies (excessive runtime or log volume relative to
 //! the median of recent completions) and killed if they exceed configurable multipliers.
@@ -15,7 +15,7 @@
 
 use alloy_eips::BlockId;
 use alloy_primitives::{Address, B256, U256};
-use alloy_provider::ProviderBuilder;
+use alloy_provider::{Provider, ProviderBuilder};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use fault_proof::contract::{
@@ -29,6 +29,7 @@ use std::{
     env,
     fs::{self, File},
     io::{Read, Seek, SeekFrom, Write},
+    num::NonZeroU64,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -40,6 +41,8 @@ use tokio::{
 
 /// The dispute game type we monitor. Games with a different type are skipped.
 const GAME_TYPE: u32 = 42;
+/// Default age limit for primary games and background retries (seven days).
+const DEFAULT_LOOKBACK_SECS: u64 = 7 * 24 * 60 * 60;
 /// Kill a process if its log file is this many times larger than the median of peers.
 const LOG_VOLUME_KILL_MULTIPLIER: f64 = 10.0;
 /// Minimum number of completion history entries required to perform median comparison.
@@ -124,10 +127,14 @@ pub struct RunArgs {
     #[arg(long, default_value = "0")]
     pub max_logs_size_mb: u64,
 
-    /// The index of the game to start checking from. If unset the monitor will start with the most
-    /// recently created game.
-    #[arg(long, default_value = None)]
+    /// First game index to check, subject to the lookback window.
+    /// Defaults to the next index after persisted progress, or the start of the lookback window.
+    #[arg(long)]
     pub start_index: Option<u64>,
+
+    /// Maximum age in seconds since L1 game creation for startup discovery and all attempts.
+    #[arg(long, default_value_t = NonZeroU64::new(DEFAULT_LOOKBACK_SECS).unwrap())]
+    pub lookback_secs: NonZeroU64,
 
     /// The time in seconds to wait between discovering a game index and fetching its details
     /// from L1/L2. This delay mitigates node-desync issues that occur when accessing L1 or L2
@@ -164,12 +171,17 @@ pub struct RunArgs {
     /// Path to the progress file. Defaults to `<logs_dir>/progress.json`.
     #[arg(long)]
     pub progress_file: Option<PathBuf>,
+}
 
-    /// Maximum age in seconds (relative to the L1 game creation timestamp) for background
-    /// retries. Once a background-queued game exceeds this age, it is evicted and no further
-    /// attempts are made. Default is 3.5 days (302400 seconds).
-    #[arg(long, default_value = "302400")]
-    pub background_retry_max_age_secs: u64,
+impl RunArgs {
+    fn lookback(&self) -> Duration {
+        Duration::from_secs(self.lookback_secs.get())
+    }
+}
+
+fn game_cutoff(now: SystemTime, max_age: Duration) -> SystemTime {
+    let now_secs = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    UNIX_EPOCH + Duration::from_secs(now_secs.saturating_sub(max_age.as_secs()))
 }
 
 /// Arguments for the `gen-background-retry` subcommand.
@@ -288,8 +300,8 @@ enum SpawnOutcome {
     /// Process started and inserted into `running_processes`. Queue-specific success cleanup
     /// has already been performed inside `spawn_game`.
     Spawned,
-    /// The game has the wrong type for this monitor; queue-specific cleanup has been performed.
-    WrongGameType,
+    /// The game is outside the monitor's scope and has been removed from the queue.
+    Skipped,
     /// Fetching game data from L1/L2 failed. Queues are unmodified so the entry will be retried
     /// on the next poll. Callers typically `continue 'outer` to abandon the current iteration.
     FetchFailed,
@@ -348,10 +360,11 @@ struct BackgroundRetry {
 ///
 /// `last_contiguous` is the highest game index such that every index up to and including it
 /// has been processed (successfully or with retries exhausted). On startup the daemon resumes
-/// from `last_contiguous + 1`.
+/// from `last_contiguous + 1`, subject to the configured lookback.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct ProgressState {
-    last_contiguous: u64,
+    #[serde(default)]
+    last_contiguous: Option<u64>,
     #[serde(default)]
     background_retries: Vec<BackgroundRetry>,
 }
@@ -381,8 +394,8 @@ struct MonitorState {
     /// Tracks out-of-order game completions to compute `last_contiguous`.
     sequence_tracker: SequenceTracker,
     progress_file: PathBuf,
-    /// Games older than this (from L1 creation time) are evicted from background retries.
-    background_retry_max_age: Duration,
+    /// Maximum age for all attempts, measured from L1 game creation.
+    lookback: Duration,
 }
 
 impl MonitorState {
@@ -396,7 +409,7 @@ impl MonitorState {
         history_file: PathBuf,
         progress_file: PathBuf,
         background_retries: VecDeque<BackgroundRetry>,
-        background_retry_max_age: Duration,
+        lookback: Duration,
     ) -> Self {
         let completion_history = Self::load_history(&history_file, max_history_length);
         info!(
@@ -415,9 +428,9 @@ impl MonitorState {
             max_history_length,
             max_retries,
             history_file,
-            sequence_tracker: SequenceTracker::new(next_game_index),
+            sequence_tracker: SequenceTracker::new(next_game_index.checked_sub(1)),
             progress_file,
-            background_retry_max_age,
+            lookback,
         }
     }
 
@@ -444,7 +457,7 @@ impl MonitorState {
         self.sequence_tracker.add(game_index);
         let new_end = self.sequence_tracker.end();
         if new_end != old_end {
-            info!("Last contiguous advanced from {} to {}", old_end, new_end);
+            info!("Last contiguous advanced from {:?} to {:?}", old_end, new_end);
             self.save_progress();
         }
     }
@@ -718,6 +731,12 @@ impl MonitorState {
         game_created_at: SystemTime,
         reason: &str,
     ) {
+        if game_created_at < game_cutoff(SystemTime::now(), self.lookback) {
+            info!("Skipping retry for game {} past its maximum age", game_index);
+            self.discard_game(game_index, kind);
+            return;
+        }
+
         match kind {
             // Primary retry: re-queue with linear backoff (delay * 2 * retry_number).
             AttemptKind::Primary { retries } if retries < self.max_retries => {
@@ -758,9 +777,8 @@ impl MonitorState {
                 let primary_final_wait = self
                     .initial_game_delay
                     .checked_mul(2u32.saturating_mul(self.max_retries.max(1)))
-                    .unwrap_or(self.background_retry_max_age);
-                let last_wait =
-                    next_background_wait(primary_final_wait, self.background_retry_max_age);
+                    .unwrap_or(self.lookback);
+                let last_wait = next_background_wait(primary_final_wait, self.lookback);
                 let next_attempt_at = SystemTime::now() + last_wait;
                 warn!(
                     "Game {} exhausted {} primary retries ({}); moving to background queue with \
@@ -784,7 +802,7 @@ impl MonitorState {
                 // and bump the attempt counter. The game is already in the sequence tracker
                 // from the original primary-retry exhaustion, so we do not call
                 // mark_game_completed again.
-                let max_age = self.background_retry_max_age;
+                let max_age = self.lookback;
                 let Some(entry) =
                     self.background_retries.iter_mut().find(|bg| bg.game_index == game_index)
                 else {
@@ -813,11 +831,12 @@ impl MonitorState {
     }
 
     /// Evict any background-retry entries whose game age (relative to L1 game creation time)
-    /// exceeds `background_retry_max_age`. Currently-running entries are left in place; they
+    /// exceeds the lookback window. Currently-running entries are left in place; they
     /// will be considered on the next sweep after they finish. Returns the number evicted.
     fn evict_aged_background_retries(&mut self) -> usize {
         let now = SystemTime::now();
-        let max_age = self.background_retry_max_age;
+        let max_age = self.lookback;
+        let cutoff = game_cutoff(now, max_age);
         let running = &self.running_processes;
         let before = self.background_retries.len();
         self.background_retries.retain(|bg| {
@@ -825,8 +844,8 @@ impl MonitorState {
             if running.contains_key(&bg.game_index) {
                 return true;
             }
-            let age = now.duration_since(bg.game_created_at).unwrap_or(Duration::ZERO);
-            if age > max_age {
+            if bg.game_created_at < cutoff {
+                let age = now.duration_since(bg.game_created_at).unwrap_or_default();
                 warn!(
                     "Evicting background retry for game {} after {:?} (max age {:?}, \
                      {} attempts)",
@@ -859,7 +878,7 @@ impl MonitorState {
     }
 
     /// Fetch game data, spawn a cost estimator, and insert into `running_processes`.
-    /// Queue-specific cleanup (on both `WrongGameType` and successful spawn) is performed
+    /// Queue-specific cleanup on both skip and successful spawn is performed
     /// internally based on `kind`, so the call sites only have to pick a candidate and react
     /// to the returned outcome.
     async fn spawn_game<P: alloy_provider::Provider + Clone>(
@@ -868,16 +887,24 @@ impl MonitorState {
         kind: AttemptKind,
         ctx: &SpawnContext<'_, P>,
     ) -> Result<SpawnOutcome> {
+        let cutoff = game_cutoff(SystemTime::now(), self.lookback);
         let game_data =
-            match fetch_game_data(game_index, ctx.factory, ctx.l1_provider.clone()).await {
+            match fetch_game_data(game_index, ctx.factory, ctx.l1_provider.clone(), Some(cutoff))
+                .await
+            {
                 Ok(data) => data,
                 Err(FetchGameError::WrongGameType { game_index, game_type, expected }) => {
                     debug!(
                         "Skipping game at index {} (type {} != {})",
                         game_index, game_type, expected
                     );
-                    self.handle_wrong_game_type(game_index, kind);
-                    return Ok(SpawnOutcome::WrongGameType);
+                    self.discard_game(game_index, kind);
+                    return Ok(SpawnOutcome::Skipped);
+                }
+                Err(FetchGameError::OutsideLookback) => {
+                    info!("Skipping game {} past its maximum age", game_index);
+                    self.discard_game(game_index, kind);
+                    return Ok(SpawnOutcome::Skipped);
                 }
                 Err(e) => {
                     warn!("Failed to fetch game data for index {}: {:#}. Retrying", game_index, e);
@@ -962,8 +989,8 @@ impl MonitorState {
         Ok(SpawnOutcome::Spawned)
     }
 
-    /// WrongGameType cleanup, dispatched by `kind`.
-    fn handle_wrong_game_type(&mut self, game_index: u64, kind: AttemptKind) {
+    /// Remove a skipped game from its queue and record progress.
+    fn discard_game(&mut self, game_index: u64, kind: AttemptKind) {
         match kind {
             AttemptKind::Primary { .. } => {
                 self.pending_games.retain(|p| p.game_index != game_index);
@@ -1182,6 +1209,8 @@ fn dedup_background_retries(
 enum FetchGameError {
     #[error("game {game_index} has type {game_type}, expected {expected}")]
     WrongGameType { game_index: u64, game_type: u32, expected: u32 },
+    #[error("game is past its maximum age")]
+    OutsideLookback,
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -1189,11 +1218,12 @@ enum FetchGameError {
 /// Fetch on-chain metadata for a single game: type, address, L2 block range, creation time.
 ///
 /// Returns [`FetchGameError::WrongGameType`] if the game's type doesn't match [`GAME_TYPE`],
-/// allowing callers to skip non-matching games without treating it as a transient failure.
+/// Skips games of other types or older than the cutoff before fetching their range data.
 async fn fetch_game_data<P: alloy_provider::Provider + Clone>(
     game_index: u64,
     factory: &DisputeGameFactoryInstance<P>,
     l1_provider: P,
+    cutoff: Option<SystemTime>,
 ) -> Result<GameData, FetchGameError> {
     // Look up game metadata from the factory contract.
     let game_info = factory
@@ -1211,6 +1241,9 @@ async fn fetch_game_data<P: alloy_provider::Provider + Clone>(
 
     let created_at_secs = U256::from(game_info.timestamp).to::<u64>();
     let created_at = UNIX_EPOCH + Duration::from_secs(created_at_secs);
+    if cutoff.is_some_and(|cutoff| created_at < cutoff) {
+        return Err(FetchGameError::OutsideLookback);
+    }
 
     let game = OPSuccinctFaultDisputeGame::new(game_address, l1_provider);
 
@@ -1452,6 +1485,33 @@ async fn main() -> Result<()> {
     }
 }
 
+/// Find the first game created at or after the cutoff, or the next uncreated index.
+async fn first_game_at_or_after<P: alloy_provider::Provider + Clone>(
+    factory: &DisputeGameFactoryInstance<P>,
+    block: BlockId,
+    cutoff_secs: u64,
+) -> Result<u64> {
+    let mut first = 0;
+    let mut end =
+        factory.gameCount().block(block).call().await.context("fetching game count")?.to::<u64>();
+    // The factory appends games in creation order, with timestamps taken from their L1 blocks.
+    while first < end {
+        let index = first + (end - first) / 2;
+        let game = factory
+            .gameAtIndex(U256::from(index))
+            .block(block)
+            .call()
+            .await
+            .with_context(|| format!("fetching game {index} for lookback"))?;
+        if U256::from(game.timestamp).to::<u64>() < cutoff_secs {
+            first = index + 1;
+        } else {
+            end = index;
+        }
+    }
+    Ok(first)
+}
+
 /// Run the long-running game monitor daemon.
 ///
 /// Loads the env file, initialises providers, restores any persisted progress from disk, then
@@ -1495,21 +1555,23 @@ async fn run(args: RunArgs) -> Result<()> {
 
     let persisted_progress = MonitorState::load_progress(&progress_file);
 
-    // Determine starting game index: explicit flag > persisted progress > latest on-chain.
-    let next_game_index = if let Some(index) = args.start_index {
-        index
-    } else if let Some(progress) = persisted_progress.as_ref() {
-        let next = progress.last_contiguous + 1;
-        info!("Resuming from persisted last contiguous {}", progress.last_contiguous);
-        next
-    } else {
-        let initial_game_count =
-            factory.gameCount().call().block(BlockId::finalized()).await?.to::<u64>();
-        match initial_game_count {
-            0 => 0,
-            n => n - 1,
-        }
-    };
+    let resume_index = args.start_index.or_else(|| {
+        persisted_progress.as_ref().and_then(|progress| progress.last_contiguous).map(|last| {
+            info!("Resuming from persisted last contiguous {}", last);
+            last.saturating_add(1)
+        })
+    });
+    let lookback = args.lookback();
+    let finalized = l1_provider
+        .get_block(BlockId::finalized())
+        .await
+        .context("fetching finalized L1 block for game lookback")?
+        .context("no finalized L1 block for game lookback")?;
+    let cutoff = game_cutoff(SystemTime::now(), lookback).duration_since(UNIX_EPOCH)?.as_secs();
+    let block = BlockId::number(finalized.header.number);
+    let first_in_window = first_game_at_or_after(&factory, block, cutoff).await?;
+    let next_game_index = resume_index.unwrap_or(first_in_window).max(first_in_window);
+    info!("Starting at game {} with lookback floor {}", next_game_index, first_in_window);
 
     let loaded_background_retries: VecDeque<BackgroundRetry> =
         persisted_progress.map(|p| p.background_retries.into_iter().collect()).unwrap_or_default();
@@ -1534,7 +1596,7 @@ async fn run(args: RunArgs) -> Result<()> {
         history_file,
         progress_file,
         background_retries,
-        Duration::from_secs(args.background_retry_max_age_secs),
+        lookback,
     );
 
     // Run an eviction sweep up front to discard anything that aged out while the process was
@@ -1616,7 +1678,7 @@ async fn run(args: RunArgs) -> Result<()> {
             match state.spawn_game(game_index, kind, &spawn_ctx).await? {
                 SpawnOutcome::FetchFailed => continue 'outer,
                 SpawnOutcome::L2Behind => continue,
-                SpawnOutcome::Spawned | SpawnOutcome::WrongGameType => {}
+                SpawnOutcome::Spawned | SpawnOutcome::Skipped => {}
             }
         }
 
@@ -1640,7 +1702,7 @@ async fn run(args: RunArgs) -> Result<()> {
             match state.spawn_game(game_index, kind, &spawn_ctx).await? {
                 SpawnOutcome::FetchFailed => continue 'outer,
                 SpawnOutcome::L2Behind => continue,
-                SpawnOutcome::Spawned | SpawnOutcome::WrongGameType => {}
+                SpawnOutcome::Spawned | SpawnOutcome::Skipped => {}
             }
         }
 
@@ -1692,7 +1754,7 @@ async fn make_background_retry<P: alloy_provider::Provider + Clone>(
     factory: &DisputeGameFactoryInstance<P>,
     l1_provider: P,
 ) -> Result<BackgroundRetry> {
-    let game = fetch_game_data(game_index, factory, l1_provider)
+    let game = fetch_game_data(game_index, factory, l1_provider, None)
         .await
         .with_context(|| format!("failed to fetch game data for index {}", game_index))?;
     Ok(BackgroundRetry {
@@ -1763,7 +1825,167 @@ async fn gen_background_retry(args: GenBackgroundRetryArgs) -> Result<()> {
 mod tests {
     use super::*;
 
-    const MAX_AGE: Duration = Duration::from_secs(302_400);
+    const MAX_AGE: Duration = Duration::from_secs(DEFAULT_LOOKBACK_SECS);
+
+    #[tokio::test]
+    async fn lookback_floor_includes_the_first_game_created_at_the_cutoff() {
+        use alloy_provider::mock::Asserter;
+        use alloy_sol_types::SolValue;
+
+        let rpc = Asserter::new();
+        rpc.push_success(&alloy_primitives::hex::encode_prefixed(U256::from(5).abi_encode()));
+        // Binary search probes index 2 (at the cutoff), then index 1 (too old).
+        for timestamp in [100u64, 99] {
+            let game = (0u32, timestamp, Address::ZERO).abi_encode();
+            rpc.push_success(&alloy_primitives::hex::encode_prefixed(game));
+        }
+        let provider = ProviderBuilder::new().connect_mocked_client(rpc);
+        let factory = DisputeGameFactoryInstance::new(Address::ZERO, provider);
+
+        assert_eq!(first_game_at_or_after(&factory, BlockId::number(100), 100).await.unwrap(), 2);
+    }
+
+    #[test]
+    fn default_lookback_is_seven_days() {
+        let CliCommand::Run(args) = Cli::try_parse_from(["game-monitor", "run"]).unwrap().command
+        else {
+            panic!("expected run command");
+        };
+        assert_eq!(args.lookback(), Duration::from_secs(604_800));
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        let mut recent = bg(9, 4_800, 0);
+        recent.game_created_at = now - Duration::from_secs(6 * 86_400);
+        let mut expired = bg(8, 4_800, 0);
+        expired.game_created_at = now - Duration::from_secs(8 * 86_400);
+        let mut state = MonitorState::new(
+            10,
+            Duration::from_secs(1),
+            10_800,
+            0,
+            1,
+            dir.path().join("history.json"),
+            dir.path().join("progress.json"),
+            [expired.clone(), recent.clone()].into_iter().collect(),
+            args.lookback(),
+        );
+        assert_eq!(state.evict_aged_background_retries(), 1);
+        assert_eq!(state.background_retries, [recent]);
+        state.maybe_requeue(
+            10,
+            AttemptKind::Primary { retries: 0 },
+            expired.game_created_at,
+            "test",
+        );
+        assert!(state.pending_games.is_empty());
+        let progress = MonitorState::load_progress(&state.progress_file).unwrap();
+        assert_eq!(progress.last_contiguous, Some(10));
+    }
+
+    #[test]
+    fn custom_lookback_expires_both_retry_queues() {
+        let CliCommand::Run(args) =
+            Cli::try_parse_from(["game-monitor", "run", "--lookback-secs", "7200"])
+                .unwrap()
+                .command
+        else {
+            panic!("expected run command");
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        let mut expired = bg(8, 4_800, 0);
+        expired.game_created_at = now - Duration::from_secs(10_800);
+        let mut recent = bg(9, 4_800, 0);
+        recent.game_created_at = now - Duration::from_secs(3_600);
+        let mut state = MonitorState::new(
+            10,
+            Duration::from_secs(1),
+            10_800,
+            0,
+            1,
+            dir.path().join("history.json"),
+            dir.path().join("progress.json"),
+            [expired.clone(), recent.clone()].into_iter().collect(),
+            args.lookback(),
+        );
+        assert_eq!(state.evict_aged_background_retries(), 1);
+        assert_eq!(state.background_retries, [recent]);
+        state.maybe_requeue(
+            10,
+            AttemptKind::Primary { retries: 0 },
+            expired.game_created_at,
+            "test",
+        );
+        assert!(state.pending_games.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_expired_pending_game_is_skipped_before_fetching_its_range() {
+        use alloy_provider::mock::Asserter;
+        use alloy_sol_types::SolValue;
+
+        let rpc = Asserter::new();
+        let game = (GAME_TYPE, 0u64, Address::ZERO).abi_encode();
+        rpc.push_success(&alloy_primitives::hex::encode_prefixed(game));
+        let provider = ProviderBuilder::new().connect_mocked_client(rpc);
+        let factory = DisputeGameFactoryInstance::new(Address::ZERO, provider.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = MonitorState::new(
+            9,
+            Duration::ZERO,
+            10_800,
+            0,
+            1,
+            dir.path().join("history.json"),
+            dir.path().join("progress.json"),
+            VecDeque::new(),
+            MAX_AGE,
+        );
+        let kind = AttemptKind::Primary { retries: 1 };
+        state.pending_games.push_back(PendingGame {
+            executable_at: Instant::now(),
+            game_index: 9,
+            kind,
+        });
+        let ctx = SpawnContext {
+            factory: &factory,
+            l1_provider: &provider,
+            l2_provider: &provider,
+            cost_estimator_binary_path: Path::new("cost-estimator"),
+            batch_size: 200,
+            env_file: Path::new(".env"),
+            logs_dir: dir.path(),
+        };
+
+        assert!(matches!(state.spawn_game(9, kind, &ctx).await.unwrap(), SpawnOutcome::Skipped));
+        assert!(state.pending_games.is_empty());
+        assert_eq!(
+            MonitorState::load_progress(&state.progress_file).unwrap().last_contiguous,
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn progress_waits_for_the_first_selected_game_including_index_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = MonitorState::new(
+            0,
+            Duration::from_secs(1),
+            10_800,
+            0,
+            1,
+            dir.path().join("history.json"),
+            dir.path().join("progress.json"),
+            VecDeque::new(),
+            MAX_AGE,
+        );
+
+        state.mark_game_completed(1);
+        assert!(!state.progress_file.exists());
+        state.mark_game_completed(0);
+        let progress = MonitorState::load_progress(&state.progress_file).unwrap();
+        assert_eq!(progress.last_contiguous, Some(1));
+    }
 
     #[test]
     fn next_background_wait_grows_by_the_multiplier() {
@@ -1775,8 +1997,8 @@ mod tests {
 
     #[test]
     fn next_background_wait_caps_at_max() {
-        // 100_000 * 4 = 400_000 exceeds the max age, so it clamps to the max.
-        assert_eq!(next_background_wait(Duration::from_secs(100_000), MAX_AGE), MAX_AGE);
+        // 200_000 * 4 = 800_000 exceeds the max age, so it clamps to the max.
+        assert_eq!(next_background_wait(Duration::from_secs(200_000), MAX_AGE), MAX_AGE);
     }
 
     #[test]
@@ -1826,7 +2048,7 @@ mod tests {
     fn requeue_marks_completed_when_skipping_duplicate() {
         let tmp = std::env::temp_dir();
         let mut state = MonitorState::new(
-            5, // SequenceTracker end starts at 5
+            6, // SequenceTracker end starts at 5
             Duration::from_secs(1),
             10_800,
             0,
@@ -1834,16 +2056,16 @@ mod tests {
             tmp.join("op-succinct-test-history-dupguard.json"), // missing -> empty
             tmp.join("op-succinct-test-progress-dupguard.json"),
             [bg(6, 4_800, 0)].into_iter().collect(), // game 6 already queued in background
-            Duration::from_secs(302_400),
+            MAX_AGE,
         );
-        assert_eq!(state.sequence_tracker.end(), 5);
+        assert_eq!(state.sequence_tracker.end(), Some(5));
 
         // Game 6 (already in the background queue, e.g. rediscovered via --start-index) exhausts
         // a primary attempt. The duplicate guard must skip re-queuing it but still record
         // completion so last_contiguous can advance past the gap.
-        state.maybe_requeue(6, AttemptKind::Primary { retries: 1 }, UNIX_EPOCH, "test");
+        state.maybe_requeue(6, AttemptKind::Primary { retries: 1 }, SystemTime::now(), "test");
 
         assert_eq!(state.background_retries.len(), 1, "no duplicate added");
-        assert_eq!(state.sequence_tracker.end(), 6, "last_contiguous advanced past the gap");
+        assert_eq!(state.sequence_tracker.end(), Some(6), "last_contiguous advanced past the gap");
     }
 }
