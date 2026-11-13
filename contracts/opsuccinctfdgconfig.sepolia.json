@@ -1,13 +1,13 @@
 {
   "activateContracts": false,
-  "aggregationVkey": "0x0056749dbb095136046c6f0ee3f97095ec6fdc62018b3a9a991b7f66419ece2d",
+  "aggregationVkey": "0x006e44fdc80f40316d3ac6d7b09a8675996a9f54c18fd1d290c5026d86544850",
   "anchorStateRegistryAddress": "0xe689F6d101a6aFeBddB093c59D4fB5B3087561a7",
   "celoSuperchainConfigAddress": "0x7934c0D58df75F597F62dB898Ec537B5945BA643",
   "challengerAddresses": [
     "0x5e6450D449A90ECd9D07A01B2c97ADC6C8771A41"
   ],
   "challengerBondWei": 1000000000000000,
-  "configureContracts": true,
+  "configureContracts": false,
   "disputeGameFactoryAddress": "0x57c45d82d1a995f1e135b8d7edc0a6bb5211cfaa",
   "disputeGameFinalityDelaySeconds": 302400,
   "existingAnchorStateRegistry": "0x0000000000000000000000000000000000000000",
@@ -22,10 +22,10 @@
   "proposerAddresses": [
     "0x9D17db7073Ea468AD6B96C34a4D04f1745eC7DdE"
   ],
-  "rangeVkeyCommitment": "0x78293f2b30432aaf68af3a0f0b0888e126fbc0373903197d3cff014969ecba91",
-  "rollupConfigHash": "0x0db582bee3d6e628bf3fa2ac2c08e744c7eb029d35ecf06680dffef8341bb23a",
-  "startingL2BlockNumber": 38221578,
-  "startingRoot": "0xa551b343d0c1070b3a18195cadafbc4abe8aa381a35c379b9645b791987f592f",
+  "rangeVkeyCommitment": "0x543e17e82c4bf2064558a6c56d7e373e6fcb824900c9816d53272ca32b321746",
+  "rollupConfigHash": "0x1fa51cb5b6fd72135e8a05e4e9036c925fef823240583c2de376bbe2e7e3de30",
+  "startingL2BlockNumber": 40977144,
+  "startingRoot": "0x5c56ba45ad2355d1372673f54d47a1699abd29948535d03d1f63c617a7d4793e",
   "systemConfigAddress": "0x760a5f022c9940f4a074e0030be682f560d29818",
   "useSp1MockVerifier": false,
   "verifierAddress": "0xd685a80aF2d1761648e56716af4868d850Dae49B"
