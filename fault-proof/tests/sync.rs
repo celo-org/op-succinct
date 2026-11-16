@@ -2645,9 +2645,7 @@ mod challenger_sync {
     use alloy_sol_types::{SolCall, SolValue};
     use anyhow::{Context, Result};
     use fault_proof::{
-        challenger::{
-            Game, GameValidation, InvalidReason, OPSuccinctChallenger, UnavailableReason,
-        },
+        challenger::{Game, GameValidation, InvalidReason, OPSuccinctChallenger},
         contract::{GameStatus, ProposalStatus, BOND_DISTRIBUTION_MODE_UNDECIDED},
     };
     use op_succinct_bindings::dispute_game_factory::DisputeGameFactory;
@@ -3031,7 +3029,7 @@ mod challenger_sync {
     }
 
     #[tokio::test]
-    async fn test_no_challenge_after_deadline() -> Result<()> {
+    async fn test_expired_unchallenged_game_is_evicted() -> Result<()> {
         use crate::common::constants::MAX_CHALLENGE_DURATION;
 
         let (env, challenger, init_bond) = setup().await?;
@@ -3044,12 +3042,10 @@ mod challenger_sync {
 
         challenger.sync_state().await?;
 
-        let game = cached_game(&challenger, 0).await?;
-        assert_eq!(
-            game.validation,
-            GameValidation::Unavailable(UnavailableReason::ValidationPending)
+        assert!(
+            challenger.get_game(U256::ZERO).await.is_none(),
+            "Expired unchallenged game should be evicted"
         );
-        assert!(!game.should_attempt_to_challenge, "Should not challenge after deadline");
 
         Ok(())
     }

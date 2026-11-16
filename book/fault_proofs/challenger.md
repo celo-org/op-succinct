@@ -208,8 +208,9 @@ Output-root validation records one of three outcomes for each monitored game:
 
 Only `Invalid` authorizes an automatic challenge based on output-root validation. An `Unavailable`
 game is never treated as invalid: while its challenge window remains open, the challenger retries it
-on every polling cycle. At or after the deadline, it keeps the unavailable reason for observability
-but stops fetching the output root and does not submit a challenge based on an unknown result.
+on every polling cycle. Once a confirmed L1 block shows that the deadline has passed and the game is
+still unchallenged, the challenger removes the game from its cache. If validation was unavailable,
+it logs the reason and increments a counter when removing the game.
 Challenges inherited from a parent game that resolved in favor of the challenger remain independent
 of this output-root classification.
 
@@ -221,9 +222,12 @@ are also isolated so other cached games can still be synchronized and acted on.
 The following metrics expose unavailable validation and isolated synchronization failures:
 
 - `op_succinct_fp_challenger_unverifiable_games`: in-progress, unchallenged games whose output root
-  remains unavailable.
+  remains unavailable and whose challenge window is open at the latest L1 block.
 - `op_succinct_fp_challenger_nearest_unverifiable_deadline_seconds`: seconds until the nearest such
-  deadline (`-1` when none and `0` once expired).
+  deadline (`-1` when none).
+- `op_succinct_fp_challenger_expired_unverifiable_games_total`: unchallenged games evicted after the
+  deadline without a validation result. A restart may rediscover and count a game again if it is
+  still in progress on-chain.
 - `op_succinct_fp_challenger_sync_failures_total`: isolated discovery, refresh, and synchronization
   failures.
 - `op_succinct_fp_challenger_confirmed_l1_head`: L1 block number selected for the latest pinned sync

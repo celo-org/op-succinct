@@ -10,7 +10,7 @@ use fault_proof::{
     config::{ChallengerConfig, OPStackGameValidatorConfig},
     contract::{AnchorStateRegistry, DisputeGameFactory},
     op_stack_game_validator::OPStackGameValidator,
-    prometheus::ChallengerGauge,
+    prometheus::{ChallengerGauge, EXPIRED_UNVERIFIABLE_GAMES},
     TIMEOUT_SECONDS,
 };
 use op_succinct_host_utils::{
@@ -94,6 +94,11 @@ async fn main() -> Result<()> {
 
     // Initialize the metrics gauges.
     ChallengerGauge::init_all();
+    metrics::describe_counter!(
+        EXPIRED_UNVERIFIABLE_GAMES,
+        "Total number of unchallenged games evicted after the deadline without a validation result"
+    );
+    metrics::counter!(EXPIRED_UNVERIFIABLE_GAMES).absolute(0);
 
     challenger.run().await.expect("Runs in an infinite loop");
 
