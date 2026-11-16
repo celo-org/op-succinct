@@ -89,9 +89,10 @@ TX_CONFIRMATION_TIMEOUT=60            # L1 tx confirmation timeout in seconds (r
 ```
 
 Each synchronization cycle pins factory, game, parent, registry, and credit reads to one canonical
-L1 block at `latest - SYNC_L1_CONFIRMATIONS`. Deadline decisions continue to use the timestamp from
-the cycle's `latest` block. Before submitting a challenge, resolution, or credit claim, the
-challenger rechecks the relevant eligibility at a fresh canonical `latest` block and skips the
+L1 block at `latest - SYNC_L1_CONFIRMATIONS`. The challenger uses the cycle's `latest` timestamp
+to decide whether to keep validating a claim or schedule an action. It uses the confirmed block's
+timestamp to skip or evict expired unchallenged games. Before submitting a challenge, resolution, or
+credit claim, the challenger rechecks eligibility at a fresh canonical `latest` block and skips the
 transaction if that preflight is unavailable or stale.
 
 For production deployments, configure `SYNC_L1_CONFIRMATIONS` to a non-zero value selected for the
@@ -209,8 +210,9 @@ Output-root validation records one of three outcomes for each monitored game:
 Only `Invalid` authorizes an automatic challenge based on output-root validation. An `Unavailable`
 game is never treated as invalid: while its challenge window remains open, the challenger retries it
 on every polling cycle. Once a confirmed L1 block shows that the deadline has passed and the game is
-still unchallenged, the challenger removes the game from its cache. If validation was unavailable,
-it logs the reason and increments a counter when removing the game.
+still unchallenged, the challenger removes the game from its cache. It logs the reason and increments
+the corresponding counter if validation was unavailable or found the claim invalid. Games already
+expired and unchallenged at discovery are skipped without recording an expiry event.
 Challenges inherited from a parent game that resolved in favor of the challenger remain independent
 of this output-root classification.
 
@@ -226,8 +228,9 @@ The following metrics expose unavailable validation and isolated synchronization
 - `op_succinct_fp_challenger_nearest_unverifiable_deadline_seconds`: seconds until the nearest such
   deadline (`-1` when none).
 - `op_succinct_fp_challenger_expired_unverifiable_games_total`: unchallenged games evicted after the
-  deadline without a validation result. A restart may rediscover and count a game again if it is
-  still in progress on-chain.
+  deadline without a validation result.
+- `op_succinct_fp_challenger_expired_invalid_games_total`: invalid games evicted after the deadline
+  without a challenge.
 - `op_succinct_fp_challenger_sync_failures_total`: isolated discovery, refresh, and synchronization
   failures.
 - `op_succinct_fp_challenger_confirmed_l1_head`: L1 block number selected for the latest pinned sync

@@ -2303,11 +2303,11 @@ mod proposer_sync {
     #[tokio::test]
     async fn test_foreign_zero_bond_game_is_evicted_without_closing() -> Result<()> {
         let (env, proposer, _) = setup().await?;
-        env.deploy_game_impl_with_vkeys(
-            FixedBytes::repeat_byte(0x11),
-            FixedBytes::repeat_byte(0x22),
-        )
-        .await?;
+        let aggregation_vkey = FixedBytes::repeat_byte(0x11);
+        let new_impl = env
+            .deploy_game_impl_with_vkeys(aggregation_vkey, FixedBytes::repeat_byte(0x22))
+            .await?;
+        env.set_game_implementation(TEST_GAME_TYPE, new_impl).await?;
         let call = DisputeGameFactory::setInitBondCall {
             _gameType: TEST_GAME_TYPE,
             _initBond: U256::ZERO,
@@ -2320,12 +2320,14 @@ mod proposer_sync {
         }
         proposer.sync_state().await?;
         let first = cached_game(&proposer, 0).await?;
+        assert_eq!(first.aggregation_vkey, aggregation_vkey);
         assert_eq!(proposer.state_snapshot().await.canonical_head_index, Some(U256::from(1)));
         env.warp_time(MAX_CHALLENGE_DURATION + 1).await?;
-        env.resolve_game(first.address).await?;
+        assert!(env.resolve_game(first.address).await?.status(), "expected resolve to succeed");
         env.warp_time(DISPUTE_GAME_FINALITY_DELAY_SECONDS + 1).await?;
         proposer.sync_state().await?;
-        assert!(proposer.get_game(U256::ZERO).await.is_none());
+        let retained = proposer.get_game(U256::ZERO).await;
+        assert!(retained.is_none(), "expected foreign game to be evicted: {retained:?}");
         assert_eq!(
             env.get_bond_distribution_mode(first.address).await?,
             BOND_DISTRIBUTION_MODE_UNDECIDED
@@ -3037,9 +3039,10 @@ mod challenger_sync {
         let starting_l2_block = env.anvil.starting_l2_block_number;
         let block = starting_l2_block + 1;
         env.create_game(random_invalid_root(), block, M, init_bond).await?;
+        challenger.sync_state().await?;
+        assert!(challenger.get_game(U256::ZERO).await.is_some());
 
         env.warp_time(MAX_CHALLENGE_DURATION + 1).await?;
-
         challenger.sync_state().await?;
 
         assert!(
@@ -3287,7 +3290,7 @@ mod challenger_sync {
 
     /// Verifies correct eviction when multiple games have different final states.
     ///
-    /// Topology: M -> 0 (DEFENDER_WINS), M -> 1 (CHALLENGER_WINS, claimed), M -> 2 (IN_PROGRESS)
+    /// Games 0 and 1 are resolved, game 2 expires unchallenged, and game 3 stays challengeable.
     #[tokio::test]
     async fn test_multi_branch_eviction() -> Result<()> {
         let (env, challenger, init_bond) = setup().await?;
@@ -3303,7 +3306,7 @@ mod challenger_sync {
         env.create_game(random_invalid_root(), starting_l2_block + 2, M, init_bond).await?;
         let (_, addr1) = env.last_game_info().await?;
 
-        // Game 2: valid, stays IN_PROGRESS
+        // Game 2: valid, expires unchallenged without resolving
         let root2 = env.compute_output_root_at_block(starting_l2_block + 3).await?;
         env.create_game(root2, starting_l2_block + 3, M, init_bond).await?;
 
@@ -3324,6 +3327,10 @@ mod challenger_sync {
         env.warp_time(DISPUTE_GAME_FINALITY_DELAY_SECONDS + 1).await?;
         env.claim_bond(addr1, CHALLENGER_ADDRESS).await?;
 
+        // Game 3: valid and still within the challenge window.
+        let root3 = env.compute_output_root_at_block(starting_l2_block + 4).await?;
+        env.create_game(root3, starting_l2_block + 4, M, init_bond).await?;
+
         // Sync and verify eviction
         challenger.sync_state().await?;
 
@@ -3336,8 +3343,12 @@ mod challenger_sync {
             "CHALLENGER_WINS with claimed bond should be evicted"
         );
         assert!(
-            challenger.get_game(U256::from(2)).await.is_some(),
-            "IN_PROGRESS game should be retained"
+            challenger.get_game(U256::from(2)).await.is_none(),
+            "Expired unchallenged game should be evicted"
+        );
+        assert!(
+            challenger.get_game(U256::from(3)).await.is_some(),
+            "Challengeable game should remain cached"
         );
 
         Ok(())

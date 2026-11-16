@@ -4,6 +4,7 @@ use strum_macros::{Display, EnumIter};
 
 pub const EXPIRED_UNVERIFIABLE_GAMES: &str =
     "op_succinct_fp_challenger_expired_unverifiable_games_total";
+pub const EXPIRED_INVALID_GAMES: &str = "op_succinct_fp_challenger_expired_invalid_games_total";
 
 // Define an enum for all fault proof proposer metrics gauges.
 #[derive(Debug, Clone, Copy, Display, EnumIter, EnumMessage)]
