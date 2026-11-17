@@ -7,7 +7,7 @@ on:
   #   branches:
   #     - main
   # merge_group:
-  pull_request:
+  # pull_request:
   # issue_comment:
   #   types: [created]
   workflow_dispatch:
