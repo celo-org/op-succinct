@@ -47,7 +47,7 @@ jobs:
     needs: changes
     if: always() && github.event_name == 'pull_request'
     name: Fault Proof (${{ matrix.test }})
-    runs-on: ${{ (!matrix.run_real || (needs.changes.result == 'success' && needs.changes.outputs.code != 'true')) && 'ubuntu-latest' || fromJSON(format('["runs-on","runner=64cpu-linux-x64","run-id={0}","spot=false","disk=large","extras=s3-cache"]', github.run_id)) }}
+    runs-on: ubuntu-latest
     timeout-minutes: 90
 
     strategy:
@@ -67,10 +67,6 @@ jobs:
     - name: Skip — docs-only PR
       if: matrix.run_real && needs.changes.result == 'success' && needs.changes.outputs.code != 'true'
       run: echo "Docs-only change, skipping integration tests"
-
-    - name: Configure runs-on cache
-      if: matrix.run_real && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true')
-      uses: runs-on/action@v2
 
     - name: Checkout code
       if: matrix.run_real && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true')
