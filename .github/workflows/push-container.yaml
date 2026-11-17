@@ -17,6 +17,9 @@ on:
       concurrency-group:
         required: false
         type: string
+      build-args:
+        required: false
+        type: string
 jobs:
   infer_image_metadata:
     name: Infer image tags from github ref type
@@ -62,5 +65,6 @@ jobs:
       timeout-minutes: 60
       context: .
       file: ${{ inputs.file }}
+      build-args: ${{ inputs.build-args }}
       tags: ${{ needs.infer_image_metadata.outputs.tags }}
       trivy-enabled: false

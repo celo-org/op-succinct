@@ -1,0 +1,94 @@
+# syntax=docker/dockerfile:1.4
+
+# Deploys the OPSuccinctFaultDisputeGame contracts: fetches the deployment
+# config from the chain, then runs DeployOPSuccinctFDG.s.sol. Configured through
+# the environment, as `just deploy-fdg-contracts` is; see fault-proof/deploy-fdg.sh.
+
+FROM rust:1.94.0-trixie AS base
+
+WORKDIR /app
+
+# Install required dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    clang \
+    build-essential \
+    git \
+    pkg-config \
+    libssl-dev \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Go 1.24 (required for sp1-recursion-gnark-ffi)
+RUN curl -LO https://go.dev/dl/go1.24.0.linux-amd64.tar.gz && \
+    tar -C /usr/local -xzf go1.24.0.linux-amd64.tar.gz && \
+    rm go1.24.0.linux-amd64.tar.gz
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+# Install SP1
+RUN curl -L https://sp1.succinct.xyz | bash && \
+    ~/.sp1/bin/sp1up -v 6.10.0 && \
+    ~/.sp1/bin/cargo-prove prove --version
+
+
+FROM base AS builder
+
+WORKDIR /app
+COPY . .
+
+RUN cargo build --locked --release --bin fetch-fault-dispute-game-config --features eigenda
+
+
+FROM ubuntu:24.04 AS foundry
+
+ARG FOUNDRY_VERSION=v1.7.1
+
+# USN-8944-1 removes the compromised eMudhra chain. Fail rather than ship an older bundle.
+RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    just \
+    libssl-dev \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge 20260816ubuntu0.24.04.1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -L https://foundry.paradigm.xyz | bash && \
+    /root/.foundry/bin/foundryup --install "${FOUNDRY_VERSION}"
+ENV PATH="/root/.foundry/bin:${PATH}"
+
+
+# The shared docker-build workflow checks out without submodules, so the build
+# context lacks the contracts' dependencies: fetch them at the commit being built.
+FROM foundry AS contracts
+
+ARG GIT_COMMIT
+
+WORKDIR /src
+RUN test -n "${GIT_COMMIT}" || (echo "GIT_COMMIT build arg is required" && exit 1)
+RUN git init -q && \
+    git remote add origin https://github.com/celo-org/op-succinct && \
+    git fetch -q --depth 1 origin "${GIT_COMMIT}" && \
+    git checkout -q FETCH_HEAD && \
+    git submodule update -q --init --recursive --depth 1 contracts
+
+WORKDIR /src/contracts
+RUN forge build
+
+
+FROM foundry AS runtime
+
+WORKDIR /app
+
+COPY --from=contracts /src/contracts ./contracts
+COPY justfile ./
+RUN mkdir -p ./configs/L1
+COPY fault-proof/configs/L1/ ./configs/L1/
+COPY resources/ ./resources/
+
+COPY --from=builder /app/target/release/fetch-fault-dispute-game-config /usr/local/bin/
+COPY fault-proof/deploy-fdg.sh /usr/local/bin/deploy-fdg
+
+ENV OP_SUCCINCT_FAULT_DISPUTE_GAME_CONFIG_PATH=/app/contracts/opsuccinctfdgconfig.json
+
+CMD ["deploy-fdg"]
