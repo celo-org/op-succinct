@@ -25,6 +25,8 @@ ignore = [
   { id = "RUSTSEC-2026-0398", reason = "zstd-safe 7.2, through zstd in SP1 and sp1-cluster-artifact. The affected seekable feature is disabled. Remove when zstd-safe reaches >=8.2.0." },
   { id = "RUSTSEC-2026-0403", reason = "zstd-safe 7.2, through zstd in SP1 and sp1-cluster-artifact. Decompression uses decode_all, whose read decoder is unaffected. Remove when zstd-safe reaches >=8.2.0." },
   { id = "RUSTSEC-2026-0441", reason = "pin-utils, through hyper 1.8 and the AWS SDK's aws-smithy-http 0.62/0.63 and aws-smithy-runtime 1.11. hyper 1.9 and the latest aws-smithy releases drop it; remove once the AWS SDK crates in sp1-cluster, sp1-sdk and alloy-signer-aws move up." },
+  { id = "RUSTSEC-2026-0542", reason = "Unmaintained advisory for humantime, used for duration parsing in host-utils directly and through humantime-serde. Remove once host-utils replaces both dependencies." },
+  { id = "RUSTSEC-2026-0543", reason = "Unmaintained advisory for chrono, used directly by validity and transitively through SP1, SQLx, gcloud-sdk, and opentelemetry-stdout. Remove once these dependency paths migrate off chrono." },
 ]
 
 [licenses]
