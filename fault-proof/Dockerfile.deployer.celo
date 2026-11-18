@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1.4
 
-# Deploys the OPSuccinctFaultDisputeGame contracts: fetches the deployment
-# config from the chain, then runs DeployOPSuccinctFDG.s.sol. Configured through
-# the environment, as `just deploy-fdg-contracts` is; see fault-proof/deploy-fdg.sh.
+# Image equivalent of `just deploy-fdg-contracts`: fetches the FDG config from
+# the chain, then runs DeployOPSuccinctFDG.s.sol. Configured through the
+# environment (L1_RPC, L2_RPC, L2_NODE_RPC, PRIVATE_KEY, GAME_TYPE, ...).
 
 FROM rust:1.94.0-trixie AS base
 
@@ -65,10 +65,9 @@ FROM foundry AS contracts
 ARG GIT_COMMIT
 
 WORKDIR /src
-RUN test -n "${GIT_COMMIT}" || (echo "GIT_COMMIT build arg is required" && exit 1)
 RUN git init -q && \
     git remote add origin https://github.com/celo-org/op-succinct && \
-    git fetch -q --depth 1 origin "${GIT_COMMIT}" && \
+    git fetch -q --depth 1 origin "${GIT_COMMIT:?GIT_COMMIT build arg is required}" && \
     git checkout -q FETCH_HEAD && \
     git submodule update -q --init --recursive --depth 1 contracts
 
@@ -82,13 +81,12 @@ WORKDIR /app
 
 COPY --from=contracts /src/contracts ./contracts
 COPY justfile ./
-RUN mkdir -p ./configs/L1
 COPY fault-proof/configs/L1/ ./configs/L1/
 COPY resources/ ./resources/
-
 COPY --from=builder /app/target/release/fetch-fault-dispute-game-config /usr/local/bin/
-COPY fault-proof/deploy-fdg.sh /usr/local/bin/deploy-fdg
 
 ENV OP_SUCCINCT_FAULT_DISPUTE_GAME_CONFIG_PATH=/app/contracts/opsuccinctfdgconfig.json
+ENV RUST_LOG=info
 
-CMD ["deploy-fdg"]
+# Both steps take an env file; the configuration is in the environment instead.
+CMD ["sh", "-c", "fetch-fault-dispute-game-config --env-file /dev/null && just _deploy-fdg-contracts /dev/null"]
