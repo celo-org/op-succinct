@@ -3,6 +3,8 @@
 # Image equivalent of `just deploy-fdg-contracts`: fetches the FDG config from
 # the chain, then runs DeployOPSuccinctFDG.s.sol. Configured through the
 # environment (L1_RPC, L2_RPC, L2_NODE_RPC, PRIVATE_KEY, GAME_TYPE, ...).
+# Set GLAMSTERDAM=true on Glamsterdam L1s: the deploy checks it against the
+# network's gas pricing and aborts on a mismatch.
 
 FROM rust:1.94.0-trixie AS base
 
