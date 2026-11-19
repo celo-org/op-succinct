@@ -53,25 +53,20 @@ RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 instal
     && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge 20260816ubuntu0.24.04.1 \
     && rm -rf /var/lib/apt/lists/*
 
+# mkdir pins svm's solc cache to ~/.svm (else it may use ~/.local/share/svm),
+# so the runtime stage can copy the solc that `forge build` installs.
 RUN curl -L https://foundry.paradigm.xyz | bash && \
-    /root/.foundry/bin/foundryup --install "${FOUNDRY_VERSION}"
+    /root/.foundry/bin/foundryup --install "${FOUNDRY_VERSION}" && \
+    mkdir -p /root/.svm
 ENV PATH="/root/.foundry/bin:${PATH}"
 
 
-# The shared docker-build workflow checks out without submodules, so the build
-# context lacks the contracts' dependencies: fetch them at the commit being built.
+# Needs the contracts' submodules in the build context
+# (`git submodule update --init --recursive contracts`).
 FROM foundry AS contracts
 
-ARG GIT_COMMIT
-
-WORKDIR /src
-RUN git init -q && \
-    git remote add origin https://github.com/celo-org/op-succinct && \
-    git fetch -q --depth 1 origin "${GIT_COMMIT:?GIT_COMMIT build arg is required}" && \
-    git checkout -q FETCH_HEAD && \
-    git submodule update -q --init --recursive --depth 1 contracts
-
-WORKDIR /src/contracts
+WORKDIR /app/contracts
+COPY contracts/ ./
 RUN forge build
 
 
@@ -79,7 +74,9 @@ FROM foundry AS runtime
 
 WORKDIR /app
 
-COPY --from=contracts /src/contracts ./contracts
+COPY --from=contracts /app/contracts ./contracts
+# solc downloaded by forge build; otherwise the deploy fetches it again at runtime.
+COPY --from=contracts /root/.svm /root/.svm
 COPY justfile ./
 COPY fault-proof/configs/L1/ ./configs/L1/
 COPY resources/ ./resources/
