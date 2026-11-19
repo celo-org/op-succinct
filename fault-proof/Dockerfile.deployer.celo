@@ -1,0 +1,91 @@
+# syntax=docker/dockerfile:1.4
+
+# Image equivalent of `just deploy-fdg-contracts`: fetches the FDG config from
+# the chain, then runs DeployOPSuccinctFDG.s.sol. Configured through the
+# environment (L1_RPC, L2_RPC, L2_NODE_RPC, PRIVATE_KEY, GAME_TYPE, ...).
+# Set GLAMSTERDAM=true on Glamsterdam L1s: the deploy checks it against the
+# network's gas pricing and aborts on a mismatch.
+
+FROM rust:1.94.0-trixie AS base
+
+WORKDIR /app
+
+# Install required dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    clang \
+    build-essential \
+    git \
+    pkg-config \
+    libssl-dev \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Go 1.24 (required for sp1-recursion-gnark-ffi)
+RUN curl -LO https://go.dev/dl/go1.24.0.linux-amd64.tar.gz && \
+    tar -C /usr/local -xzf go1.24.0.linux-amd64.tar.gz && \
+    rm go1.24.0.linux-amd64.tar.gz
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+# Install SP1
+RUN curl -L https://sp1.succinct.xyz | bash && \
+    ~/.sp1/bin/sp1up -v 6.10.0 && \
+    ~/.sp1/bin/cargo-prove prove --version
+
+
+FROM base AS builder
+
+WORKDIR /app
+COPY . .
+
+RUN cargo build --locked --release --bin fetch-fault-dispute-game-config --features eigenda
+
+
+FROM ubuntu:24.04 AS foundry
+
+ARG FOUNDRY_VERSION=v1.7.1
+
+# USN-8944-1 removes the compromised eMudhra chain. Fail rather than ship an older bundle.
+RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    just \
+    libssl-dev \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge 20260816ubuntu0.24.04.1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# mkdir pins svm's solc cache to ~/.svm (else it may use ~/.local/share/svm),
+# so the runtime stage can copy the solc that `forge build` installs.
+RUN curl -L https://foundry.paradigm.xyz | bash && \
+    /root/.foundry/bin/foundryup --install "${FOUNDRY_VERSION}" && \
+    mkdir -p /root/.svm
+ENV PATH="/root/.foundry/bin:${PATH}"
+
+
+# Needs the contracts' submodules in the build context
+# (`git submodule update --init --recursive contracts`).
+FROM foundry AS contracts
+
+WORKDIR /app/contracts
+COPY contracts/ ./
+RUN forge build
+
+
+FROM foundry AS runtime
+
+WORKDIR /app
+
+COPY --from=contracts /app/contracts ./contracts
+# solc downloaded by forge build; otherwise the deploy fetches it again at runtime.
+COPY --from=contracts /root/.svm /root/.svm
+COPY justfile ./
+COPY fault-proof/configs/L1/ ./configs/L1/
+COPY resources/ ./resources/
+COPY --from=builder /app/target/release/fetch-fault-dispute-game-config /usr/local/bin/
+
+ENV OP_SUCCINCT_FAULT_DISPUTE_GAME_CONFIG_PATH=/app/contracts/opsuccinctfdgconfig.json
+ENV RUST_LOG=info
+
+# Both steps take an env file; the configuration is in the environment instead.
+CMD ["sh", "-c", "fetch-fault-dispute-game-config --env-file /dev/null && just _deploy-fdg-contracts /dev/null"]

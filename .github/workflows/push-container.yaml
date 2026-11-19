@@ -17,6 +17,10 @@ on:
       concurrency-group:
         required: false
         type: string
+      submodules:
+        required: false
+        type: string
+        default: "false"
 jobs:
   infer_image_metadata:
     name: Infer image tags from github ref type
@@ -52,7 +56,7 @@ jobs:
         && inputs.concurrency-group
         || format('{0}-{1}', github.workflow, (github.head_ref != '' && github.head_ref || github.ref)) }}
       cancel-in-progress: true
-    uses: celo-org/reusable-workflows/.github/workflows/docker-build.yaml@v3.1.0-rc.3
+    uses: celo-org/reusable-workflows/.github/workflows/docker-build.yaml@v3.1.0-rc.7
     with:
       runs-on: '["self-hosted", "org", "8-cpu"]'
       workload-id-provider: ${{ inputs.workload-id-provider }}
@@ -62,5 +66,6 @@ jobs:
       timeout-minutes: 60
       context: .
       file: ${{ inputs.file }}
+      submodules: ${{ inputs.submodules }}
       tags: ${{ needs.infer_image_metadata.outputs.tags }}
       trivy-enabled: false
